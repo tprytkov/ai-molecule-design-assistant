@@ -1,0 +1,11 @@
+evidence_id,text,source,target_family,notes
+evidence_001,A public kinase-like reference scaffold provides a useful anchor for comparing generated chemical structures.,synthetic_demo,protein_kinase,Synthetic demonstration text for reference-guided molecule triage.
+evidence_002,A public database match signal indicates that a compound record was found in an external public source.,synthetic_demo,general_druglike,Synthetic demonstration text; no external query is implied.
+evidence_003,A structurally differentiated compound can occupy chemical space away from the closest uploaded reference molecule.,synthetic_demo,general_druglike,Synthetic demonstration text for public-database differentiation signal interpretation.
+evidence_004,Weak reference similarity means the RDKit fingerprint overlap with the uploaded reference panel is limited.,synthetic_demo,general_druglike,Synthetic demonstration text for low-similarity interpretation.
+evidence_005,A property-favorable profile combines balanced molecular weight lipophilicity polar surface area and hydrogen-bond features.,synthetic_demo,general_druglike,Synthetic demonstration text for property-driven prioritization.
+evidence_006,External evidence was not available because the relevant online lookup step was not run.,synthetic_demo,general_druglike,Synthetic demonstration text for evidence completeness.
+evidence_007,ChemBERTa embeddings provide a learned molecular representation for visualization and neighborhood analysis.,synthetic_demo,general_druglike,Synthetic demonstration text for computed analysis status.
+evidence_008,Reference-guided molecule triage compares local fingerprints descriptors and public evidence without making legal conclusions.,synthetic_demo,general_druglike,Synthetic demonstration text for workflow explanation.
+evidence_009,A research-prioritization score combines validity properties QED rule-based filters and structural differentiation.,synthetic_demo,general_druglike,Synthetic demonstration text for score interpretation.
+evidence_010,A follow-up review signal highlights candidates that may benefit from additional experimental or public-database analysis.,synthetic_demo,general_druglike,Synthetic demonstration text for next-step planning.

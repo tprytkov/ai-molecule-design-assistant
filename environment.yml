@@ -1,0 +1,13 @@
+name: molecule-intelligence
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rdkit>=2023.09
+  - pytest>=8.0
+  - sentence-transformers>=3.0
+  - pandas>=2.0
+  - plotly>=5.0
+  - streamlit>=1.30
+  - playwright>=1.50
+  - pytest-playwright>=0.6

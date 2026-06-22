@@ -1,0 +1,11 @@
+reference_name,smiles,reference_role,target_family,notes
+Gefitinib,COC1=C(C=C2C(=C1)N=CN=C2NC3=CC(=C(C=C3)F)Cl)OCCCN4CCOCC4,desired_reference,protein_kinase,Public kinase-inhibitor-like reference scaffold used for software demonstration.
+Erlotinib,COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC,desired_reference,protein_kinase,Public kinase-inhibitor-like reference with an ethynyl substituent.
+Lapatinib,CS(=O)(=O)CCNCC1=CC=C(O1)C2=CC3=C(C=C2)N=CN=C3NC4=CC(=C(C=C4)OCC5=CC(=CC=C5)F)Cl,desired_reference,protein_kinase,Public kinase-inhibitor-like reference with a larger flexible scaffold.
+Afatinib,CN(C)CC=CC(=O)NC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC(=C(C=C3)F)Cl)OC4CCOC4,desired_reference,protein_kinase,Public kinase-inhibitor-like reference with an electrophilic side chain.
+Dacomitinib,COC1=C(C=C2C(=C1)N=CN=C2NC3=CC(=C(C=C3)F)Cl)NC(=O)C=CCN4CCCCC4,desired_reference,protein_kinase,Public kinase-inhibitor-like reference with a basic ring substituent.
+Osimertinib,CN1C=C(C2=CC=CC=C21)C3=NC(=NC=C3)NC4=C(C=C(C(=C4)NC(=O)C=C)N(C)CCN(C)C)OC,desired_reference,protein_kinase,Public kinase-inhibitor-like reference with a heteroaromatic core.
+Imatinib,CC1=C(C=C(C=C1)NC(=O)C2=CC=C(C=C2)CN3CCN(CC3)C)NC4=NC=CC(=N4)C5=CN=CC=C5,background_reference,protein_kinase,Public kinase-inhibitor-like background reference with multiple aromatic heterocycles.
+Dasatinib,CC1=C(C(=CC=C1)Cl)NC(=O)C2=CN=C(S2)NC3=CC(=NC(=N3)C)N4CCN(CC4)CCO,background_reference,protein_kinase,Public kinase-inhibitor-like background reference with thiazole and hydroxyethyl features.
+Sorafenib,CNC(=O)C1=NC=CC(=C1)OC2=CC=C(C=C2)NC(=O)NC3=CC(=C(C=C3)Cl)C(F)(F)F,control_reference,protein_kinase,Public diaryl-urea kinase-like control reference.
+Sunitinib,CCN(CC)CCNC(=O)C1=C(NC(=C1C)C=C2C3=C(C=CC(=C3)F)NC2=O)C,avoid_reference,protein_kinase,Public kinase-inhibitor-like comparison reference used to demonstrate role labels.

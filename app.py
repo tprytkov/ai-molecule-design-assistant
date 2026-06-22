@@ -1,0 +1,2653 @@
+"""Streamlit dashboard for local molecule-intelligence outputs."""
+
+from __future__ import annotations
+
+import re
+import shutil
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+from src.compound_qa import compound_qa
+from src.chemberta_embeddings import (
+    chemberta_embeddings_csv,
+    merge_chemberta_into_prioritized,
+    visualization_coordinates_csv,
+)
+from src.chemical_identity import chemical_identity_csv
+from src.compound_context import compound_context_csv
+from src.compound_search import top_hits_csv
+from src.descriptors import descriptor_csv
+from src.pipeline import (
+    PipelinePaths,
+    build_paths,
+    csv_has_data_rows,
+    run_pipeline,
+    write_surechembl_not_run_csv,
+)
+from src.public_lookup import public_lookup_csv
+from src.scoring import scoring_csv
+from src.similarity import similarity_csv
+from src.standardize import standardize_csv
+from src.surechembl_lookup import surechembl_lookup_csv
+from src.text_nlp import text_nlp_csv
+
+
+OUTPUT_FILES = {
+    "prioritization": "prioritization_results.csv",
+    "descriptors": "descriptors.csv",
+    "public_lookup": "public_lookup.csv",
+    "chemical_identity": "chemical_identity.csv",
+    "text_nlp": "text_nlp.csv",
+    "surechembl": "surechembl_evidence.csv",
+    "visualization": "visualization_coordinates.csv",
+    "standardized": "standardized.csv",
+    "compound_context": "compound_context.csv",
+    "similarity_top_hits": "similarity_top_hits.csv",
+    "chemberta_embeddings": "chemberta_embeddings.csv",
+}
+APP_TITLE = "AI Molecule Design Assistant"
+APP_SUBTITLE = (
+    "Step-by-step support for evaluating generated SMILES using chemical identity, "
+    "public database evidence, RDKit drug-likeness, ChemBERTa chemical-space "
+    "embeddings, text evidence, and final design prioritization."
+)
+IMPORTANT_COLUMNS = [
+    "molecule_id",
+    "prioritization_score",
+    "prioritization_score_with_nlp",
+    "best_reference_name",
+    "tanimoto_similarity",
+    "pubchem_status",
+    "chembl_status",
+    "surechembl_query_status",
+    "chemberta_status",
+    "nlp_status",
+    "known_public_match",
+]
+STATUS_COLUMNS = [
+    "pubchem_status",
+    "chembl_status",
+    "surechembl_query_status",
+    "chemberta_status",
+    "nlp_status",
+]
+DESCRIPTOR_COLUMNS = ["molecular_weight", "logp", "tpsa", "qed"]
+DISPLAY_LABELS = {
+    "molecule_id": "Molecule ID",
+    "smiles": "SMILES",
+    "canonical_smiles": "Canonical SMILES",
+    "prioritization_score_with_nlp": "Research-prioritization score",
+    "prioritization_score": "Base prioritization score",
+    "prioritization_category_with_nlp": "Research-prioritization category",
+    "prioritization_category": "Base prioritization category",
+    "tanimoto_similarity": "Best reference similarity",
+    "best_reference_name": "Closest reference compound",
+    "known_public_match": "Exact public match",
+    "pubchem_status": "PubChem status",
+    "chembl_status": "ChEMBL status",
+    "surechembl_query_status": "SureChEMBL status",
+    "chemberta_status": "ChemBERTa status",
+    "nlp_status": "Text-evidence status",
+    "molecular_weight": "Molecular weight",
+    "logp": "LogP",
+    "tpsa": "TPSA",
+    "qed": "QED",
+    "lipinski_pass": "Lipinski",
+    "druglikeness_category": "Drug-likeness category",
+    "druglikeness_score": "Drug-likeness score",
+    "druglikeness_flags": "Drug-likeness flags",
+    "mw_status": "MW status",
+    "logp_status": "LogP status",
+    "tpsa_status": "TPSA status",
+    "qed_status": "QED status",
+    "lipinski_status": "Lipinski status",
+    "hbd": "Hydrogen-bond donors",
+    "hba": "Hydrogen-bond acceptors",
+    "rotatable_bonds": "Rotatable bonds",
+    "identity_status": "Identity status",
+    "identity_confidence": "Identity confidence",
+    "name_source": "Name source",
+    "inchikey": "InChIKey",
+    "inchi_key": "InChIKey",
+    "pubchem_cid": "PubChem CID",
+    "chembl_id": "ChEMBL ID",
+    "surechembl_id": "SureChEMBL ID",
+    "lookup_status": "Lookup status",
+    "source_database": "Public database",
+    "public_id": "Public ID",
+    "public_name": "Public name",
+    "evidence_note": "Evidence note",
+    "cluster_id": "Chemical-space cluster",
+    "nlp_relevance_category": "Text-evidence relevance",
+    "max_relevance_score": "Top text-evidence score",
+    "prioritization_category_with_nlp": "Final design category",
+    "prioritization_category": "Design category",
+    "valid_smiles": "Valid SMILES",
+    "novelty_flag": "Public-database differentiation",
+    "x": "Chemical space dimension 1",
+    "y": "Chemical space dimension 2",
+}
+CHEMICAL_SPACE_EXPLANATION = (
+    "Each point is one molecule. Molecules close together have similar "
+    "ChemBERTa molecular embeddings. Use this plot to identify clusters, "
+    "outliers, and chemically distinct candidates."
+)
+SCORE_SIMILARITY_EXPLANATION = (
+    "High score with low reference similarity suggests a property-favorable "
+    "but structurally differentiated molecule. High score with high reference "
+    "similarity suggests a candidate closer to the uploaded reference panel."
+)
+PROPERTY_DISTRIBUTIONS_EXPLANATION = (
+    "These histograms summarize molecular properties such as molecular weight, "
+    "LogP, TPSA, and QED."
+)
+DRUGLIKENESS_EXPLANATION = (
+    "This step helps identify molecules with favorable, borderline, or "
+    "unfavorable drug-like property profiles before final prioritization."
+)
+DRUGLIKENESS_COLORS = {
+    "favorable": "#2e7d32",
+    "borderline": "#f9a825",
+    "unfavorable": "#c62828",
+    "invalid": "#616161",
+}
+MOLECULE_STATUS_COLORS = {
+    "green": "#2e7d32",
+    "yellow": "#f9a825",
+    "red": "#c62828",
+    "gray": "#757575",
+}
+MOLECULE_STATUS_ORDER = ["green", "yellow", "red", "gray"]
+DRUGLIKENESS_ICONS = {
+    "favorable": "✅ favorable",
+    "borderline": "⚠️ borderline",
+    "unfavorable": "❌ unfavorable",
+    "invalid": "⛔ invalid",
+}
+ONLINE_LOOKUP_NOTE = (
+    "Online lookup is enabled by default for new analyses. PubChem, ChEMBL, "
+    "and SureChEMBL are called only after you click Run analysis."
+)
+LOAD_EXISTING_NOTE = (
+    "This mode only loads an existing output folder. It does not rerun the "
+    "pipeline or call online services."
+)
+WELCOME_TEXT = (
+    "Explore generated small molecules with structure standardization, public "
+    "chemical identity, molecular descriptors, reference similarity, text "
+    "evidence, and molecule-level reports."
+)
+START_GUIDANCE = (
+    "Start with the public demo to see what information the app can extract, "
+    "then run your own generated SMILES."
+)
+WORKFLOW_STEP_NAMES = (
+    "Step 1: Load and validate SMILES",
+    "Step 2: Chemical identity",
+    "Step 3: Public database lookup",
+    "Step 4: RDKit molecular properties",
+    "Step 5: ChemBERTa chemical space",
+    "Step 6: Text evidence and biomedical context",
+    "Step 7: Final prioritization",
+    "Step 8: Reports",
+)
+WORKFLOW_STEP_WHY = (
+    "Invalid or inconsistent structures can make every downstream result "
+    "misleading, so structure quality is checked first.",
+    "Exact names and identifiers make later public evidence easier to interpret "
+    "without guessing what a structure represents.",
+    "Public records show whether exact or related compounds are already present "
+    "in external chemistry resources.",
+    "These interpretable properties reveal size, polarity, lipophilicity, "
+    "drug-likeness, and rule-based property concerns.",
+    "Learned embeddings provide a complementary view of structural relationships "
+    "that is not limited to a single hand-designed fingerprint.",
+    "Text and biomedical context help connect chemical evidence to cautious, "
+    "source-grounded research interpretation.",
+    "The prior evidence is combined into one transparent research-prioritization "
+    "view while preserving each stage's availability status.",
+    "A report collects the evidence for one molecule into a readable artifact "
+    "that can be reviewed or shared locally.",
+)
+WORKFLOW_STEP_GET = (
+    "A standardized table with valid/invalid status, canonical SMILES, and InChIKeys.",
+    "Exact public names and identifiers when supported, plus explicit no-match status.",
+    "PubChem/ChEMBL lookup evidence and SureChEMBL structure-evidence status.",
+    "RDKit descriptors, drug-likeness categories, flags, and property visualizations.",
+    "ChemBERTa embeddings and two-dimensional chemical-space coordinates.",
+    "Grounded compound context and molecule-to-text evidence relevance results.",
+    "A ranked molecule table with component scores and evidence-stage statuses.",
+    "Molecule-level Markdown reports with structures and evidence summaries.",
+)
+FINAL_RANKING_EXPLANATION = (
+    "Final ranking combines evidence from chemical identity, public lookup, "
+    "RDKit descriptors, ChemBERTa embeddings, text evidence, and biomedical context."
+)
+DEMO_INPUT = Path("data/examples/druglike_candidate_demo.csv")
+DEMO_REFERENCES = Path("data/examples/druglike_reference_panel.csv")
+DEMO_TEXT_EVIDENCE = Path("data/examples/text_evidence_demo.csv")
+APP_USAGE_STEPS = (
+    "Upload generated SMILES.",
+    "Upload optional reference molecules.",
+    "Choose workflow options.",
+    "Click Run analysis.",
+    "Review evidence status.",
+    "Explore chemical-space and score plots.",
+    "Select molecules and generate reports.",
+)
+APP_RUNS_DIR = Path("app_runs")
+GENERATED_REQUIRED_COLUMNS = ("molecule_id", "smiles")
+REFERENCE_OUTPUT_COLUMNS = (
+    "reference_id",
+    "reference_name",
+    "smiles",
+    "reference_source",
+    "reference_source_id",
+    "evidence_note",
+)
+TEXT_EVIDENCE_COLUMNS = ("evidence_id", "molecule_id", "source_type", "title", "text")
+STATUS_LABELS = {
+    "pubchem_status": "PubChem",
+    "chembl_status": "ChEMBL",
+    "surechembl_query_status": "SureChEMBL",
+    "chemberta_status": "ChemBERTa",
+    "nlp_status": "NLP",
+}
+STATUS_MEANINGS = {
+    "no_match": "queried; no match found",
+    "hit": "queried; match found",
+    "match_found": "queried; match found",
+    "not_queried": "not checked in this run",
+    "lookup_error": "query failed",
+    "available": "available",
+    "not_run": "workflow step was skipped",
+    "not_available": "not available",
+}
+STATUS_ICONS = {
+    "available": "✅",
+    "hit": "✅",
+    "match_found": "✅",
+    "no_match": "⚪",
+    "lookup_error": "⚠️",
+    "not_queried": "⏭️",
+    "not_run": "⏭️",
+}
+
+
+@dataclass(frozen=True)
+class LoadedOutputs:
+    """Loaded CSV outputs and useful output paths."""
+
+    output_dir: Path
+    reports_dir: Path
+    images_dir: Path
+    paths: dict[str, Path]
+    tables: dict[str, pd.DataFrame]
+
+
+@dataclass(frozen=True)
+class UploadedRunPaths:
+    """Paths created for one app-submitted analysis run."""
+
+    run_dir: Path
+    input_dir: Path
+    output_dir: Path
+    generated_smiles: Path
+    references: Path
+    text_evidence: Path
+
+
+def read_optional_csv(path: Path) -> pd.DataFrame:
+    """Read a CSV if present, otherwise return an empty frame."""
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def safe_run_name(name: str | None, timestamp: datetime | None = None) -> str:
+    """Return a filesystem-safe run name."""
+    cleaned = (name or "").strip().replace(" ", "_")
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "", cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("._-")
+    if cleaned:
+        return cleaned
+    active_time = timestamp or datetime.now()
+    return active_time.strftime("run_%Y%m%d_%H%M%S")
+
+
+def validate_required_columns(df: pd.DataFrame, required: Iterable[str], label: str) -> None:
+    """Validate a dataframe has required columns."""
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise ValueError(f"{label} is missing required column(s): {', '.join(missing)}")
+
+
+def read_uploaded_csv(uploaded_file: object, label: str) -> pd.DataFrame:
+    """Read an uploaded Streamlit CSV object into a dataframe."""
+    try:
+        return pd.read_csv(uploaded_file)
+    except Exception as exc:
+        raise ValueError(f"{label} could not be read as CSV: {exc}") from exc
+
+
+def validate_generated_smiles(df: pd.DataFrame) -> None:
+    """Validate generated SMILES upload columns."""
+    validate_required_columns(df, GENERATED_REQUIRED_COLUMNS, "Generated SMILES CSV")
+
+
+def validate_reference_csv(df: pd.DataFrame) -> None:
+    """Validate uploaded reference columns."""
+    validate_required_columns(df, ("smiles",), "Reference CSV")
+
+
+def normalize_reference_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize user reference uploads to the pipeline reference schema."""
+    if df.empty:
+        return pd.DataFrame(columns=REFERENCE_OUTPUT_COLUMNS)
+    validate_reference_csv(df)
+    rows: list[dict[str, str]] = []
+    for index, row in df.fillna("").iterrows():
+        reference_id = str(row.get("reference_id", "")).strip() or f"ref_{index + 1:04d}"
+        reference_name = (
+            str(row.get("reference_name", "")).strip()
+            or str(row.get("name", "")).strip()
+            or reference_id
+        )
+        notes = []
+        for column in ("reference_role", "target", "notes", "evidence_note"):
+            value = str(row.get(column, "")).strip()
+            if value:
+                notes.append(f"{column}: {value}")
+        rows.append(
+            {
+                "reference_id": reference_id,
+                "reference_name": reference_name,
+                "smiles": str(row.get("smiles", "")).strip(),
+                "reference_source": str(row.get("reference_source", "")).strip()
+                or "uploaded_reference",
+                "reference_source_id": str(row.get("reference_source_id", "")).strip()
+                or reference_id,
+                "evidence_note": "; ".join(notes) or "Uploaded reference molecule.",
+            }
+        )
+    return pd.DataFrame(rows, columns=REFERENCE_OUTPUT_COLUMNS)
+
+
+def empty_reference_dataframe() -> pd.DataFrame:
+    """Return an empty but schema-valid reference table."""
+    return pd.DataFrame(columns=REFERENCE_OUTPUT_COLUMNS)
+
+
+def empty_text_evidence_dataframe() -> pd.DataFrame:
+    """Return an empty but schema-valid text evidence table."""
+    return pd.DataFrame(columns=TEXT_EVIDENCE_COLUMNS)
+
+
+def save_uploaded_file(uploaded_file: object, path: Path) -> None:
+    """Save a Streamlit uploaded file object to disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as output_file:
+        if hasattr(uploaded_file, "getbuffer"):
+            output_file.write(uploaded_file.getbuffer())
+        elif hasattr(uploaded_file, "getvalue"):
+            output_file.write(uploaded_file.getvalue())
+        else:
+            shutil.copyfileobj(uploaded_file, output_file)
+
+
+def prepare_app_run_inputs(
+    *,
+    run_name: str,
+    generated_upload: object,
+    reference_upload: object | None = None,
+    text_upload: object | None = None,
+    app_runs_dir: Path = APP_RUNS_DIR,
+) -> UploadedRunPaths:
+    """Save uploaded files and normalized pipeline inputs under app_runs."""
+    safe_name = safe_run_name(run_name)
+    run_dir = app_runs_dir / safe_name
+    input_dir = run_dir / "input"
+    output_dir = run_dir / "outputs"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    generated_raw = input_dir / "uploaded_generated_smiles.csv"
+    save_uploaded_file(generated_upload, generated_raw)
+    generated_df = pd.read_csv(generated_raw)
+    validate_generated_smiles(generated_df)
+    generated_path = input_dir / "generated_smiles.csv"
+    generated_df.to_csv(generated_path, index=False)
+
+    reference_raw = input_dir / "uploaded_references.csv"
+    if reference_upload is not None:
+        save_uploaded_file(reference_upload, reference_raw)
+        reference_df = normalize_reference_dataframe(pd.read_csv(reference_raw))
+    else:
+        reference_df = empty_reference_dataframe()
+    reference_path = input_dir / "references.csv"
+    reference_df.to_csv(reference_path, index=False)
+
+    text_raw = input_dir / "uploaded_text_evidence.csv"
+    if text_upload is not None:
+        save_uploaded_file(text_upload, text_raw)
+        text_df = pd.read_csv(text_raw)
+    else:
+        text_df = empty_text_evidence_dataframe()
+    text_path = input_dir / "text_evidence.csv"
+    text_df.to_csv(text_path, index=False)
+
+    return UploadedRunPaths(
+        run_dir=run_dir,
+        input_dir=input_dir,
+        output_dir=output_dir,
+        generated_smiles=generated_path,
+        references=reference_path,
+        text_evidence=text_path,
+    )
+
+
+def default_workflow_options() -> dict[str, object]:
+    """Return new-analysis form defaults."""
+    return {
+        "online_lookup": True,
+        "online_surechembl": True,
+        "use_chemberta": True,
+        "generate_reports": True,
+        "report_only_fully_analyzed": True,
+        "max_molecules": 10,
+        "report_top_n": 5,
+    }
+
+
+def usage_guide_markdown() -> str:
+    """Return the user-facing app workflow guide."""
+    lines = ["### How to use this app", ""]
+    lines.extend(
+        f"{index}. {step}" for index, step in enumerate(APP_USAGE_STEPS, start=1)
+    )
+    return "\n".join(lines)
+
+
+def run_uploaded_analysis(
+    paths: UploadedRunPaths,
+    *,
+    online_lookup: bool = False,
+    online_surechembl: bool = False,
+    use_chemberta: bool = False,
+    report_top_n: int | None = 5,
+    report_only_fully_analyzed: bool = False,
+    max_molecules: int | None = None,
+) -> Path:
+    """Run the local pipeline for uploaded app inputs."""
+    pipeline_paths = build_paths(
+        input_path=paths.generated_smiles,
+        references_path=paths.references,
+        text_evidence_path=paths.text_evidence,
+        output_dir=paths.output_dir,
+    )
+    return run_pipeline(
+        paths=pipeline_paths,
+        online_lookup=online_lookup,
+        refresh_public_lookup=online_lookup,
+        online_surechembl=online_surechembl,
+        skip_surechembl=not online_surechembl,
+        use_chemberta=use_chemberta,
+        max_molecules=max_molecules,
+        report_top_n=report_top_n,
+        report_only_fully_analyzed=report_only_fully_analyzed,
+        report_dir=paths.output_dir / "reports",
+        clean_report_dir=True,
+    )
+
+
+def load_output_directory(output_dir: str | Path) -> LoadedOutputs:
+    """Load known pipeline outputs from an output directory."""
+    root = Path(output_dir)
+    paths = {name: root / filename for name, filename in OUTPUT_FILES.items()}
+    tables = {name: read_optional_csv(path) for name, path in paths.items()}
+    tables["prioritization"] = reconcile_nlp_status(
+        tables["prioritization"], tables["text_nlp"]
+    )
+    return LoadedOutputs(
+        output_dir=root,
+        reports_dir=root / "reports",
+        images_dir=root / "report_images",
+        paths=paths,
+        tables=tables,
+    )
+
+
+def reconcile_nlp_status(
+    prioritization: pd.DataFrame, text_nlp: pd.DataFrame
+) -> pd.DataFrame:
+    """Infer NLP status only when prioritization does not provide the column."""
+    if (
+        prioritization.empty
+        or text_nlp.empty
+        or "nlp_status" in prioritization.columns
+        or "molecule_id" not in prioritization.columns
+        or "molecule_id" not in text_nlp.columns
+    ):
+        return prioritization
+    result = prioritization.copy()
+    usable = text_nlp["molecule_id"].fillna("").astype(str).str.strip()
+    available_ids = set(usable[usable.ne("")])
+    if not available_ids:
+        return result
+    result["nlp_status"] = result["molecule_id"].astype(str).map(
+        lambda molecule_id: (
+            "available" if molecule_id in available_ids else "no_match"
+        )
+    )
+    return result
+
+
+def nlp_output_note(text_nlp_path: Path, text_nlp: pd.DataFrame) -> str:
+    """Explain NLP availability for the selected output folder."""
+    if not text_nlp_path.exists():
+        return (
+            "NLP was not run for this output folder because no text_nlp.csv "
+            "file was found. Rerun the pipeline with --text-evidence to enable "
+            "NLP evidence matching."
+        )
+    if text_nlp.empty:
+        return "NLP output exists but contains no evidence matches."
+    return (
+        "NLP evidence matching was run using molecule context and text evidence."
+    )
+
+
+def score_column(df: pd.DataFrame) -> str:
+    """Return the preferred score column."""
+    if "prioritization_score_with_nlp" in df.columns:
+        return "prioritization_score_with_nlp"
+    return "prioritization_score"
+
+
+def coerce_numeric(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    """Return a copy with selected columns converted to numeric when present."""
+    result = df.copy()
+    for column in columns:
+        if column in result.columns:
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+    return result
+
+
+def apply_filters(
+    df: pd.DataFrame,
+    *,
+    min_score: float = 0.0,
+    known_public_match: str = "All",
+    status_filters: dict[str, list[str]] | None = None,
+) -> pd.DataFrame:
+    """Filter prioritization rows for dashboard display."""
+    if df.empty:
+        return df
+    result = coerce_numeric(df, ["prioritization_score", "prioritization_score_with_nlp", "tanimoto_similarity"])
+    active_score = score_column(result)
+    if active_score in result.columns:
+        result = result[result[active_score].fillna(0) >= min_score]
+    if known_public_match != "All" and "known_public_match" in result.columns:
+        result = result[
+            result["known_public_match"].astype(str).str.lower()
+            == known_public_match.lower()
+        ]
+    for column, selected in (status_filters or {}).items():
+        if selected and column in result.columns:
+            result = result[result[column].astype(str).isin(selected)]
+    return result
+
+
+def ordered_columns(df: pd.DataFrame) -> list[str]:
+    """Put high-signal columns first while preserving all remaining columns."""
+    first = [column for column in IMPORTANT_COLUMNS if column in df.columns]
+    rest = [column for column in df.columns if column not in first]
+    return first + rest
+
+
+def display_label(column: str) -> str:
+    """Return a readable UI label without changing the CSV schema."""
+    return DISPLAY_LABELS.get(column, column.replace("_", " ").strip().title())
+
+
+def display_labels(columns: Iterable[str]) -> dict[str, str]:
+    """Build a Plotly-compatible label mapping."""
+    return {column: display_label(column) for column in columns}
+
+
+def display_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a presentation-only dataframe with readable column labels."""
+    return df.rename(columns=display_labels(df.columns))
+
+
+def molecule_status_color(value: object) -> str:
+    """Map workflow statuses to the shared molecule color vocabulary."""
+    status = str(value or "").strip().lower().replace(" ", "_")
+    if any(token in status for token in ("not_run", "offline", "skipped")):
+        return "gray"
+    if any(
+        token in status
+        for token in (
+            "unfavorable",
+            "unavailable",
+            "not_available",
+            "missing",
+            "invalid",
+            "error",
+            "no_match",
+            "low",
+        )
+    ):
+        return "red"
+    if any(token in status for token in ("borderline", "partial", "moderate", "medium")):
+        return "yellow"
+    if any(token in status for token in ("favorable", "available", "valid", "high")):
+        return "green"
+    if status in {
+        "true",
+        "valid",
+        "available",
+        "hit",
+        "match_found",
+        "exact_public_identity",
+        "exact_public_match",
+        "favorable",
+        "high",
+    }:
+        return "green"
+    if status in {
+        "borderline",
+        "partial",
+        "moderate",
+        "medium",
+        "generated_iupac_name_only",
+        "reference_context",
+        "weak_reference_context",
+        "not_queried",
+    }:
+        return "yellow"
+    return "red"
+
+
+def validation_molecule_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return one validation row per molecule for plotting and selection."""
+    if frame.empty or "molecule_id" not in frame.columns:
+        return pd.DataFrame()
+    result = frame.copy()
+    result["validation_status"] = result.get("valid_smiles", False).map(
+        lambda value: "Valid" if str(value).lower() == "true" else "Invalid"
+    )
+    result["status_color"] = result["validation_status"].map(molecule_status_color)
+    result["molecule_position"] = range(1, len(result) + 1)
+    return result
+
+
+def identity_molecule_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return one chemical-identity row per molecule."""
+    if frame.empty or "molecule_id" not in frame.columns:
+        return pd.DataFrame()
+    result = frame.drop_duplicates("molecule_id").copy()
+    result["status_color"] = result.get(
+        "identity_status", pd.Series("not_available", index=result.index)
+    ).map(molecule_status_color)
+    result["molecule_position"] = range(1, len(result) + 1)
+    return result
+
+
+def best_status(values: Iterable[object]) -> str:
+    """Choose the most informative status from repeated evidence rows."""
+    statuses = [normalize_status(value) for value in values]
+    priority = (
+        "match_found",
+        "hit",
+        "available",
+        "no_match",
+        "not_queried",
+        "lookup_error",
+        "error",
+        "not_run",
+        "not_available",
+    )
+    return next((status for status in priority if status in statuses), "not_available")
+
+
+def public_evidence_molecule_dataframe(
+    public_lookup: pd.DataFrame,
+    surechembl: pd.DataFrame,
+    molecule_ids: Iterable[str] = (),
+) -> pd.DataFrame:
+    """Build one public-evidence status row per molecule."""
+    ids = {str(value) for value in molecule_ids if str(value).strip()}
+    if "molecule_id" in public_lookup.columns:
+        ids.update(public_lookup["molecule_id"].dropna().astype(str))
+    if "molecule_id" in surechembl.columns:
+        ids.update(surechembl["molecule_id"].dropna().astype(str))
+    rows = []
+    for molecule_id in sorted(ids):
+        lookup_rows = (
+            public_lookup[public_lookup["molecule_id"].astype(str) == molecule_id]
+            if not public_lookup.empty and "molecule_id" in public_lookup.columns
+            else pd.DataFrame()
+        )
+        source_statuses = {}
+        if not lookup_rows.empty:
+            for source, group in lookup_rows.groupby(
+                lookup_rows["source_database"].fillna("").astype(str)
+            ):
+                source_statuses[source.lower()] = best_status(group["lookup_status"])
+        sure_rows = (
+            surechembl[surechembl["molecule_id"].astype(str) == molecule_id]
+            if not surechembl.empty and "molecule_id" in surechembl.columns
+            else pd.DataFrame()
+        )
+        row = {
+            "molecule_id": molecule_id,
+            "pubchem_status": source_statuses.get("pubchem", "not_run"),
+            "chembl_status": source_statuses.get("chembl", "not_run"),
+            "surechembl_query_status": (
+                best_status(sure_rows["lookup_status"])
+                if not sure_rows.empty and "lookup_status" in sure_rows.columns
+                else "not_run"
+            ),
+        }
+        colors = [
+            molecule_status_color(row[column])
+            for column in (
+                "pubchem_status",
+                "chembl_status",
+                "surechembl_query_status",
+            )
+        ]
+        row["status_color"] = (
+            "green"
+            if "green" in colors
+            else "yellow"
+            if "yellow" in colors
+            else "red"
+            if "red" in colors
+            else "gray"
+        )
+        row["evidence_status"] = {
+            "green": "Available",
+            "yellow": "Partial",
+            "red": "Missing",
+            "gray": "Not run",
+        }[row["status_color"]]
+        row["molecule_position"] = len(rows) + 1
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def rdkit_molecule_dataframe(descriptors: pd.DataFrame) -> pd.DataFrame:
+    """Prepare molecule-level RDKit scatter data."""
+    if descriptors.empty or "molecule_id" not in descriptors.columns:
+        return pd.DataFrame()
+    result = coerce_numeric(
+        descriptors,
+        (
+            "molecular_weight",
+            "logp",
+            "tpsa",
+            "hbd",
+            "hba",
+            "rotatable_bonds",
+            "qed",
+            "druglikeness_score",
+        ),
+    )
+    if "druglikeness_category" not in result.columns:
+        result["druglikeness_category"] = result.get(
+            "valid_smiles", pd.Series(False, index=result.index)
+        ).map(lambda value: "favorable" if str(value).lower() == "true" else "invalid")
+    result["status_color"] = result["druglikeness_category"].map(molecule_status_color)
+    return result
+
+
+def text_evidence_molecule_dataframe(
+    text_nlp: pd.DataFrame,
+    molecule_ids: Iterable[str] = (),
+) -> pd.DataFrame:
+    """Summarize text evidence to one interactive row per molecule."""
+    ids = {str(value) for value in molecule_ids if str(value).strip()}
+    if "molecule_id" in text_nlp.columns:
+        ids.update(text_nlp["molecule_id"].dropna().astype(str))
+    rows = []
+    for position, molecule_id in enumerate(sorted(ids), start=1):
+        matches = (
+            text_nlp[text_nlp["molecule_id"].astype(str) == molecule_id].copy()
+            if not text_nlp.empty and "molecule_id" in text_nlp.columns
+            else pd.DataFrame()
+        )
+        status = (
+            best_status(matches["nlp_status"])
+            if not matches.empty and "nlp_status" in matches.columns
+            else "not_run"
+        )
+        score_column_name = next(
+            (
+                column
+                for column in ("max_relevance_score", "similarity_score")
+                if column in matches.columns
+            ),
+            "",
+        )
+        scores = (
+            pd.to_numeric(matches[score_column_name], errors="coerce")
+            if score_column_name
+            else pd.Series(dtype="float64")
+        )
+        top_index = scores.idxmax() if not scores.dropna().empty else None
+        rows.append(
+            {
+                "molecule_id": molecule_id,
+                "nlp_status": status,
+                "max_relevance_score": (
+                    float(scores.loc[top_index]) if top_index is not None else None
+                ),
+                "top_evidence_title": (
+                    str(matches.loc[top_index, "title"])
+                    if top_index is not None and "title" in matches.columns
+                    else ""
+                ),
+                "evidence_matches": int(len(matches)),
+                "molecule_position": position,
+                "status_color": molecule_status_color(status),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def final_priority_molecule_dataframe(prioritization: pd.DataFrame) -> pd.DataFrame:
+    """Prepare final score-versus-similarity data for each molecule."""
+    if prioritization.empty or "molecule_id" not in prioritization.columns:
+        return pd.DataFrame()
+    result = coerce_numeric(
+        prioritization,
+        ("prioritization_score_with_nlp", "prioritization_score", "tanimoto_similarity"),
+    )
+    category = next(
+        (
+            column
+            for column in (
+                "prioritization_category_with_nlp",
+                "prioritization_category",
+            )
+            if column in result.columns
+        ),
+        "",
+    )
+    if not category:
+        category = "design_category"
+        result[category] = "not available"
+    result["design_category"] = result[category].fillna("not available").astype(str)
+    result["status_color"] = result["design_category"].map(molecule_status_color)
+    return result
+
+
+def selected_molecule_from_plot_event(event: object) -> str:
+    """Extract a molecule ID from a Streamlit Plotly selection event."""
+    if event is None:
+        return ""
+    selection = (
+        event.get("selection", {})
+        if isinstance(event, dict)
+        else getattr(event, "selection", {})
+    )
+    points = (
+        selection.get("points", [])
+        if isinstance(selection, dict)
+        else getattr(selection, "points", [])
+    )
+    if not points:
+        return ""
+    point = points[0]
+    custom = point.get("customdata", []) if isinstance(point, dict) else []
+    return str(custom[0]) if custom else ""
+
+
+def status_counts(df: pd.DataFrame, column: str) -> dict[str, int]:
+    """Return value counts for a status column."""
+    if column not in df.columns:
+        return {}
+    counts = df[column].fillna("not_available").astype(str).value_counts()
+    return {str(key): int(value) for key, value in counts.items()}
+
+
+def normalize_status(value: object) -> str:
+    """Normalize display status values."""
+    text = str(value or "").strip()
+    return text or "not_available"
+
+
+def readable_status(value: object) -> str:
+    """Convert a machine-readable workflow status to concise UI text."""
+    status = normalize_status(value)
+    labels = {
+        "match_found": "Match found",
+        "hit": "Match found",
+        "no_match": "No match",
+        "lookup_error": "Lookup error",
+        "error": "Error",
+        "not_queried": "Not queried",
+        "not_run": "Not run",
+        "not_available": "Not available",
+        "available": "Available",
+        "offline": "Not run",
+        "invalid_molecule": "Invalid molecule",
+    }
+    return labels.get(status, status.replace("_", " ").strip().capitalize())
+
+
+def status_display(value: object) -> str:
+    """Return a compact styled status label."""
+    status = normalize_status(value)
+    icon = STATUS_ICONS.get(status, "")
+    return f"{icon} {readable_status(status)}".strip()
+
+
+def status_meaning(value: object) -> str:
+    """Return a human-readable status meaning."""
+    return STATUS_MEANINGS.get(normalize_status(value), "not available")
+
+
+def evidence_completeness_rows(record: dict[str, object]) -> pd.DataFrame:
+    """Build table-ready evidence completeness rows."""
+    rows = []
+    for column, label in STATUS_LABELS.items():
+        status = normalize_status(record.get(column, "not_available"))
+        rows.append(
+            {
+                "Evidence source": label,
+                "Status": status_display(status),
+                "Meaning": status_meaning(status),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def reference_similarity_interpretation(value: object) -> str:
+    """Interpret uploaded-reference Tanimoto similarity for UI display."""
+    score = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(score):
+        return "Reference similarity is not available."
+    if float(score) < 0.30:
+        return "Weak RDKit fingerprint similarity to the uploaded reference panel."
+    if float(score) < 0.50:
+        return "Moderate RDKit fingerprint similarity to the uploaded reference panel."
+    return "Strong RDKit fingerprint similarity to the uploaded reference panel."
+
+
+def molecule_detail_rows(record: dict[str, object], active_score: str) -> pd.DataFrame:
+    """Build table-ready selected molecule details."""
+    similarity = record.get("tanimoto_similarity", "")
+    rows = [
+        (display_label(active_score), record.get(active_score, "")),
+        (display_label("best_reference_name"), record.get("best_reference_name", "")),
+        (display_label("tanimoto_similarity"), similarity),
+        ("Reference similarity interpretation", reference_similarity_interpretation(similarity)),
+        (display_label("known_public_match"), record.get("known_public_match", "")),
+        (display_label("pubchem_status"), status_display(record.get("pubchem_status", ""))),
+        (display_label("chembl_status"), status_display(record.get("chembl_status", ""))),
+        (display_label("surechembl_query_status"), status_display(record.get("surechembl_query_status", ""))),
+        (display_label("chemberta_status"), status_display(record.get("chemberta_status", ""))),
+        (display_label("nlp_status"), status_display(record.get("nlp_status", ""))),
+    ]
+    return pd.DataFrame(rows, columns=["Field", "Value"]).astype("string")
+
+
+def molecule_image_message(image_path: Path) -> str:
+    """Return the message shown when a molecule image is missing."""
+    if image_path.exists():
+        return ""
+    return "2D structure image is not available for this molecule."
+
+
+def generate_report(
+    loaded: LoadedOutputs,
+    molecule_id: str,
+) -> Path:
+    """Generate one local Markdown report without online API calls."""
+    loaded.reports_dir.mkdir(parents=True, exist_ok=True)
+    output_path = loaded.reports_dir / f"compound_intelligence_report_{molecule_id}.md"
+    compound_qa(
+        molecule_id,
+        "full_report",
+        output_path,
+        prioritized_path=loaded.paths["prioritization"],
+        similarity_path=loaded.output_dir / "similarity_top_hits.csv",
+        public_lookup_path=loaded.paths["public_lookup"],
+        nlp_path=loaded.paths["prioritization"].with_name("text_nlp.csv"),
+        descriptor_path=loaded.paths["descriptors"],
+        surechembl_path=loaded.paths["surechembl"],
+        visualization_path=loaded.paths["visualization"],
+        image_dir=loaded.images_dir,
+    )
+    return output_path
+
+
+def existing_report_path(loaded: LoadedOutputs, molecule_id: str) -> Path:
+    """Return the expected report path for a molecule."""
+    return loaded.reports_dir / f"compound_intelligence_report_{molecule_id}.md"
+
+
+def report_status_message(report_path: Path) -> tuple[str, str]:
+    """Return concise report status text without exposing a filesystem path."""
+    if report_path.exists():
+        return "success", "A molecule report is available for this candidate."
+    return "info", "No molecule report has been generated yet."
+
+
+def summarize_run(
+    df: pd.DataFrame,
+    *,
+    public_lookup_exists: bool | None = None,
+) -> dict[str, int | str]:
+    """Return top-line summary metrics without implying an unrun lookup found zero hits."""
+    valid_count = (
+        int(df["valid_smiles"].astype(str).str.lower().eq("true").sum())
+        if "valid_smiles" in df.columns
+        else 0
+    )
+    public_hits: int | str = "Not run"
+    if public_lookup_exists is not False and "known_public_match" in df.columns:
+        lookup_statuses = set()
+        for column in ("pubchem_status", "chembl_status"):
+            if column in df.columns:
+                lookup_statuses.update(
+                    df[column].fillna("not_available").astype(str).str.lower()
+                )
+        if (
+            public_lookup_exists is True
+            or (public_lookup_exists is None and not lookup_statuses)
+            or lookup_statuses.difference({"not_run", "offline", "not_available"})
+        ):
+            public_hits = int(
+                df["known_public_match"].astype(str).str.lower().eq("true").sum()
+            )
+    chemberta_available = (
+        int(df["chemberta_status"].astype(str).eq("available").sum())
+        if "chemberta_status" in df.columns
+        else 0
+    )
+    return {
+        "Total": int(len(df)),
+        "Valid": valid_count,
+        "Exact public matches": public_hits,
+        "ChemBERTa": chemberta_available,
+    }
+
+
+def count_status_bucket(counts: dict[str, int], statuses: tuple[str, ...]) -> int:
+    """Sum equivalent status values into a display bucket."""
+    return sum(counts.get(status, 0) for status in statuses)
+
+
+def build_external_public_evidence_table(
+    df: pd.DataFrame,
+    *,
+    public_lookup_exists: bool | None = None,
+    surechembl_exists: bool | None = None,
+) -> pd.DataFrame:
+    """Build external public evidence status counts."""
+    rows = []
+    sources = (
+        ("PubChem", "pubchem_status", public_lookup_exists),
+        ("ChEMBL", "chembl_status", public_lookup_exists),
+        ("SureChEMBL", "surechembl_query_status", surechembl_exists),
+    )
+    for source, column, file_exists in sources:
+        source_not_run = file_exists is False or column not in df.columns
+        counts = {} if source_not_run else status_counts(df, column)
+        rows.append(
+            {
+                "Source": source,
+                "Hit": count_status_bucket(counts, ("hit", "match_found")),
+                "No match": count_status_bucket(counts, ("no_match",)),
+                "Not queried": count_status_bucket(counts, ("not_queried",)),
+                "Not run": (
+                    int(len(df))
+                    if source_not_run
+                    else count_status_bucket(
+                        counts, ("not_run", "offline", "not_available")
+                    )
+                ),
+                "Error": count_status_bucket(counts, ("lookup_error", "error")),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_computed_analysis_status_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Build computed-analysis status counts."""
+    rows = []
+    sources = (
+        ("ChemBERTa", "chemberta_status"),
+        ("Text-evidence matching", "nlp_status"),
+        ("RDKit descriptors", "descriptor_status"),
+    )
+    for source, column in sources:
+        if column == "descriptor_status":
+            counts = {
+                "available": int(len(df)) if "molecular_weight" in df.columns or "valid_smiles" in df.columns else 0,
+                "not_available": 0 if ("molecular_weight" in df.columns or "valid_smiles" in df.columns) else int(len(df)),
+            }
+        else:
+            counts = status_counts(df, column)
+        rows.append(
+            {
+                "Source": source,
+                "Available": count_status_bucket(counts, ("available", "match_found")),
+                "Not run": count_status_bucket(counts, ("not_run", "offline")),
+                "Not available": count_status_bucket(
+                    counts,
+                    (
+                        "no_match",
+                        "not_available",
+                        "not_queried",
+                        "invalid_molecule",
+                    ),
+                ),
+                "Error": count_status_bucket(counts, ("lookup_error", "error")),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_summary_cards(loaded: LoadedOutputs) -> None:
+    """Render high-level run summary metrics."""
+    df = loaded.tables["prioritization"]
+    summary = summarize_run(
+        df,
+        public_lookup_exists=loaded.paths["public_lookup"].exists(),
+    )
+    metrics = st.columns(4)
+    for index, (label, value) in enumerate(summary.items()):
+        metrics[index].metric(label, value)
+
+    st.markdown("#### External Public Evidence")
+    st.caption(
+        "Not queried means the molecule was not checked because of the molecule limit or workflow settings."
+    )
+    st.table(
+        build_external_public_evidence_table(
+            df,
+            public_lookup_exists=loaded.paths["public_lookup"].exists(),
+            surechembl_exists=loaded.paths["surechembl"].exists(),
+        )
+    )
+    st.markdown("#### Computed Analysis Status")
+    st.info(nlp_output_note(loaded.paths["text_nlp"], loaded.tables["text_nlp"]))
+    st.caption(
+        "ChemBERTa availability means molecular embeddings were generated; "
+        "it is not a public database match. ChemBERTa is unavailable for invalid SMILES."
+    )
+    st.table(build_computed_analysis_status_table(df))
+
+
+def chemical_space_dataframe(
+    coords: pd.DataFrame,
+    prioritization: pd.DataFrame,
+) -> pd.DataFrame:
+    """Prepare coordinates with ranking metadata only when it exists."""
+    if (
+        not prioritization.empty
+        and "molecule_id" in prioritization.columns
+        and "molecule_id" in coords.columns
+    ):
+        plot_df = coords.merge(
+            prioritization,
+            on="molecule_id",
+            how="left",
+            suffixes=("", "_prioritized"),
+        )
+    else:
+        plot_df = coords.copy()
+    return coerce_numeric(
+        plot_df,
+        ["x", "y", "prioritization_score_with_nlp", "prioritization_score", "tanimoto_similarity"],
+    )
+
+
+def category_color_map(frame: pd.DataFrame, column: str) -> dict[str, str]:
+    """Return Plotly colors for each readable status/category value."""
+    if column not in frame.columns:
+        return {}
+    return {
+        str(value): MOLECULE_STATUS_COLORS[molecule_status_color(value)]
+        for value in frame[column].dropna().astype(str).unique()
+    }
+
+
+def render_molecule_selector(
+    frame: pd.DataFrame,
+    *,
+    key: str,
+    plot_event: object = None,
+) -> str:
+    """Render a molecule selector synchronized with a Plotly point selection."""
+    if frame.empty or "molecule_id" not in frame.columns:
+        return ""
+    molecule_ids = frame["molecule_id"].dropna().astype(str).drop_duplicates().tolist()
+    if not molecule_ids:
+        return ""
+    clicked = selected_molecule_from_plot_event(plot_event)
+    remembered = str(st.session_state.get(f"{key}_selected", ""))
+    default = clicked if clicked in molecule_ids else remembered
+    if default not in molecule_ids:
+        default = molecule_ids[0]
+    selected = st.selectbox(
+        "Select molecule to inspect",
+        molecule_ids,
+        index=molecule_ids.index(default),
+        key=f"{key}_selector",
+    )
+    active = clicked if clicked in molecule_ids else str(selected)
+    st.session_state[f"{key}_selected"] = active
+    return active
+
+
+def render_validation_view(frame: pd.DataFrame, *, key: str) -> str:
+    """Render molecule-level validation badges, points, and selection."""
+    plot_df = validation_molecule_dataframe(frame)
+    if plot_df.empty:
+        st.info("SMILES validation output is unavailable.")
+        return ""
+    st.markdown("#### Valid and invalid SMILES")
+    table_columns = available_columns(
+        plot_df,
+        ("molecule_id", "validation_status", "smiles", "canonical_smiles", "error_message"),
+    )
+    st.dataframe(
+        display_dataframe(plot_df[table_columns]),
+        width="stretch",
+        hide_index=True,
+    )
+    figure = px.scatter(
+        plot_df,
+        x="molecule_position",
+        y="validation_status",
+        color="validation_status",
+        hover_name="molecule_id",
+        hover_data=available_columns(
+            plot_df, ("smiles", "canonical_smiles", "error_message")
+        ),
+        custom_data=["molecule_id"],
+        color_discrete_map={"Valid": MOLECULE_STATUS_COLORS["green"], "Invalid": MOLECULE_STATUS_COLORS["red"]},
+        labels={
+            "molecule_position": "Molecule",
+            "validation_status": "Validation status",
+        },
+        title="SMILES validation by molecule",
+    )
+    event = st.plotly_chart(
+        figure,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_df, key=key, plot_event=event)
+
+
+def render_identity_view(frame: pd.DataFrame, *, key: str) -> str:
+    """Render one interactive identity point per molecule."""
+    plot_df = identity_molecule_dataframe(frame)
+    if plot_df.empty:
+        st.info("Chemical identity output is unavailable.")
+        return ""
+    figure = px.scatter(
+        plot_df,
+        x="molecule_position",
+        y="identity_confidence" if "identity_confidence" in plot_df.columns else "identity_status",
+        color="identity_status",
+        hover_name="molecule_id",
+        hover_data=available_columns(
+            plot_df,
+            ("exact_public_name", "iupac_name", "name_source", "identity_confidence"),
+        ),
+        custom_data=["molecule_id"],
+        color_discrete_map=category_color_map(plot_df, "identity_status"),
+        labels=display_labels(plot_df.columns),
+        title="Chemical identity evidence by molecule",
+    )
+    event = st.plotly_chart(
+        figure,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_df, key=key, plot_event=event)
+
+
+def render_public_evidence_view(
+    public_lookup: pd.DataFrame,
+    surechembl: pd.DataFrame,
+    molecule_ids: Iterable[str],
+    *,
+    key: str,
+) -> str:
+    """Render a molecule-by-database evidence grid and selector."""
+    evidence = public_evidence_molecule_dataframe(
+        public_lookup, surechembl, molecule_ids
+    )
+    if evidence.empty:
+        st.info("Public database evidence is unavailable.")
+        return ""
+    status_fields = [
+        "pubchem_status",
+        "chembl_status",
+        "surechembl_query_status",
+    ]
+    display_evidence = evidence[
+        ["molecule_id", *status_fields]
+    ].copy()
+    for column in status_fields:
+        display_evidence[column] = display_evidence[column].map(readable_status)
+    readable = display_dataframe(display_evidence)
+    status_columns = [
+        display_label("pubchem_status"),
+        display_label("chembl_status"),
+        display_label("surechembl_query_status"),
+    ]
+    styled = readable.style.map(
+        lambda value: (
+            f"background-color: {MOLECULE_STATUS_COLORS[molecule_status_color(value)]}; "
+            "color: white; font-weight: 700"
+        ),
+        subset=status_columns,
+    )
+    st.markdown("#### Molecule-level public evidence")
+    st.dataframe(styled, width="stretch", hide_index=True)
+    plot_evidence = evidence.copy()
+    for column in status_fields:
+        plot_evidence[column] = plot_evidence[column].map(readable_status)
+    figure = px.scatter(
+        plot_evidence,
+        x="molecule_position",
+        y="evidence_status",
+        color="evidence_status",
+        hover_name="molecule_id",
+        hover_data=[
+            "pubchem_status",
+            "chembl_status",
+            "surechembl_query_status",
+        ],
+        custom_data=["molecule_id"],
+        color_discrete_map={
+            "Available": MOLECULE_STATUS_COLORS["green"],
+            "Partial": MOLECULE_STATUS_COLORS["yellow"],
+            "Missing": MOLECULE_STATUS_COLORS["red"],
+            "Not run": MOLECULE_STATUS_COLORS["gray"],
+        },
+        labels={
+            **display_labels(plot_evidence.columns),
+            "molecule_position": "Molecule",
+            "evidence_status": "Public evidence status",
+        },
+        title="Public database evidence by molecule",
+    )
+    event = st.plotly_chart(
+        figure,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_evidence, key=key, plot_event=event)
+
+
+def render_chemical_space(
+    loaded: LoadedOutputs, prioritization: pd.DataFrame, *, key: str = "chemical_space"
+) -> str:
+    """Render chemical space before or after final prioritization exists."""
+    st.caption(CHEMICAL_SPACE_EXPLANATION)
+    coords = loaded.tables["visualization"]
+    if coords.empty:
+        st.info("visualization_coordinates.csv was not found; chemical-space plot is unavailable.")
+        return ""
+    plot_df = chemical_space_dataframe(coords, prioritization)
+    color_column = next(
+        (
+            column
+            for column in ("druglikeness_category", "cluster_id", "chemberta_status")
+            if column in plot_df.columns
+        ),
+        "",
+    )
+    if color_column == "cluster_id":
+        plot_df[color_column] = plot_df[color_column].fillna("not assigned").astype(str)
+    hover = [
+        column
+        for column in (
+            "molecule_id",
+            "best_reference_name",
+            "tanimoto_similarity",
+            "cluster_id",
+            "druglikeness_category",
+            "novelty_flag",
+        )
+        if column in plot_df.columns
+    ]
+    fig = px.scatter(
+        plot_df,
+        x="x",
+        y="y",
+        color=color_column or None,
+        hover_name="molecule_id",
+        hover_data=hover,
+        custom_data=["molecule_id"],
+        labels=display_labels(plot_df.columns),
+        title="ChemBERTa / UMAP Chemical Space",
+        color_discrete_map=(
+            None
+            if color_column == "cluster_id"
+            else category_color_map(plot_df, color_column)
+            if color_column
+            else None
+        ),
+    )
+    event = st.plotly_chart(
+        fig,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_df, key=key, plot_event=event)
+
+
+def render_score_similarity(
+    prioritization: pd.DataFrame, *, key: str = "score_similarity"
+) -> str:
+    """Render score versus local reference similarity."""
+    st.caption(SCORE_SIMILARITY_EXPLANATION)
+    if prioritization.empty or "tanimoto_similarity" not in prioritization.columns:
+        st.info("Reference similarity data is unavailable.")
+        return ""
+    plot_df = final_priority_molecule_dataframe(prioritization)
+    active_score = score_column(plot_df)
+    fig = px.scatter(
+        plot_df,
+        x="tanimoto_similarity",
+        y=active_score,
+        hover_name="molecule_id" if "molecule_id" in plot_df.columns else None,
+        color="design_category",
+        hover_data=available_columns(
+            plot_df,
+            (
+                "best_reference_name",
+                "pubchem_status",
+                "chembl_status",
+                "surechembl_query_status",
+                "chemberta_status",
+                "nlp_status",
+            ),
+        ),
+        custom_data=["molecule_id"],
+        labels=display_labels(plot_df.columns),
+        title="Score vs RDKit Reference Similarity",
+        color_discrete_map=category_color_map(plot_df, "design_category"),
+    )
+    event = st.plotly_chart(
+        fig,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_df, key=key, plot_event=event)
+
+
+def render_descriptor_histograms(descriptors: pd.DataFrame) -> None:
+    """Render descriptor distribution histograms."""
+    st.caption(PROPERTY_DISTRIBUTIONS_EXPLANATION)
+    if descriptors.empty:
+        st.info("descriptors.csv was not found; property distributions are unavailable.")
+        return
+    cols = st.columns(2)
+    for index, column in enumerate(DESCRIPTOR_COLUMNS):
+        if column not in descriptors.columns:
+            continue
+        plot_df = coerce_numeric(descriptors, [column])
+        readable = display_label(column)
+        fig = px.histogram(
+            plot_df,
+            x=column,
+            labels=display_labels(plot_df.columns),
+            title=f"{readable} distribution",
+        )
+        cols[index % 2].plotly_chart(fig, width="stretch")
+
+
+def druglikeness_counts(descriptors: pd.DataFrame) -> dict[str, int]:
+    """Return stable counts for all drug-likeness categories."""
+    values = descriptors.get(
+        "druglikeness_category", pd.Series(dtype="string")
+    )
+    counts = values.fillna("invalid").astype(str).value_counts()
+    return {
+        category: int(counts.get(category, 0))
+        for category in ("favorable", "borderline", "unfavorable", "invalid")
+    }
+
+
+def readable_druglikeness_status(value: object) -> str:
+    """Return a readable icon and label for a property status."""
+    status = str(value or "").strip().lower() or "invalid"
+    return DRUGLIKENESS_ICONS.get(status, status)
+
+
+def druglikeness_status_matrix(descriptors: pd.DataFrame) -> pd.DataFrame:
+    """Build a molecule-by-property matrix with readable status labels."""
+    columns = {
+        "mw_status": "MW",
+        "logp_status": "LogP",
+        "tpsa_status": "TPSA",
+        "qed_status": "QED",
+        "lipinski_status": "Lipinski",
+    }
+    if descriptors.empty or "molecule_id" not in descriptors.columns:
+        return pd.DataFrame(columns=["Molecule ID", *columns.values()])
+    available = [column for column in columns if column in descriptors.columns]
+    matrix = descriptors[["molecule_id", *available]].copy()
+    matrix = matrix.rename(
+        columns={"molecule_id": "Molecule ID", **columns}
+    )
+    for column in columns.values():
+        if column in matrix.columns:
+            matrix[column] = matrix[column].map(readable_druglikeness_status)
+    return matrix
+
+
+def color_druglikeness_category(value: object) -> str:
+    """Return CSS styling for a drug-likeness category cell."""
+    color = DRUGLIKENESS_COLORS.get(str(value or "").strip().lower())
+    return f"color: {color}; font-weight: 700" if color else ""
+
+
+def render_druglikeness_views(
+    descriptors: pd.DataFrame, *, key: str = "rdkit_properties"
+) -> str:
+    """Render molecule-level drug-likeness table, scatter, and selection."""
+    st.info(DRUGLIKENESS_EXPLANATION)
+    if descriptors.empty:
+        st.info("descriptors.csv was not found; drug-likeness views are unavailable.")
+        return ""
+
+    plot = rdkit_molecule_dataframe(descriptors)
+    table_columns = available_columns(
+        plot,
+        (
+            "molecule_id",
+            "molecular_weight",
+            "logp",
+            "tpsa",
+            "hbd",
+            "hba",
+            "rotatable_bonds",
+            "qed",
+            "lipinski_pass",
+            "druglikeness_score",
+            "druglikeness_category",
+        ),
+    )
+    st.markdown("#### Molecule-level drug-likeness")
+    table = display_dataframe(plot[table_columns].copy())
+    category_label = display_label("druglikeness_category")
+    styled_table = (
+        table.style.map(
+            color_druglikeness_category,
+            subset=[category_label],
+        )
+        if category_label in table.columns
+        else table
+    )
+    st.dataframe(styled_table, width="stretch", hide_index=True)
+
+    valid_plot = plot.dropna(subset=["logp", "qed"])
+    event = None
+    if not valid_plot.empty:
+        figure = px.scatter(
+            valid_plot,
+            x="logp",
+            y="qed",
+            color="druglikeness_category",
+            hover_name="molecule_id",
+            hover_data=available_columns(
+                valid_plot,
+                (
+                    "molecular_weight",
+                    "tpsa",
+                    "hbd",
+                    "hba",
+                    "rotatable_bonds",
+                    "lipinski_pass",
+                    "druglikeness_score",
+                ),
+            ),
+            custom_data=["molecule_id"],
+            category_orders={
+                "druglikeness_category": [
+                    "favorable",
+                    "borderline",
+                    "unfavorable",
+                    "invalid",
+                ]
+            },
+            color_discrete_map=DRUGLIKENESS_COLORS,
+            labels=display_labels(valid_plot.columns),
+            title="LogP vs QED by drug-likeness category",
+        )
+        event = st.plotly_chart(
+            figure,
+            width="stretch",
+            key=f"{key}_plot",
+            on_select="rerun",
+            selection_mode="points",
+        )
+    return render_molecule_selector(plot, key=key, plot_event=event)
+
+
+def render_text_evidence_view(
+    text_nlp: pd.DataFrame,
+    molecule_ids: Iterable[str],
+    *,
+    key: str,
+) -> str:
+    """Render one text-evidence point per molecule and a readable summary table."""
+    plot_df = text_evidence_molecule_dataframe(text_nlp, molecule_ids)
+    if plot_df.empty:
+        st.info("Text evidence is unavailable.")
+        return ""
+    plot_df["display_evidence_score"] = pd.to_numeric(
+        plot_df["max_relevance_score"], errors="coerce"
+    ).fillna(0.0)
+    table_columns = [
+        "molecule_id",
+        "nlp_status",
+        "max_relevance_score",
+        "top_evidence_title",
+        "evidence_matches",
+    ]
+    st.dataframe(
+        display_dataframe(plot_df[table_columns]),
+        width="stretch",
+        hide_index=True,
+    )
+    figure = px.scatter(
+        plot_df,
+        x="molecule_position",
+        y="display_evidence_score",
+        color="nlp_status",
+        size="evidence_matches",
+        hover_name="molecule_id",
+        hover_data=["top_evidence_title", "evidence_matches"],
+        custom_data=["molecule_id"],
+        color_discrete_map=category_color_map(plot_df, "nlp_status"),
+        labels={
+            **display_labels(plot_df.columns),
+            "display_evidence_score": "Text-evidence score",
+        },
+        title="Text evidence by molecule",
+    )
+    event = st.plotly_chart(
+        figure,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_df, key=key, plot_event=event)
+
+
+def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
+    """Render the shared cross-workflow detail panel for one molecule."""
+    prioritization = loaded.tables["prioritization"]
+    descriptors = loaded.tables["descriptors"]
+    if not molecule_id:
+        return
+    st.subheader(f"Molecule detail: {molecule_id}")
+    image_path = loaded.images_dir / f"{molecule_id}.png"
+    if image_path.exists():
+        st.image(str(image_path), caption=f"2D structure: {molecule_id}", width=360)
+    else:
+        st.info(molecule_image_message(image_path))
+
+    standardized = loaded.tables["standardized"]
+    if not standardized.empty and "molecule_id" in standardized.columns:
+        structure_row = standardized[
+            standardized["molecule_id"].astype(str) == molecule_id
+        ]
+        if not structure_row.empty:
+            st.markdown("#### Structure and validation")
+            columns = available_columns(
+                structure_row,
+                (
+                    "molecule_id",
+                    "smiles",
+                    "canonical_smiles",
+                    "valid_smiles",
+                    "error_message",
+                ),
+            )
+            st.table(display_dataframe(structure_row[columns]).T)
+
+    row = (
+        prioritization[prioritization["molecule_id"].astype(str) == molecule_id]
+        if not prioritization.empty and "molecule_id" in prioritization.columns
+        else pd.DataFrame()
+    )
+    if not row.empty:
+        selected = row.iloc[0].to_dict()
+        st.markdown("#### Evidence completeness")
+        st.table(evidence_completeness_rows(selected))
+
+    if not descriptors.empty and "molecule_id" in descriptors.columns:
+        descriptor_row = descriptors[
+            descriptors["molecule_id"].astype(str) == molecule_id
+        ]
+        if not descriptor_row.empty:
+            st.markdown("#### RDKit drug-likeness")
+            columns = available_columns(
+                descriptor_row,
+                (
+                    "molecular_weight",
+                    "logp",
+                    "tpsa",
+                    "hbd",
+                    "hba",
+                    "rotatable_bonds",
+                    "qed",
+                    "lipinski_pass",
+                    "druglikeness_category",
+                    "druglikeness_flags",
+                ),
+            )
+            st.table(
+                display_dataframe(descriptor_row[columns])
+                .T.rename(columns={descriptor_row.index[0]: "Value"})
+            )
+
+    identities = loaded.tables["chemical_identity"]
+    if not identities.empty and "molecule_id" in identities.columns:
+        identity_row = identities[
+            identities["molecule_id"].astype(str) == molecule_id
+        ]
+        if not identity_row.empty:
+            st.markdown("#### Chemical identity")
+            columns = [
+                column
+                for column in (
+                    "identity_status",
+                    "exact_public_name",
+                    "preferred_name",
+                    "iupac_name",
+                    "synonyms",
+                    "inchikey",
+                    "pubchem_cid",
+                    "chembl_id",
+                    "name_source",
+                    "identity_confidence",
+                    "lookup_status",
+                )
+                if column in identity_row.columns
+            ]
+            st.table(
+                display_dataframe(identity_row[columns])
+                .T.rename(columns={identity_row.index[0]: "Value"})
+            )
+
+    public_lookup = loaded.tables["public_lookup"]
+    public_rows = (
+        public_lookup[public_lookup["molecule_id"].astype(str) == molecule_id]
+        if not public_lookup.empty and "molecule_id" in public_lookup.columns
+        else pd.DataFrame()
+    )
+    surechembl = loaded.tables["surechembl"]
+    sure_rows = (
+        surechembl[surechembl["molecule_id"].astype(str) == molecule_id]
+        if not surechembl.empty and "molecule_id" in surechembl.columns
+        else pd.DataFrame()
+    )
+    if not public_rows.empty or not sure_rows.empty:
+        st.markdown("#### Public database evidence")
+        if not public_rows.empty:
+            columns = available_columns(
+                public_rows,
+                (
+                    "source_database",
+                    "lookup_status",
+                    "match_type",
+                    "public_id",
+                    "public_name",
+                    "similarity",
+                    "evidence_note",
+                    "error_message",
+                ),
+            )
+            st.dataframe(
+                display_dataframe(public_rows[columns]),
+                width="stretch",
+                hide_index=True,
+            )
+        if not sure_rows.empty:
+            columns = available_columns(
+                sure_rows,
+                (
+                    "lookup_status",
+                    "surechembl_id",
+                    "compound_name",
+                    "tanimoto_similarity",
+                    "evidence_note",
+                    "error_message",
+                ),
+            )
+            st.caption("SureChEMBL")
+            st.dataframe(
+                display_dataframe(sure_rows[columns]),
+                width="stretch",
+                hide_index=True,
+            )
+
+    visualization = loaded.tables["visualization"]
+    visualization_row = (
+        visualization[visualization["molecule_id"].astype(str) == molecule_id]
+        if not visualization.empty and "molecule_id" in visualization.columns
+        else pd.DataFrame()
+    )
+    if not visualization_row.empty:
+        st.markdown("#### ChemBERTa context")
+        columns = available_columns(
+            visualization_row,
+            (
+                "cluster_id",
+                "coordinate_method",
+                "best_reference_name",
+                "tanimoto_similarity",
+                "chemberta_status",
+            ),
+        )
+        st.table(
+            display_dataframe(visualization_row[columns])
+            .T.rename(columns={visualization_row.index[0]: "Value"})
+        )
+
+    text_nlp = loaded.tables["text_nlp"]
+    text_rows = (
+        text_nlp[text_nlp["molecule_id"].astype(str) == molecule_id].copy()
+        if not text_nlp.empty and "molecule_id" in text_nlp.columns
+        else pd.DataFrame()
+    )
+    if not text_rows.empty:
+        st.markdown("#### Text evidence")
+        ranking_column = next(
+            (
+                column
+                for column in ("max_relevance_score", "similarity_score")
+                if column in text_rows.columns
+            ),
+            "",
+        )
+        if ranking_column:
+            text_rows[ranking_column] = pd.to_numeric(
+                text_rows[ranking_column], errors="coerce"
+            )
+            text_rows = text_rows.sort_values(ranking_column, ascending=False)
+        columns = available_columns(
+            text_rows,
+            (
+                "nlp_status",
+                "title",
+                "source_type",
+                "max_relevance_score",
+                "similarity_score",
+                "nlp_relevance_category",
+                "nlp_notes",
+            ),
+        )
+        st.dataframe(
+            display_dataframe(text_rows[columns].head(5)),
+            width="stretch",
+            hide_index=True,
+        )
+
+    if not row.empty:
+        st.markdown("#### Final design prioritization")
+        st.write(
+            "The final view combines structure validity, public evidence, RDKit "
+            "properties, reference similarity, ChemBERTa availability, and text "
+            "evidence while preserving unavailable-stage statuses."
+        )
+        st.table(molecule_detail_rows(row.iloc[0].to_dict(), score_column(prioritization)))
+
+    report_path = existing_report_path(loaded, molecule_id)
+    report_status, report_message = report_status_message(report_path)
+    if report_status == "success":
+        st.success(report_message)
+    else:
+        st.info(report_message)
+
+
+def render_new_analysis_form() -> Path | None:
+    """Render upload-and-run form and return new output path after success."""
+    defaults = default_workflow_options()
+    st.header("Input Data / Run New Analysis")
+    st.info(ONLINE_LOOKUP_NOTE)
+    st.caption("Uploads and generated results are saved locally under app_runs.")
+    with st.form("run_new_analysis"):
+        run_name = st.text_input("Run name", value="")
+        generated_upload = st.file_uploader(
+            "Generated SMILES CSV (required: molecule_id, smiles)",
+            type=["csv"],
+        )
+        reference_upload = st.file_uploader(
+            "Reference CSV (optional; smiles column required if uploaded)",
+            type=["csv"],
+        )
+        text_upload = st.file_uploader(
+            "Text evidence CSV (optional)",
+            type=["csv"],
+        )
+
+        st.markdown("#### Workflow options")
+        col1, col2, col3 = st.columns(3)
+        online_lookup = col1.checkbox(
+            "Run PubChem/ChEMBL lookup",
+            value=bool(defaults["online_lookup"]),
+        )
+        online_surechembl = col2.checkbox(
+            "Run SureChEMBL structure evidence search",
+            value=bool(defaults["online_surechembl"]),
+        )
+        use_chemberta = col3.checkbox(
+            "Run ChemBERTa embeddings",
+            value=bool(defaults["use_chemberta"]),
+        )
+        col4, col5, col6 = st.columns(3)
+        generate_reports = col4.checkbox(
+            "Generate top-N reports",
+            value=bool(defaults["generate_reports"]),
+        )
+        report_only_fully_analyzed = col5.checkbox(
+            "Report only fully analyzed molecules",
+            value=bool(defaults["report_only_fully_analyzed"]),
+        )
+        max_molecules_value = col6.number_input(
+            "Maximum molecules",
+            min_value=0,
+            max_value=100000,
+            value=int(defaults["max_molecules"]),
+            help="Use 0 to analyze all molecules.",
+        )
+        report_top_n = st.number_input(
+            "Number of top reports",
+            min_value=1,
+            max_value=100,
+            value=int(defaults["report_top_n"]),
+        )
+        submitted = st.form_submit_button("Run analysis")
+
+    if not submitted:
+        return None
+    if generated_upload is None:
+        st.error("Please upload a generated SMILES CSV with molecule_id and smiles columns.")
+        return None
+
+    try:
+        paths = prepare_app_run_inputs(
+            run_name=run_name,
+            generated_upload=generated_upload,
+            reference_upload=reference_upload,
+            text_upload=text_upload,
+        )
+        output_path = run_uploaded_analysis(
+            paths,
+            online_lookup=online_lookup,
+            online_surechembl=online_surechembl,
+            use_chemberta=use_chemberta,
+            report_top_n=int(report_top_n) if generate_reports else None,
+            report_only_fully_analyzed=report_only_fully_analyzed,
+            max_molecules=(
+                int(max_molecules_value) if int(max_molecules_value) > 0 else None
+            ),
+        )
+    except Exception as exc:
+        st.error(f"Analysis failed: {exc}")
+        return None
+
+    st.success(f"Analysis complete: {output_path.parent}")
+    st.session_state["active_output_dir"] = str(output_path.parent)
+    st.session_state["workflow_step"] = 1
+    st.session_state["completed_workflow_steps"] = list(range(1, 9))
+    st.session_state["workflow_mode"] = "completed_run"
+    return output_path.parent
+
+
+def public_demo_input_paths() -> tuple[Path, Path, Path]:
+    """Return the public-safe example files shown on the welcome workflow."""
+    return DEMO_INPUT, DEMO_REFERENCES, DEMO_TEXT_EVIDENCE
+
+
+def create_public_demo_workflow(
+    *,
+    timestamp: datetime | None = None,
+) -> PipelinePaths:
+    """Create a fresh public-demo workspace without running calculations."""
+    active_time = timestamp or datetime.now()
+    run_dir = APP_RUNS_DIR / active_time.strftime("public_demo_%Y%m%d_%H%M%S")
+    output_dir = run_dir / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return build_paths(
+        input_path=DEMO_INPUT,
+        references_path=DEMO_REFERENCES,
+        text_evidence_path=DEMO_TEXT_EVIDENCE,
+        output_dir=output_dir,
+    )
+
+
+def demo_paths_from_output(output_dir: Path) -> PipelinePaths:
+    """Rebuild public-demo pipeline paths for a tutorial workspace."""
+    return build_paths(
+        input_path=DEMO_INPUT,
+        references_path=DEMO_REFERENCES,
+        text_evidence_path=DEMO_TEXT_EVIDENCE,
+        output_dir=output_dir,
+    )
+
+
+def run_public_demo_step(
+    step_number: int,
+    paths: PipelinePaths,
+) -> None:
+    """Run exactly one public-demo workflow stage."""
+    identity_path = paths.chemical_identity or paths.prioritized.parent / "chemical_identity.csv"
+    context_path = paths.compound_context or paths.prioritized.parent / "compound_context.csv"
+
+    if step_number == 1:
+        standardize_csv(paths.generated_smiles, paths.standardized)
+    elif step_number == 2:
+        chemical_identity_csv(
+            paths.standardized,
+            identity_path,
+            online=True,
+            max_molecules=10,
+        )
+    elif step_number == 3:
+        public_lookup_csv(
+            paths.standardized,
+            paths.standardized,
+            paths.public_lookup,
+            offline=False,
+            max_molecules=10,
+        )
+        surechembl_lookup_csv(
+            paths.standardized,
+            None,
+            paths.surechembl_lookup,
+            5,
+            online_surechembl=True,
+            max_molecules=10,
+        )
+    elif step_number == 4:
+        descriptor_csv(paths.standardized, paths.descriptors)
+        similarity_csv(paths.descriptors, paths.references, paths.similarity)
+        top_hits_csv(
+            paths.descriptors,
+            paths.references,
+            paths.similarity_top_hits,
+            5,
+        )
+    elif step_number == 5:
+        chemberta_embeddings_csv(
+            paths.standardized,
+            paths.chemberta_embeddings,
+        )
+        visualization_coordinates_csv(
+            paths.chemberta_embeddings,
+            None,
+            paths.visualization_coordinates,
+        )
+    elif step_number == 6:
+        compound_context_csv(
+            paths.descriptors,
+            paths.public_lookup,
+            paths.similarity_top_hits,
+            paths.references,
+            context_path,
+            identity_path=identity_path,
+        )
+        text_nlp_csv(
+            paths.text_evidence,
+            paths.text_nlp,
+            context_path=context_path,
+            molecule_path=paths.generated_smiles,
+            descriptor_path=paths.descriptors,
+            identity_path=identity_path,
+        )
+    elif step_number == 7:
+        scoring_csv(
+            paths.descriptors,
+            paths.similarity,
+            paths.prioritized,
+            nlp_path=paths.text_nlp,
+            public_lookup_path=paths.public_lookup,
+            surechembl_path=paths.surechembl_lookup,
+            identity_path=identity_path,
+            context_path=context_path,
+            chemberta_path=paths.chemberta_embeddings,
+            nlp_was_run=csv_has_data_rows(paths.text_evidence),
+        )
+        merge_chemberta_into_prioritized(
+            paths.prioritized,
+            paths.chemberta_embeddings,
+        )
+        visualization_coordinates_csv(
+            paths.chemberta_embeddings,
+            paths.prioritized,
+            paths.visualization_coordinates,
+        )
+    elif step_number == 8:
+        loaded = load_output_directory(paths.prioritized.parent)
+        prioritization = loaded.tables["prioritization"]
+        score = score_column(prioritization)
+        ranked = prioritization.sort_values(score, ascending=False).head(5)
+        for molecule_id in ranked["molecule_id"].astype(str):
+            generate_report(loaded, molecule_id)
+    else:
+        raise ValueError(f"Unsupported workflow step: {step_number}")
+
+
+def render_public_demo_choice() -> Path | None:
+    """Start a fresh tutorial without running any pipeline stage."""
+    st.header("Run public demo example")
+    st.write(
+        "Start an interactive walkthrough. Each step explains the calculation "
+        "before you run it, then shows what that step produced."
+    )
+    st.markdown("**Public example files**")
+    for path in public_demo_input_paths():
+        st.code(str(path), language=None)
+    if not st.button("Run public demo", type="primary"):
+        return None
+    try:
+        paths = create_public_demo_workflow()
+    except Exception as exc:
+        st.error(f"Could not start the public demo: {exc}")
+        return None
+    output_dir = paths.prioritized.parent
+    st.session_state["active_output_dir"] = str(output_dir)
+    st.session_state["workflow_step"] = 1
+    st.session_state["completed_workflow_steps"] = []
+    st.session_state["workflow_mode"] = "public_demo"
+    st.success("Public demo tutorial ready. Step 1 has not run yet.")
+    return output_dir
+
+
+def render_load_existing_choice() -> Path | None:
+    """Activate an existing result folder only after the user clicks load."""
+    st.header("Load existing results")
+    st.info(LOAD_EXISTING_NOTE)
+    output_dir_text = st.text_input(
+        "Output directory",
+        value="",
+        placeholder="outputs/my-analysis",
+    )
+    if not st.button("Load results", type="primary"):
+        return None
+    if not output_dir_text.strip():
+        st.error("Enter an output directory before loading results.")
+        return None
+    output_dir = Path(output_dir_text.strip())
+    if not (output_dir / OUTPUT_FILES["prioritization"]).is_file():
+        st.error(
+            "No prioritization_results.csv was found in the selected output directory."
+        )
+        return None
+    st.session_state["active_output_dir"] = str(output_dir)
+    st.session_state["workflow_step"] = 1
+    st.session_state["completed_workflow_steps"] = list(range(1, 9))
+    st.session_state["workflow_mode"] = "existing_results"
+    return output_dir
+
+
+def active_output_directory() -> Path | None:
+    """Return the explicitly activated result folder, if any."""
+    value = str(st.session_state.get("active_output_dir", "")).strip()
+    return Path(value) if value else None
+
+
+def available_columns(
+    frame: pd.DataFrame, columns: Iterable[str]
+) -> list[str]:
+    """Return requested columns that exist in a result table."""
+    return [column for column in columns if column in frame.columns]
+
+
+def show_step_table(
+    frame: pd.DataFrame,
+    columns: Iterable[str],
+    *,
+    rows: int = 8,
+) -> None:
+    """Show a compact, readable result table for a workflow stage."""
+    selected = available_columns(frame, columns)
+    if frame.empty or not selected:
+        st.info("This output is not available for the selected run.")
+        return
+    st.dataframe(
+        display_dataframe(frame[selected].head(rows)),
+        width="stretch",
+        hide_index=True,
+    )
+
+
+def status_bar_chart(
+    frame: pd.DataFrame, column: str, title: str
+) -> None:
+    """Render a count chart for a categorical result column."""
+    if frame.empty or column not in frame.columns:
+        return
+    counts = (
+        frame[column]
+        .fillna("not available")
+        .astype(str)
+        .value_counts()
+        .rename_axis(column)
+        .reset_index(name="count")
+    )
+    figure = px.bar(
+        counts,
+        x=column,
+        y="count",
+        title=title,
+        labels={column: display_label(column), "count": "Molecules"},
+    )
+    st.plotly_chart(figure, width="stretch")
+
+
+def artifact_display_name(item: Path | str) -> str:
+    """Return a public-safe workflow artifact label without local directories."""
+    if isinstance(item, Path):
+        return item.name
+    text = str(item)
+    if "/" in text or "\\" in text:
+        return Path(text).name
+    return text
+
+
+def render_step_header(
+    step_number: int,
+    description: str,
+    inputs: Iterable[Path | str],
+    outputs: Iterable[Path],
+) -> None:
+    """Render shared explanation and artifact details for one workflow step."""
+    st.header(WORKFLOW_STEP_NAMES[step_number - 1])
+    st.markdown("#### What this step calculates")
+    st.write(description)
+    st.markdown("#### Why we run it")
+    st.write(WORKFLOW_STEP_WHY[step_number - 1])
+    st.markdown("#### What you will get")
+    st.write(WORKFLOW_STEP_GET[step_number - 1])
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Input used**")
+        for item in inputs:
+            st.code(artifact_display_name(item), language=None)
+    with right:
+        st.markdown("**Output file created**")
+        for path in outputs:
+            st.code(artifact_display_name(path), language=None)
+
+
+def render_workflow_step(
+    loaded: LoadedOutputs,
+    step_number: int,
+    *,
+    results_available: bool = True,
+) -> None:
+    """Render one educational workflow stage from completed local outputs."""
+    output_dir = loaded.output_dir
+    prioritization = loaded.tables["prioritization"]
+
+    if step_number == 1:
+        frame = loaded.tables["standardized"]
+        render_step_header(
+            1,
+            "Checks whether each SMILES can be parsed, creates a canonical "
+            "representation, and calculates an InChIKey for valid structures.",
+            [DEMO_INPUT if "public_demo_" in str(output_dir) else "uploaded SMILES CSV"],
+            [loaded.paths["standardized"]],
+        )
+        if not results_available:
+            return
+        selected = render_validation_view(frame, key="workflow_step_1")
+        render_detail_panel(loaded, selected)
+    elif step_number == 2:
+        frame = loaded.tables["chemical_identity"]
+        render_step_header(
+            2,
+            "Uses standardized structures to find exact public chemical names "
+            "when supported and clearly labels unmatched structures.",
+            [loaded.paths["standardized"]],
+            [loaded.paths["chemical_identity"]],
+        )
+        if not results_available:
+            return
+        selected = render_identity_view(frame, key="workflow_step_2")
+        render_detail_panel(loaded, selected)
+    elif step_number == 3:
+        frame = loaded.tables["public_lookup"]
+        render_step_header(
+            3,
+            "Checks public compound databases for exact or structurally related "
+            "records and records match, no-match, and query status separately.",
+            [loaded.paths["standardized"], loaded.paths["chemical_identity"]],
+            [loaded.paths["public_lookup"], loaded.paths["surechembl"]],
+        )
+        if not results_available:
+            return
+        molecule_ids = (
+            loaded.tables["standardized"]["molecule_id"].astype(str).tolist()
+            if not loaded.tables["standardized"].empty
+            and "molecule_id" in loaded.tables["standardized"].columns
+            else ()
+        )
+        selected = render_public_evidence_view(
+            frame,
+            loaded.tables["surechembl"],
+            molecule_ids,
+            key="workflow_step_3",
+        )
+        render_detail_panel(loaded, selected)
+    elif step_number == 4:
+        frame = loaded.tables["descriptors"]
+        render_step_header(
+            4,
+            "Calculates interpretable RDKit properties and classifies each "
+            "molecule as favorable, borderline, unfavorable, or invalid.",
+            [loaded.paths["standardized"]],
+            [loaded.paths["descriptors"]],
+        )
+        if not results_available:
+            return
+        selected = render_druglikeness_views(frame, key="workflow_step_4")
+        render_detail_panel(loaded, selected)
+    elif step_number == 5:
+        frame = loaded.tables["visualization"]
+        render_step_header(
+            5,
+            "Places molecules in a learned chemical-space representation so "
+            "clusters, close neighbors, and outliers can be explored visually.",
+            [loaded.paths["standardized"]],
+            [
+                loaded.paths["chemberta_embeddings"],
+                loaded.paths["visualization"],
+            ],
+        )
+        if not results_available:
+            return
+        selected = render_chemical_space(
+            loaded, prioritization, key="workflow_step_5"
+        )
+        render_detail_panel(loaded, selected)
+    elif step_number == 6:
+        context = loaded.tables["compound_context"]
+        nlp = loaded.tables["text_nlp"]
+        render_step_header(
+            6,
+            "Connects public-safe text evidence with grounded molecule identity "
+            "and similarity context while keeping reference-derived annotations explicit.",
+            [
+                DEMO_TEXT_EVIDENCE
+                if "public_demo_" in str(output_dir)
+                else "uploaded text evidence CSV",
+                loaded.paths["chemical_identity"],
+                loaded.paths["public_lookup"],
+            ],
+            [loaded.paths["text_nlp"], loaded.paths["compound_context"]],
+        )
+        if not results_available:
+            return
+        molecule_ids = (
+            context["molecule_id"].astype(str).tolist()
+            if not context.empty and "molecule_id" in context.columns
+            else ()
+        )
+        selected = render_text_evidence_view(
+            nlp, molecule_ids, key="workflow_step_6"
+        )
+        render_detail_panel(loaded, selected)
+    elif step_number == 7:
+        render_step_header(
+            7,
+            FINAL_RANKING_EXPLANATION,
+            [
+                loaded.paths["chemical_identity"],
+                loaded.paths["public_lookup"],
+                loaded.paths["descriptors"],
+                loaded.paths["visualization"],
+                loaded.paths["text_nlp"],
+                loaded.paths["compound_context"],
+            ],
+            [loaded.paths["prioritization"]],
+        )
+        if not results_available:
+            return
+        st.info(FINAL_RANKING_EXPLANATION)
+        selected = render_score_similarity(
+            prioritization, key="workflow_step_7"
+        )
+        render_detail_panel(loaded, selected)
+    else:
+        render_step_header(
+            8,
+            "Creates molecule-level Markdown reports that bring the available "
+            "identity, properties, public evidence, context, and ranking into one view.",
+            [loaded.paths["prioritization"], loaded.paths["compound_context"]],
+            [loaded.reports_dir],
+        )
+        if not results_available:
+            return
+        reports = sorted(loaded.reports_dir.glob("compound_intelligence_report_*.md"))
+        report_frame = pd.DataFrame(
+            {
+                "report": [path.name for path in reports],
+                "location": [str(path) for path in reports],
+            }
+        )
+        show_step_table(report_frame, ("report", "location"), rows=20)
+        if reports:
+            figure = px.bar(
+                pd.DataFrame({"artifact": ["Markdown reports"], "count": [len(reports)]}),
+                x="artifact",
+                y="count",
+                title="Generated report artifacts",
+                labels={"artifact": "Artifact", "count": "Files"},
+            )
+            st.plotly_chart(figure, width="stretch")
+        else:
+            st.info("No reports were generated for this run.")
+
+
+def render_step_workflow(output_dir: Path) -> None:
+    """Explain, run, and reveal one workflow stage at a time."""
+    loaded = load_output_directory(output_dir)
+    current = int(st.session_state.get("workflow_step", 1))
+    current = max(1, min(current, len(WORKFLOW_STEP_NAMES)))
+    completed = {
+        int(value)
+        for value in st.session_state.get("completed_workflow_steps", [])
+    }
+    results_available = current in completed
+    workflow_mode = st.session_state.get("workflow_mode", "")
+
+    st.progress(current / len(WORKFLOW_STEP_NAMES))
+    st.caption(f"Workflow progress: {current} of {len(WORKFLOW_STEP_NAMES)}")
+    render_workflow_step(
+        loaded,
+        current,
+        results_available=results_available,
+    )
+
+    if not results_available:
+        if workflow_mode != "public_demo":
+            st.warning("This workflow step has not been run for the selected output.")
+            return
+        st.info(
+            "No calculation has run for this step yet. Review the explanation "
+            "above, then run the public example when you are ready."
+        )
+        if st.button(
+            f"Run Step {current} on public example",
+            type="primary",
+            key=f"run_demo_step_{current}",
+        ):
+            try:
+                with st.spinner(f"Running {WORKFLOW_STEP_NAMES[current - 1]}..."):
+                    run_public_demo_step(
+                        current,
+                        demo_paths_from_output(output_dir),
+                    )
+            except Exception as exc:
+                st.error(f"Step {current} failed: {exc}")
+                return
+            completed.add(current)
+            st.session_state["completed_workflow_steps"] = sorted(completed)
+            st.rerun()
+        return
+
+    if current < len(WORKFLOW_STEP_NAMES):
+        if st.button(
+            f"Continue to {WORKFLOW_STEP_NAMES[current]}",
+            type="primary",
+            key=f"continue_step_{current}",
+        ):
+            st.session_state["workflow_step"] = current + 1
+            st.rerun()
+    else:
+        if st.button("Start over", key="start_over"):
+            st.session_state.pop("active_output_dir", None)
+            st.session_state.pop("workflow_step", None)
+            st.session_state.pop("completed_workflow_steps", None)
+            st.session_state.pop("workflow_mode", None)
+            st.rerun()
+
+
+def render_results_dashboard(output_dir: Path) -> None:
+    """Render plots, tables, molecule detail, and report controls."""
+    with st.sidebar:
+        st.caption(f"Loaded results: {output_dir}")
+        if st.button("Refresh / reload"):
+            st.cache_data.clear()
+        min_score = st.slider("Minimum score", 0.0, 1.0, 0.0, 0.01)
+        known_filter = st.selectbox("Known public match", ["All", "True", "False"])
+        top_n = st.number_input("Top-N report count", min_value=1, max_value=100, value=5)
+
+    loaded = load_output_directory(output_dir)
+    prioritization = loaded.tables["prioritization"]
+    if prioritization.empty:
+        st.error(f"No prioritization_results.csv found in {loaded.output_dir}")
+        return
+
+    status_filters: dict[str, list[str]] = {}
+    with st.sidebar:
+        for column in STATUS_COLUMNS:
+            if column not in prioritization.columns:
+                continue
+            options = sorted(prioritization[column].dropna().astype(str).unique())
+            status_filters[column] = st.multiselect(
+                display_label(column),
+                options=options,
+                default=options,
+            )
+
+    filtered = apply_filters(
+        prioritization,
+        min_score=min_score,
+        known_public_match=known_filter,
+        status_filters=status_filters,
+    )
+
+    st.header("Run Summary")
+    render_summary_cards(loaded)
+
+    st.header("Chemical Space")
+    render_chemical_space(loaded, prioritization)
+
+    st.header("Score vs Reference Similarity")
+    render_score_similarity(prioritization)
+
+    st.header("Property Distributions")
+    render_descriptor_histograms(loaded.tables["descriptors"])
+
+    st.header("Results Table")
+    results_table = display_dataframe(filtered[ordered_columns(filtered)])
+    st.dataframe(results_table, width="stretch")
+
+    molecule_ids = filtered["molecule_id"].astype(str).tolist() if "molecule_id" in filtered.columns else []
+    default_molecule = molecule_ids[0] if molecule_ids else ""
+    typed_id = st.text_input("Select or type Molecule ID", value=default_molecule)
+    if molecule_ids:
+        selected_id = st.selectbox(
+            "Choose from filtered molecules",
+            molecule_ids,
+            index=molecule_ids.index(typed_id) if typed_id in molecule_ids else 0,
+        )
+    else:
+        selected_id = typed_id
+    molecule_id = typed_id.strip() or selected_id
+
+    render_detail_panel(loaded, molecule_id)
+
+    st.header("Report Generation")
+    col1, col2 = st.columns(2)
+    if col1.button("Generate report for selected molecule", disabled=not bool(molecule_id)):
+        report_path = generate_report(loaded, molecule_id)
+        st.success(f"Wrote report: {report_path}")
+    if col2.button("Generate reports for top N filtered molecules"):
+        active_score = score_column(filtered)
+        top_rows = filtered.sort_values(active_score, ascending=False).head(int(top_n))
+        written = [generate_report(loaded, str(row["molecule_id"])) for _, row in top_rows.iterrows()]
+        st.success(f"Wrote {len(written)} report(s) to {loaded.reports_dir}")
+
+
+def run_app() -> None:
+    """Run the guided Streamlit workflow without loading old results."""
+    st.set_page_config(page_title=APP_TITLE, layout="wide")
+    st.title(APP_TITLE)
+    st.write(APP_SUBTITLE)
+    st.info(START_GUIDANCE)
+
+    output_dir = active_output_directory()
+    if output_dir is not None:
+        render_step_workflow(output_dir)
+        return
+
+    demo_tab, upload_tab = st.tabs(
+        ["Run public demo", "Upload my own SMILES"]
+    )
+    with demo_tab:
+        demo_output = render_public_demo_choice()
+    with upload_tab:
+        upload_output = render_new_analysis_form()
+
+    existing_output = None
+    with st.sidebar:
+        with st.expander("Load existing results"):
+            existing_output = render_load_existing_choice()
+
+    output_dir = demo_output or upload_output or existing_output
+    if output_dir is not None:
+        render_step_workflow(output_dir)
+
+
+if __name__ == "__main__":
+    run_app()
