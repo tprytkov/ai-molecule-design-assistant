@@ -112,6 +112,10 @@ DISPLAY_LABELS = {
     "rotatable_bonds": "Rotatable bonds",
     "identity_status": "Identity status",
     "identity_confidence": "Identity confidence",
+    "exact_public_name": "Exact public name",
+    "preferred_name": "Preferred name",
+    "iupac_name": "IUPAC name",
+    "synonyms": "Synonyms",
     "name_source": "Name source",
     "inchikey": "InChIKey",
     "inchi_key": "InChIKey",
@@ -944,6 +948,31 @@ def readable_status(value: object) -> str:
     return labels.get(status, status.replace("_", " ").strip().capitalize())
 
 
+def readable_ui_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with machine-readable status/category values humanized."""
+    result = frame.copy()
+    value_columns = {
+        column
+        for column in result.columns
+        if column.endswith("_status")
+        or column
+        in {
+            "identity_status",
+            "lookup_status",
+            "context_status",
+            "nlp_status",
+            "nlp_relevance_category",
+            "druglikeness_category",
+            "prioritization_category",
+            "prioritization_category_with_nlp",
+            "design_category",
+        }
+    }
+    for column in value_columns:
+        result[column] = result[column].map(readable_status)
+    return result
+
+
 def status_display(value: object) -> str:
     """Return a compact styled status label."""
     status = normalize_status(value)
@@ -1264,7 +1293,7 @@ def render_validation_view(frame: pd.DataFrame, *, key: str) -> str:
         ("molecule_id", "validation_status", "smiles", "canonical_smiles", "error_message"),
     )
     st.dataframe(
-        display_dataframe(plot_df[table_columns]),
+        display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
         width="stretch",
         hide_index=True,
     )
@@ -1301,19 +1330,34 @@ def render_identity_view(frame: pd.DataFrame, *, key: str) -> str:
     if plot_df.empty:
         st.info("Chemical identity output is unavailable.")
         return ""
+    plot_df["identity_display_status"] = plot_df["identity_status"].map(
+        readable_status
+    )
     figure = px.scatter(
         plot_df,
         x="molecule_position",
-        y="identity_confidence" if "identity_confidence" in plot_df.columns else "identity_status",
-        color="identity_status",
+        y=(
+            "identity_confidence"
+            if "identity_confidence" in plot_df.columns
+            else "identity_display_status"
+        ),
+        color="identity_display_status",
         hover_name="molecule_id",
         hover_data=available_columns(
             plot_df,
             ("exact_public_name", "iupac_name", "name_source", "identity_confidence"),
         ),
         custom_data=["molecule_id"],
-        color_discrete_map=category_color_map(plot_df, "identity_status"),
-        labels=display_labels(plot_df.columns),
+        color_discrete_map={
+            readable_status(value): color
+            for value, color in category_color_map(
+                plot_df, "identity_status"
+            ).items()
+        },
+        labels={
+            **display_labels(plot_df.columns),
+            "identity_display_status": "Identity status",
+        },
         title="Chemical identity evidence by molecule",
     )
     event = st.plotly_chart(
@@ -1472,13 +1516,25 @@ def render_score_similarity(
         st.info("Reference similarity data is unavailable.")
         return ""
     plot_df = final_priority_molecule_dataframe(prioritization)
+    plot_df["display_design_category"] = plot_df["design_category"].map(
+        readable_status
+    )
+    for column in (
+        "pubchem_status",
+        "chembl_status",
+        "surechembl_query_status",
+        "chemberta_status",
+        "nlp_status",
+    ):
+        if column in plot_df.columns:
+            plot_df[column] = plot_df[column].map(readable_status)
     active_score = score_column(plot_df)
     fig = px.scatter(
         plot_df,
         x="tanimoto_similarity",
         y=active_score,
         hover_name="molecule_id" if "molecule_id" in plot_df.columns else None,
-        color="design_category",
+        color="display_design_category",
         hover_data=available_columns(
             plot_df,
             (
@@ -1491,9 +1547,17 @@ def render_score_similarity(
             ),
         ),
         custom_data=["molecule_id"],
-        labels=display_labels(plot_df.columns),
         title="Score vs RDKit Reference Similarity",
-        color_discrete_map=category_color_map(plot_df, "design_category"),
+        color_discrete_map={
+            readable_status(value): color
+            for value, color in category_color_map(
+                plot_df, "design_category"
+            ).items()
+        },
+        labels={
+            **display_labels(plot_df.columns),
+            "display_design_category": "Final design category",
+        },
     )
     event = st.plotly_chart(
         fig,
@@ -1669,6 +1733,7 @@ def render_text_evidence_view(
     plot_df["display_evidence_score"] = pd.to_numeric(
         plot_df["max_relevance_score"], errors="coerce"
     ).fillna(0.0)
+    plot_df["display_nlp_status"] = plot_df["nlp_status"].map(readable_status)
     table_columns = [
         "molecule_id",
         "nlp_status",
@@ -1685,15 +1750,19 @@ def render_text_evidence_view(
         plot_df,
         x="molecule_position",
         y="display_evidence_score",
-        color="nlp_status",
+        color="display_nlp_status",
         size="evidence_matches",
         hover_name="molecule_id",
         hover_data=["top_evidence_title", "evidence_matches"],
         custom_data=["molecule_id"],
-        color_discrete_map=category_color_map(plot_df, "nlp_status"),
+        color_discrete_map={
+            readable_status(value): color
+            for value, color in category_color_map(plot_df, "nlp_status").items()
+        },
         labels={
             **display_labels(plot_df.columns),
             "display_evidence_score": "Text-evidence score",
+            "display_nlp_status": "Text-evidence status",
         },
         title="Text evidence by molecule",
     )
@@ -1771,7 +1840,7 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
                 ),
             )
             st.table(
-                display_dataframe(descriptor_row[columns])
+                display_dataframe(readable_ui_dataframe(descriptor_row[columns]))
                 .T.rename(columns={descriptor_row.index[0]: "Value"})
             )
 
@@ -1800,7 +1869,7 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
                 if column in identity_row.columns
             ]
             st.table(
-                display_dataframe(identity_row[columns])
+                display_dataframe(readable_ui_dataframe(identity_row[columns]))
                 .T.rename(columns={identity_row.index[0]: "Value"})
             )
 
@@ -1833,7 +1902,7 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
                 ),
             )
             st.dataframe(
-                display_dataframe(public_rows[columns]),
+                display_dataframe(readable_ui_dataframe(public_rows[columns])),
                 width="stretch",
                 hide_index=True,
             )
@@ -1851,7 +1920,7 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
             )
             st.caption("SureChEMBL")
             st.dataframe(
-                display_dataframe(sure_rows[columns]),
+                display_dataframe(readable_ui_dataframe(sure_rows[columns])),
                 width="stretch",
                 hide_index=True,
             )
@@ -1913,7 +1982,9 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
             ),
         )
         st.dataframe(
-            display_dataframe(text_rows[columns].head(5)),
+            display_dataframe(
+                readable_ui_dataframe(text_rows[columns].head(5))
+            ),
             width="stretch",
             hide_index=True,
         )

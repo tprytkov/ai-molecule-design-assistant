@@ -758,9 +758,37 @@ def test_status_meaning_mapping() -> None:
 def test_readable_status_hides_machine_codes() -> None:
     assert app.readable_status("match_found") == "Match found"
     assert app.readable_status("lookup_error") == "Lookup error"
+    assert app.readable_status("exact_public_identity") == "Exact public identity"
+    assert app.readable_status("high_priority") == "High priority"
     assert app.readable_status("not_queried") == "Not queried"
     assert app.readable_status("not_run") == "Not run"
     assert "_" not in app.status_display("match_found")
+
+
+def test_readable_ui_dataframe_hides_status_codes() -> None:
+    frame = pd.DataFrame(
+        {
+            "identity_status": ["exact_public_identity"],
+            "lookup_status": ["match_found"],
+            "nlp_status": ["not_run"],
+            "design_category": ["high_priority"],
+            "molecule_id": ["mol_a"],
+        }
+    )
+
+    readable = app.readable_ui_dataframe(frame)
+
+    assert readable.loc[0, "identity_status"] == "Exact public identity"
+    assert readable.loc[0, "lookup_status"] == "Match found"
+    assert readable.loc[0, "nlp_status"] == "Not run"
+    assert readable.loc[0, "design_category"] == "High priority"
+    assert readable.loc[0, "molecule_id"] == "mol_a"
+    assert "_" not in " ".join(
+        readable.loc[
+            0,
+            ["identity_status", "lookup_status", "nlp_status", "design_category"],
+        ].astype(str)
+    )
 
 
 def test_artifact_display_name_hides_local_directories() -> None:
