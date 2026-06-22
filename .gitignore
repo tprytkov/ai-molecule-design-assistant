@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+**/__pycache__/
+**pycache**/
+*.py[cod]
+*.pyc
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments and local configuration
+.conda/
+.venv/
+venv/
+.env
+.env.*
+.cache/
+.huggingface/
+model_cache/
+models/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+
+# Generated outputs
+outputs/
+app_runs/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+app_runs/
+outputs/
+.env
+__pycache__/
+.pytest_cache/
+.streamlit/secrets.toml
