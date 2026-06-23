@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +23,7 @@ from src.chemberta_embeddings import (
     merge_chemberta_into_prioritized,
     visualization_coordinates_csv,
 )
-from src.chemical_identity import chemical_identity_csv
+from src.chemical_identity import UrllibIdentityClient, chemical_identity_csv
 from src.compound_context import compound_context_csv
 from src.compound_search import top_hits_csv
 from src.descriptors import descriptor_csv
@@ -32,11 +34,21 @@ from src.pipeline import (
     run_pipeline,
     write_surechembl_not_run_csv,
 )
-from src.public_lookup import public_lookup_csv
+from src.public_lookup import (
+    UrllibJsonClient,
+    lookup_chembl,
+    lookup_pubchem,
+    placeholder_result,
+    write_output_csv as write_public_lookup_csv,
+)
 from src.scoring import scoring_csv
 from src.similarity import similarity_csv
 from src.standardize import standardize_csv
-from src.surechembl_lookup import surechembl_lookup_csv
+from src.surechembl_lookup import (
+    UrllibSurechemblClient,
+    lookup_online_rows,
+    write_output_csv as write_surechembl_output_csv,
+)
 from src.text_nlp import text_nlp_csv
 
 
@@ -165,6 +177,15 @@ MOLECULE_STATUS_COLORS = {
     "gray": "#757575",
 }
 MOLECULE_STATUS_ORDER = ["green", "yellow", "red", "gray"]
+IDENTITY_DISPLAY_COLORS = {
+    "Exact public identity": MOLECULE_STATUS_COLORS["green"],
+    "Generated IUPAC name only": MOLECULE_STATUS_COLORS["yellow"],
+    "No public identity": MOLECULE_STATUS_COLORS["red"],
+    "Not queried": MOLECULE_STATUS_COLORS["gray"],
+    "Invalid SMILES": MOLECULE_STATUS_COLORS["red"],
+    "Lookup error": MOLECULE_STATUS_COLORS["red"],
+}
+IDENTITY_DISPLAY_ORDER = list(IDENTITY_DISPLAY_COLORS)
 DRUGLIKENESS_ICONS = {
     "favorable": "✅ favorable",
     "borderline": "⚠️ borderline",
@@ -297,6 +318,17 @@ FINAL_RANKING_EXPLANATION = (
 DEMO_INPUT = Path("data/examples/druglike_candidate_demo.csv")
 DEMO_REFERENCES = Path("data/examples/druglike_reference_panel.csv")
 DEMO_TEXT_EVIDENCE = Path("data/examples/text_evidence_demo.csv")
+GUIDED_EXAMPLE_MAX_MOLECULES = None
+PUBCHEM_PREFLIGHT_URL = (
+    "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/aspirin/cids/TXT"
+)
+PUBCHEM_PREFLIGHT_TIMEOUT = 5.0
+ONLINE_LOOKUP_UNAVAILABLE_MESSAGE = (
+    "Online database lookup is unavailable from this process."
+)
+ONLINE_LOOKUP_RESTART_MESSAGE = (
+    "Restart Streamlit from a normal conda terminal, then run the guided example again."
+)
 APP_USAGE_STEPS = (
     "Upload generated SMILES.",
     "Upload optional reference molecules.",
@@ -366,6 +398,28 @@ class UploadedRunPaths:
     generated_smiles: Path
     references: Path
     text_evidence: Path
+
+
+@dataclass(frozen=True)
+class OnlineLookupPreflight:
+    """Result and process diagnostics for the PubChem connection check."""
+
+    available: bool
+    python_executable: str
+    url: str
+    exception_type: str = ""
+    exception_message: str = ""
+
+
+@dataclass(frozen=True)
+class Step3Progress:
+    """One visible progress update during guided public-database lookup."""
+
+    database: str
+    completed: int
+    total: int
+    elapsed_seconds: float
+    output_dir: Path
 
 
 def read_optional_csv(path: Path) -> pd.DataFrame:
@@ -758,11 +812,51 @@ def identity_molecule_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty or "molecule_id" not in frame.columns:
         return pd.DataFrame()
     result = frame.drop_duplicates("molecule_id").copy()
-    result["status_color"] = result.get(
-        "identity_status", pd.Series("not_available", index=result.index)
-    ).map(molecule_status_color)
+    result["display_status"] = result.apply(
+        chemical_identity_display_status,
+        axis=1,
+    )
+    result["status_color"] = result["display_status"].map(
+        {
+            label: color_name
+            for label, color_name in (
+                ("Exact public identity", "green"),
+                ("Generated IUPAC name only", "yellow"),
+                ("No public identity", "red"),
+                ("Not queried", "gray"),
+                ("Invalid SMILES", "red"),
+                ("Lookup error", "red"),
+            )
+        }
+    )
     result["molecule_position"] = range(1, len(result) + 1)
     return result
+
+
+def chemical_identity_display_status(row: pd.Series) -> str:
+    """Return the final Chemical Identity display category for one CSV row."""
+    identity = normalize_status(row.get("identity_status", "")).lower()
+    lookup = normalize_status(row.get("lookup_status", "")).lower()
+    if identity in {"invalid_smiles", "invalid_molecule"} or lookup in {
+        "invalid_smiles",
+        "invalid_molecule",
+    }:
+        return "Invalid SMILES"
+    if identity == "lookup_error" or lookup == "lookup_error":
+        return "Lookup error"
+    if lookup == "not_queried":
+        return "Not queried"
+    if identity in {
+        "exact_public_identity",
+        "exact_pubchem_match",
+        "exact_chembl_match",
+    }:
+        return "Exact public identity"
+    if identity == "generated_iupac_name_only":
+        return "Generated IUPAC name only"
+    if identity == "no_public_identity":
+        return "No public identity"
+    return "No public identity"
 
 
 def best_status(values: Iterable[object]) -> str:
@@ -1434,48 +1528,183 @@ def render_validation_view(frame: pd.DataFrame, *, key: str) -> str:
     return render_molecule_selector(plot_df, key=key, plot_event=event)
 
 
-def render_identity_view(frame: pd.DataFrame, *, key: str) -> str:
+def chemical_identity_figure(plot_df: pd.DataFrame) -> object:
+    """Build the Chemical Identity Plotly figure from mapped molecule rows."""
+    figure = px.scatter(
+        plot_df,
+        x="molecule_position",
+        y="display_status",
+        color="display_status",
+        hover_name="molecule_id",
+        hover_data=available_columns(
+            plot_df,
+            (
+                "exact_public_name",
+                "iupac_name",
+                "pubchem_cid",
+                "lookup_status",
+                "identity_confidence",
+            ),
+        ),
+        custom_data=["molecule_id"],
+        category_orders={"display_status": IDENTITY_DISPLAY_ORDER},
+        color_discrete_map=IDENTITY_DISPLAY_COLORS,
+        labels={
+            **display_labels(plot_df.columns),
+            "display_status": "Identity status",
+        },
+        title="Chemical identity evidence by molecule",
+    )
+    return figure
+
+
+def chemical_identity_debug_dataframe(plot_df: pd.DataFrame) -> pd.DataFrame:
+    """Return the requested row-level fields used to verify plot categories."""
+    columns = available_columns(
+        plot_df,
+        (
+            "molecule_id",
+            "identity_status",
+            "lookup_status",
+            "identity_confidence",
+            "display_status",
+        ),
+    )
+    return plot_df[columns].copy()
+
+
+def chemical_identity_sanity_summary(
+    frame: pd.DataFrame,
+    *,
+    output_dir: Path,
+    csv_path: Path,
+) -> dict[str, object]:
+    """Build browser-visible provenance and status counts from chemical_identity.csv."""
+    plot_df = identity_molecule_dataframe(frame)
+
+    def counts(column: str) -> dict[str, int]:
+        if column not in frame.columns:
+            return {}
+        values = frame[column].fillna("not_available").astype(str).value_counts()
+        return {str(value): int(count) for value, count in values.items()}
+
+    display_counts = (
+        {
+            str(value): int(count)
+            for value, count in plot_df["display_status"].value_counts().items()
+        }
+        if "display_status" in plot_df.columns
+        else {}
+    )
+    return {
+        "active_output_folder": str(output_dir),
+        "chemical_identity_csv": str(csv_path),
+        "identity_status_counts": counts("identity_status"),
+        "lookup_status_counts": counts("lookup_status"),
+        "display_status_counts": display_counts,
+    }
+
+
+def chemical_identity_summary_table(summary: dict[str, object]) -> pd.DataFrame:
+    """Convert identity sanity counts to a compact browser table."""
+    rows = []
+    for source, label in (
+        ("identity_status_counts", "Raw identity status"),
+        ("lookup_status_counts", "Raw lookup status"),
+        ("display_status_counts", "Mapped display status"),
+    ):
+        values = summary.get(source, {})
+        if not isinstance(values, dict):
+            continue
+        rows.extend(
+            {"Count source": label, "Status": status, "Molecules": count}
+            for status, count in values.items()
+        )
+    return pd.DataFrame(rows)
+
+
+def chemical_identity_lookup_warning(plot_df: pd.DataFrame) -> str:
+    """Return a warning only for rows finally mapped to Lookup error."""
+    if plot_df.empty or "display_status" not in plot_df.columns:
+        return ""
+    count = int(plot_df["display_status"].eq("Lookup error").sum())
+    return f"External lookup failed for {count} molecules." if count else ""
+
+
+def identity_lookup_failure_message(frame: pd.DataFrame) -> str:
+    """Explain when every query-eligible identity lookup failed."""
+    if frame.empty or "lookup_status" not in frame.columns:
+        return ""
+    statuses = frame["lookup_status"].fillna("").astype(str).str.lower()
+    query_eligible = ~statuses.isin({"invalid_smiles", "invalid_molecule"})
+    eligible_statuses = statuses[query_eligible]
+    if eligible_statuses.empty or not eligible_statuses.eq("lookup_error").all():
+        return ""
+    error = ""
+    if "error_message" in frame.columns:
+        errors = (
+            frame.loc[query_eligible, "error_message"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        nonempty = errors[errors.ne("")]
+        error = nonempty.iloc[0] if not nonempty.empty else ""
+    message = (
+        f"Online chemical-identity lookup failed for all {len(eligible_statuses)} "
+        "valid molecules. The structures remain valid, but no public identity "
+        "result was returned."
+    )
+    if "WinError 10013" in error:
+        return (
+            message
+            + " Windows blocked the outbound network connection (WinError 10013). "
+            "Rerun the guided workflow from a process with network permission."
+        )
+    return message + (f" Service response: {error}" if error else "")
+
+
+def render_identity_view(
+    frame: pd.DataFrame,
+    *,
+    key: str,
+    output_dir: Path,
+    csv_path: Path,
+) -> str:
     """Render one interactive identity point per molecule."""
     plot_df = identity_molecule_dataframe(frame)
     if plot_df.empty:
         st.info("Chemical identity output is unavailable.")
         return ""
-    plot_df["identity_display_status"] = plot_df["identity_status"].map(
-        readable_status
+    summary = chemical_identity_sanity_summary(
+        frame,
+        output_dir=output_dir,
+        csv_path=csv_path,
     )
-    figure = px.scatter(
-        plot_df,
-        x="molecule_position",
-        y=(
-            "identity_confidence"
-            if "identity_confidence" in plot_df.columns
-            else "identity_display_status"
-        ),
-        color="identity_display_status",
-        hover_name="molecule_id",
-        hover_data=available_columns(
-            plot_df,
-            ("exact_public_name", "iupac_name", "name_source", "identity_confidence"),
-        ),
-        custom_data=["molecule_id"],
-        color_discrete_map={
-            readable_status(value): color
-            for value, color in category_color_map(
-                plot_df, "identity_status"
-            ).items()
-        },
-        labels={
-            **display_labels(plot_df.columns),
-            "identity_display_status": "Identity status",
-        },
-        title="Chemical identity evidence by molecule",
+    st.markdown("#### Chemical identity sanity check")
+    st.caption(f"Active output folder: {summary['active_output_folder']}")
+    st.caption(f"chemical_identity.csv: {summary['chemical_identity_csv']}")
+    st.dataframe(
+        chemical_identity_summary_table(summary),
+        width="stretch",
+        hide_index=True,
     )
+    warning = chemical_identity_lookup_warning(plot_df)
+    if warning:
+        st.warning(warning)
+    figure = chemical_identity_figure(plot_df)
     event = st.plotly_chart(
         figure,
         width="stretch",
         key=f"{key}_plot",
         on_select="rerun",
         selection_mode="points",
+    )
+    st.markdown("#### Chemical identity status details")
+    st.dataframe(
+        chemical_identity_debug_dataframe(plot_df),
+        width="stretch",
+        hide_index=True,
     )
     return render_molecule_selector(plot_df, key=key, plot_event=event)
 
@@ -2238,6 +2467,57 @@ def create_public_demo_workflow(
     )
 
 
+def pubchem_preflight(
+    *,
+    client: object | None = None,
+    timeout: float = PUBCHEM_PREFLIGHT_TIMEOUT,
+) -> OnlineLookupPreflight:
+    """Test PubChem's aspirin CID endpoint and retain visible diagnostics."""
+    active_client = client or UrllibIdentityClient()
+    try:
+        response = active_client.get_text(PUBCHEM_PREFLIGHT_URL, timeout)
+        if response.strip() != "2244":
+            raise ValueError(f"Unexpected PubChem response: {response.strip()!r}")
+        return OnlineLookupPreflight(
+            available=True,
+            python_executable=sys.executable,
+            url=PUBCHEM_PREFLIGHT_URL,
+        )
+    except Exception as exc:
+        return OnlineLookupPreflight(
+            available=False,
+            python_executable=sys.executable,
+            url=PUBCHEM_PREFLIGHT_URL,
+            exception_type=type(exc).__name__,
+            exception_message=" ".join(str(exc).split())[:300],
+        )
+
+
+def pubchem_preflight_failure_message(result: OnlineLookupPreflight) -> str:
+    """Return browser-visible process and exception diagnostics."""
+    return (
+        f"{ONLINE_LOOKUP_UNAVAILABLE_MESSAGE}\n\n"
+        f"Python executable: {result.python_executable}\n\n"
+        f"PubChem URL: {result.url}\n\n"
+        f"Exception type: {result.exception_type or 'Unknown'}\n\n"
+        f"Exception message: {result.exception_message or 'No message returned.'}"
+    )
+
+
+def render_pubchem_preflight_result(result: OnlineLookupPreflight) -> None:
+    """Show a connection-test result without creating workflow outputs."""
+    if result.available:
+        st.success(
+            "Online database lookup is available from this process. "
+            f"PubChem aspirin CID endpoint returned 2244.\n\n"
+            f"Python executable: {result.python_executable}\n\n"
+            f"PubChem URL: {result.url}"
+        )
+        return
+    st.error(pubchem_preflight_failure_message(result))
+    st.info(ONLINE_LOOKUP_RESTART_MESSAGE)
+
+
 def demo_paths_from_output(output_dir: Path) -> PipelinePaths:
     """Rebuild public-demo pipeline paths for a tutorial workspace."""
     return build_paths(
@@ -2245,6 +2525,251 @@ def demo_paths_from_output(output_dir: Path) -> PipelinePaths:
         references_path=DEMO_REFERENCES,
         text_evidence_path=DEMO_TEXT_EVIDENCE,
         output_dir=output_dir,
+    )
+
+
+def step3_outputs_exist(paths: PipelinePaths) -> bool:
+    """Return whether both guided Step 3 output files already exist."""
+    return paths.public_lookup.is_file() and paths.surechembl_lookup.is_file()
+
+
+def step3_summary(
+    public_lookup: pd.DataFrame,
+    surechembl: pd.DataFrame,
+    standardized: pd.DataFrame,
+) -> dict[str, int]:
+    """Summarize completed Step 3 database statuses."""
+    def source_counts(source: str) -> dict[str, int]:
+        if public_lookup.empty or "source_database" not in public_lookup.columns:
+            return {}
+        rows = public_lookup[
+            public_lookup["source_database"].fillna("").astype(str).eq(source)
+        ]
+        return (
+            rows.get("lookup_status", pd.Series(dtype=str))
+            .fillna("")
+            .astype(str)
+            .value_counts()
+            .to_dict()
+        )
+
+    pubchem = source_counts("PubChem")
+    chembl = source_counts("ChEMBL")
+    sure_status = (
+        surechembl.get("lookup_status", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+    )
+    sure_queried = surechembl[
+        sure_status.isin({"match_found", "no_match", "lookup_error"})
+    ]
+    valid = (
+        standardized.get("valid_smiles", pd.Series(dtype=object))
+        .astype(str)
+        .str.lower()
+        .isin({"true", "1", "yes", "y"})
+    )
+    return {
+        "PubChem matches": int(pubchem.get("match_found", 0)),
+        "PubChem no matches": int(pubchem.get("no_match", 0)),
+        "PubChem errors": int(pubchem.get("lookup_error", 0)),
+        "ChEMBL matches": int(chembl.get("match_found", 0)),
+        "ChEMBL no matches": int(chembl.get("no_match", 0)),
+        "ChEMBL errors": int(chembl.get("lookup_error", 0)),
+        "SureChEMBL queried": int(
+            sure_queried.get("molecule_id", pd.Series(dtype=str)).nunique()
+        ),
+        "SureChEMBL errors": int(
+            surechembl[sure_status.eq("lookup_error")]
+            .get("molecule_id", pd.Series(dtype=str))
+            .nunique()
+        ),
+        "Invalid molecules skipped": int((~valid).sum()),
+    }
+
+
+def run_public_demo_step3(
+    paths: PipelinePaths,
+    *,
+    progress_callback: object | None = None,
+    public_client: object | None = None,
+    surechembl_client: object | None = None,
+) -> dict[str, int]:
+    """Run guided Step 3 with molecule-level progress and atomic outputs."""
+    standardized = pd.read_csv(paths.standardized).fillna("")
+    required = {"molecule_id", "canonical_smiles", "inchi_key", "valid_smiles"}
+    missing = required - set(standardized.columns)
+    if missing:
+        raise ValueError(
+            "Standardized CSV is missing required column(s): "
+            + ", ".join(sorted(missing))
+        )
+    total = len(standardized)
+    started = time.monotonic()
+    output_dir = paths.public_lookup.parent
+    public_temp = paths.public_lookup.with_suffix(".tmp.csv")
+    surechembl_temp = paths.surechembl_lookup.with_suffix(".tmp.csv")
+    active_public_client = public_client or UrllibJsonClient()
+    active_surechembl_client = surechembl_client or UrllibSurechemblClient()
+    public_results = []
+    surechembl_results = []
+
+    def update(database: str, completed: int) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                Step3Progress(
+                    database=database,
+                    completed=completed,
+                    total=total,
+                    elapsed_seconds=time.monotonic() - started,
+                    output_dir=output_dir,
+                )
+            )
+
+    try:
+        records = [
+            {key: str(value).strip() for key, value in row.items()}
+            for _, row in standardized.iterrows()
+        ]
+        valid_rows = [
+            row
+            for row in records
+            if row["valid_smiles"].lower() in {"true", "1", "yes", "y"}
+            and row["canonical_smiles"]
+        ]
+
+        for index, row in enumerate(records, start=1):
+            valid = row["valid_smiles"].lower() in {"true", "1", "yes", "y"}
+            if not valid or not row["canonical_smiles"]:
+                public_results.append(
+                    placeholder_result(
+                        row["molecule_id"],
+                        row["canonical_smiles"],
+                        row["inchi_key"],
+                        False,
+                        source_database="not_available",
+                        match_type="no_match",
+                        lookup_status="invalid_molecule",
+                        evidence_note=(
+                            "Public lookup was skipped for an invalid molecule."
+                        ),
+                        error_message=row.get("error_message", ""),
+                    )
+                )
+                update("PubChem", index)
+                continue
+            public_results.append(
+                lookup_pubchem(
+                    row["molecule_id"],
+                    row["canonical_smiles"],
+                    row["inchi_key"],
+                    active_public_client,
+                    15.0,
+                )
+            )
+            update("PubChem", index)
+        pubchem_rows = [
+            item for item in public_results if item.source_database == "PubChem"
+        ]
+        if pubchem_rows and all(
+            item.lookup_status == "lookup_error" for item in pubchem_rows
+        ):
+            raise RuntimeError(
+                f"PubChem lookup failed for all {len(pubchem_rows)} valid molecules."
+            )
+
+        for index, row in enumerate(records, start=1):
+            valid = row["valid_smiles"].lower() in {"true", "1", "yes", "y"}
+            if not valid or not row["canonical_smiles"]:
+                update("ChEMBL", index)
+                continue
+            public_results.append(
+                lookup_chembl(
+                    row["molecule_id"],
+                    row["canonical_smiles"],
+                    row["inchi_key"],
+                    active_public_client,
+                    15.0,
+                )
+            )
+            update("ChEMBL", index)
+        chembl_rows = [
+            item for item in public_results if item.source_database == "ChEMBL"
+        ]
+        if chembl_rows and all(
+            item.lookup_status == "lookup_error" for item in chembl_rows
+        ):
+            raise RuntimeError(
+                f"ChEMBL lookup failed for all {len(chembl_rows)} valid molecules."
+            )
+
+        for index, row in enumerate(records, start=1):
+            hits = lookup_online_rows(
+                [row],
+                top_k=5,
+                max_molecules=None,
+                client=active_surechembl_client,
+            )
+            surechembl_results.extend(hits)
+            update("SureChEMBL", index)
+        surechembl_valid_results = [
+            item for item in surechembl_results if item.valid_smiles
+        ]
+        if surechembl_valid_results and all(
+            item.lookup_status == "lookup_error"
+            for item in surechembl_valid_results
+        ):
+            raise RuntimeError(
+                "SureChEMBL lookup failed for all "
+                f"{len(valid_rows)} valid molecules."
+            )
+
+        write_public_lookup_csv(public_temp, public_results)
+        write_surechembl_output_csv(surechembl_temp, surechembl_results)
+        public_temp.replace(paths.public_lookup)
+        surechembl_temp.replace(paths.surechembl_lookup)
+    except Exception:
+        public_temp.unlink(missing_ok=True)
+        surechembl_temp.unlink(missing_ok=True)
+        raise
+
+    return step3_summary(
+        pd.read_csv(paths.public_lookup),
+        pd.read_csv(paths.surechembl_lookup),
+        standardized,
+    )
+
+
+def render_step3_summary(summary: dict[str, int]) -> None:
+    """Show the requested Step 3 completion counts."""
+    st.success("Step 3 public database lookup completed.")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Result": list(summary),
+                "Molecules": list(summary.values()),
+            }
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+
+
+def render_step3_progress(progress: Step3Progress, bar: object, status: object) -> None:
+    """Update the visible Step 3 database, molecule, time, and output details."""
+    fraction = progress.completed / progress.total if progress.total else 1.0
+    bar.progress(
+        fraction,
+        text=(
+            f"{progress.database}: {progress.completed} / "
+            f"{progress.total} molecules"
+        ),
+    )
+    status.markdown(
+        f"**Current database:** {progress.database}  \n"
+        f"**Completed molecules:** {progress.completed} / {progress.total}  \n"
+        f"**Elapsed time:** {progress.elapsed_seconds:.1f} seconds  \n"
+        f"**Active output folder:** `{progress.output_dir}`"
     )
 
 
@@ -2263,24 +2788,10 @@ def run_public_demo_step(
             paths.standardized,
             identity_path,
             online=True,
-            max_molecules=10,
+            max_molecules=GUIDED_EXAMPLE_MAX_MOLECULES,
         )
     elif step_number == 3:
-        public_lookup_csv(
-            paths.standardized,
-            paths.standardized,
-            paths.public_lookup,
-            offline=False,
-            max_molecules=10,
-        )
-        surechembl_lookup_csv(
-            paths.standardized,
-            None,
-            paths.surechembl_lookup,
-            5,
-            online_surechembl=True,
-            max_molecules=10,
-        )
+        run_public_demo_step3(paths)
     elif step_number == 4:
         descriptor_csv(paths.standardized, paths.descriptors)
         similarity_csv(paths.descriptors, paths.references, paths.similarity)
@@ -2360,7 +2871,13 @@ def render_public_demo_choice() -> Path | None:
     st.markdown("**Public example files**")
     for path in public_demo_input_paths():
         st.code(str(path), language=None)
+    if st.button("Test online lookup connection"):
+        render_pubchem_preflight_result(pubchem_preflight())
     if not st.button("Run guided example workflow", type="primary"):
+        return None
+    preflight = pubchem_preflight()
+    if not preflight.available:
+        render_pubchem_preflight_result(preflight)
         return None
     try:
         paths = create_public_demo_workflow()
@@ -2527,7 +3044,12 @@ def render_workflow_step(
         )
         if not results_available:
             return
-        selected = render_identity_view(frame, key="workflow_step_2")
+        selected = render_identity_view(
+            frame,
+            key="workflow_step_2",
+            output_dir=loaded.output_dir,
+            csv_path=loaded.paths["chemical_identity"],
+        )
         render_detail_panel(loaded, selected)
     elif step_number == 3:
         frame = loaded.tables["public_lookup"]
@@ -2551,6 +3073,13 @@ def render_workflow_step(
             loaded.tables["surechembl"],
             molecule_ids,
             key="workflow_step_3",
+        )
+        render_step3_summary(
+            step3_summary(
+                frame,
+                loaded.tables["surechembl"],
+                loaded.tables["standardized"],
+            )
         )
         render_detail_panel(loaded, selected)
     elif step_number == 4:
@@ -2675,6 +3204,7 @@ def render_step_workflow(output_dir: Path) -> None:
     results_available = current in completed
     workflow_mode = st.session_state.get("workflow_mode", "")
 
+    st.caption(f"Active output folder: {output_dir}")
     st.progress(current / len(WORKFLOW_STEP_NAMES))
     st.caption(f"Workflow progress: {current} of {len(WORKFLOW_STEP_NAMES)}")
     render_workflow_step(
@@ -2691,19 +3221,64 @@ def render_step_workflow(output_dir: Path) -> None:
             "No calculation has run for this step yet. Review the explanation "
             "above, then run the public example when you are ready."
         )
-        if st.button(
-            f"Run Step {current} on public example",
+        paths = demo_paths_from_output(output_dir)
+        if current == 3 and step3_outputs_exist(paths):
+            if st.button(
+                "Use existing Step 3 results",
+                type="primary",
+                key="use_existing_step_3",
+            ):
+                completed.add(3)
+                st.session_state["completed_workflow_steps"] = sorted(completed)
+                st.rerun()
+            return
+
+        run_label = f"Run Step {current} on public example"
+        button_slot = st.empty()
+        run_clicked = button_slot.button(
+            run_label,
             type="primary",
             key=f"run_demo_step_{current}",
-        ):
+        )
+        if run_clicked:
+            button_slot.button(
+                run_label,
+                type="primary",
+                key=f"running_demo_step_{current}",
+                disabled=True,
+            )
             try:
-                with st.spinner(f"Running {WORKFLOW_STEP_NAMES[current - 1]}..."):
-                    run_public_demo_step(
-                        current,
-                        demo_paths_from_output(output_dir),
+                if current == 3:
+                    preflight = pubchem_preflight()
+                    if not preflight.available:
+                        render_pubchem_preflight_result(preflight)
+                        return
+                    progress_bar = st.progress(
+                        0.0, text="Preparing public database lookup..."
                     )
+                    progress_status = st.empty()
+                    summary = run_public_demo_step3(
+                        paths,
+                        progress_callback=lambda progress: render_step3_progress(
+                            progress,
+                            progress_bar,
+                            progress_status,
+                        ),
+                    )
+                    render_step3_summary(summary)
+                else:
+                    with st.spinner(
+                        f"Running {WORKFLOW_STEP_NAMES[current - 1]}..."
+                    ):
+                        run_public_demo_step(current, paths)
             except Exception as exc:
-                st.error(f"Step {current} failed: {exc}")
+                if current == 3:
+                    st.error(
+                        "Step 3 online lookup failed. No new Step 3 results "
+                        f"were activated. {type(exc).__name__}: {exc}"
+                    )
+                else:
+                    st.error(f"Step {current} failed: {exc}")
                 return
             completed.add(current)
             st.session_state["completed_workflow_steps"] = sorted(completed)

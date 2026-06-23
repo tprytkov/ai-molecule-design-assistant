@@ -106,8 +106,9 @@ def test_demo_results_load_after_explicit_action(
         write=lambda *args, **kwargs: None,
         markdown=lambda *args, **kwargs: None,
         code=lambda *args, **kwargs: None,
-        button=lambda *args, **kwargs: True,
+        button=lambda label, *args, **kwargs: label == "Run guided example workflow",
         error=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
         success=lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(app, "st", fake_streamlit)
@@ -116,6 +117,13 @@ def test_demo_results_load_after_explicit_action(
         "create_public_demo_workflow",
         lambda: calls.append("start") or paths,
     )
+    monkeypatch.setattr(
+        app,
+        "pubchem_preflight",
+        lambda: app.OnlineLookupPreflight(
+            True, "python.exe", app.PUBCHEM_PREFLIGHT_URL
+        ),
+    )
 
     result = app.render_public_demo_choice()
 
@@ -123,6 +131,199 @@ def test_demo_results_load_after_explicit_action(
     assert result == output
     assert fake_streamlit.session_state["active_output_dir"] == str(output)
     assert fake_streamlit.session_state["completed_workflow_steps"] == []
+
+
+def test_failed_preflight_blocks_online_guided_example_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    errors = []
+    information = []
+    fake_streamlit = SimpleNamespace(
+        session_state={},
+        header=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        markdown=lambda *args, **kwargs: None,
+        code=lambda *args, **kwargs: None,
+        button=lambda label, *args, **kwargs: label == "Run guided example workflow",
+        error=lambda message, *args, **kwargs: errors.append(message),
+        info=lambda message, *args, **kwargs: information.append(message),
+        success=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    failure = app.OnlineLookupPreflight(
+        False,
+        r"C:\envs\molecule-intelligence\python.exe",
+        app.PUBCHEM_PREFLIGHT_URL,
+        "OSError",
+        "network unavailable",
+    )
+    monkeypatch.setattr(app, "pubchem_preflight", lambda: failure)
+    monkeypatch.setattr(
+        app,
+        "create_public_demo_workflow",
+        lambda: pytest.fail("A failed preflight must block the guided run."),
+    )
+
+    result = app.render_public_demo_choice()
+
+    assert result is None
+    assert errors == [app.pubchem_preflight_failure_message(failure)]
+    assert information == [app.ONLINE_LOOKUP_RESTART_MESSAGE]
+
+
+def test_failed_preflight_does_not_activate_output_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_streamlit = SimpleNamespace(
+        session_state={"unrelated": "preserved"},
+        header=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        markdown=lambda *args, **kwargs: None,
+        code=lambda *args, **kwargs: None,
+        button=lambda label, *args, **kwargs: label == "Run guided example workflow",
+        error=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        success=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "pubchem_preflight",
+        lambda: app.OnlineLookupPreflight(
+            False,
+            "python.exe",
+            app.PUBCHEM_PREFLIGHT_URL,
+            "OSError",
+            "network unavailable",
+        ),
+    )
+
+    result = app.render_public_demo_choice()
+
+    assert result is None
+    assert "active_output_dir" not in fake_streamlit.session_state
+    assert fake_streamlit.session_state == {"unrelated": "preserved"}
+
+
+def test_successful_pubchem_preflight_allows_guided_example_run() -> None:
+    class SuccessfulClient:
+        def get_text(self, url: str, timeout: float) -> str:
+            assert url == app.PUBCHEM_PREFLIGHT_URL
+            assert timeout == app.PUBCHEM_PREFLIGHT_TIMEOUT
+            return "2244\n"
+
+    result = app.pubchem_preflight(client=SuccessfulClient())
+
+    assert result.available is True
+    assert result.url.endswith("/aspirin/cids/TXT")
+    assert result.exception_type == ""
+
+
+def test_failed_pubchem_preflight_returns_visible_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailedClient:
+        def get_text(self, url: str, timeout: float) -> str:
+            raise OSError("network unavailable")
+
+    monkeypatch.setattr(app.sys, "executable", r"C:\conda\python.exe")
+    result = app.pubchem_preflight(client=FailedClient())
+    message = app.pubchem_preflight_failure_message(result)
+
+    assert result.available is False
+    assert result.exception_type == "OSError"
+    assert result.exception_message == "network unavailable"
+    assert message == (
+        "Online database lookup is unavailable from this process.\n\n"
+        r"Python executable: C:\conda\python.exe"
+        "\n\n"
+        f"PubChem URL: {app.PUBCHEM_PREFLIGHT_URL}\n\n"
+        "Exception type: OSError\n\n"
+        "Exception message: network unavailable"
+    )
+
+
+def test_connection_button_runs_same_preflight_without_activating_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    errors = []
+    information = []
+    failure = app.OnlineLookupPreflight(
+        False,
+        "python.exe",
+        app.PUBCHEM_PREFLIGHT_URL,
+        "TimeoutError",
+        "timed out",
+    )
+    calls = []
+    fake_streamlit = SimpleNamespace(
+        session_state={},
+        header=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        markdown=lambda *args, **kwargs: None,
+        code=lambda *args, **kwargs: None,
+        button=lambda label, *args, **kwargs: (
+            label == "Test online lookup connection"
+        ),
+        error=lambda message, *args, **kwargs: errors.append(message),
+        info=lambda message, *args, **kwargs: information.append(message),
+        success=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "pubchem_preflight",
+        lambda: calls.append("preflight") or failure,
+    )
+    monkeypatch.setattr(
+        app,
+        "create_public_demo_workflow",
+        lambda: pytest.fail("Connection test must not create an output folder."),
+    )
+
+    result = app.render_public_demo_choice()
+
+    assert result is None
+    assert calls == ["preflight"]
+    assert errors == [app.pubchem_preflight_failure_message(failure)]
+    assert information == [app.ONLINE_LOOKUP_RESTART_MESSAGE]
+    assert "active_output_dir" not in fake_streamlit.session_state
+
+
+def test_connection_button_shows_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    successes = []
+    result = app.OnlineLookupPreflight(
+        True,
+        r"C:\conda\python.exe",
+        app.PUBCHEM_PREFLIGHT_URL,
+    )
+    fake_streamlit = SimpleNamespace(
+        session_state={},
+        header=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        markdown=lambda *args, **kwargs: None,
+        code=lambda *args, **kwargs: None,
+        button=lambda label, *args, **kwargs: (
+            label == "Test online lookup connection"
+        ),
+        error=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        success=lambda message, *args, **kwargs: successes.append(message),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(app, "pubchem_preflight", lambda: result)
+
+    assert app.render_public_demo_choice() is None
+    assert successes == [
+        "Online database lookup is available from this process. "
+        "PubChem aspirin CID endpoint returned 2244.\n\n"
+        r"Python executable: C:\conda\python.exe"
+        "\n\n"
+        f"PubChem URL: {app.PUBCHEM_PREFLIGHT_URL}"
+    ]
+    assert "active_output_dir" not in fake_streamlit.session_state
 
 
 def test_existing_results_require_explicit_action(tmp_path: Path) -> None:
@@ -157,6 +358,9 @@ def test_existing_results_require_explicit_action(tmp_path: Path) -> None:
         heading.value == "Step 1: Load and validate SMILES"
         for heading in app_test.header
     )
+    assert f"Active output folder: {output_dir}" in [
+        caption.value for caption in app_test.caption
+    ]
 
 
 def test_public_demo_uses_bundled_inputs_and_new_output_folder(
@@ -201,28 +405,189 @@ def test_public_demo_step_one_runs_only_standardization(
     assert calls == [(app.DEMO_INPUT, paths.standardized)]
 
 
-def test_public_demo_opens_step_one_before_running_calculation() -> None:
-    app_test = AppTest.from_file("app.py").run(timeout=10)
-    demo_button = next(
-        button
-        for button in app_test.button
-        if button.label == "Run guided example workflow"
+def test_guided_example_online_steps_query_all_valid_molecules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
     )
-    demo_button.click().run(timeout=10)
+    calls = []
+    monkeypatch.setattr(
+        app,
+        "chemical_identity_csv",
+        lambda *args, **kwargs: calls.append(("identity", kwargs)),
+    )
+    monkeypatch.setattr(
+        app,
+        "run_public_demo_step3",
+        lambda active_paths: calls.append(("step3", active_paths)),
+    )
 
-    assert any(
-        heading.value == "Step 1: Load and validate SMILES"
-        for heading in app_test.header
+    app.run_public_demo_step(2, paths)
+    app.run_public_demo_step(3, paths)
+
+    assert app.GUIDED_EXAMPLE_MAX_MOLECULES is None
+    assert calls == [
+        ("identity", {"online": True, "max_molecules": None}),
+        ("step3", paths),
+    ]
+
+
+def test_step3_summary_reports_requested_counts() -> None:
+    public_lookup = pd.DataFrame(
+        {
+            "molecule_id": ["a", "b", "c", "a", "b", "c"],
+            "source_database": [
+                "PubChem",
+                "PubChem",
+                "PubChem",
+                "ChEMBL",
+                "ChEMBL",
+                "ChEMBL",
+            ],
+            "lookup_status": [
+                "match_found",
+                "no_match",
+                "lookup_error",
+                "match_found",
+                "no_match",
+                "lookup_error",
+            ],
+        }
     )
-    assert any(
-        button.label == "Run Step 1 on public example"
-        for button in app_test.button
+    surechembl = pd.DataFrame(
+        {
+            "molecule_id": ["a", "a", "b", "c", "invalid"],
+            "lookup_status": [
+                "match_found",
+                "match_found",
+                "no_match",
+                "lookup_error",
+                "invalid_molecule",
+            ],
+        }
     )
-    markdown_values = [item.value for item in app_test.markdown]
-    assert "#### What this step calculates" in markdown_values
-    assert "#### Why we run it" in markdown_values
-    assert "#### What you will get" in markdown_values
-    assert not app_test.dataframe
+    standardized = pd.DataFrame(
+        {"valid_smiles": [True, True, True, False]}
+    )
+
+    assert app.step3_summary(public_lookup, surechembl, standardized) == {
+        "PubChem matches": 1,
+        "PubChem no matches": 1,
+        "PubChem errors": 1,
+        "ChEMBL matches": 1,
+        "ChEMBL no matches": 1,
+        "ChEMBL errors": 1,
+        "SureChEMBL queried": 3,
+        "SureChEMBL errors": 1,
+        "Invalid molecules skipped": 1,
+    }
+
+
+def test_step3_existing_results_require_both_files(tmp_path: Path) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    paths.public_lookup.parent.mkdir(parents=True)
+
+    assert app.step3_outputs_exist(paths) is False
+    paths.public_lookup.write_text("molecule_id\n", encoding="utf-8")
+    assert app.step3_outputs_exist(paths) is False
+    paths.surechembl_lookup.write_text("molecule_id\n", encoding="utf-8")
+    assert app.step3_outputs_exist(paths) is True
+
+
+def test_step3_all_pubchem_failures_do_not_create_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    paths.standardized.parent.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "molecule_id": ["a", "invalid"],
+            "canonical_smiles": ["CCO", ""],
+            "inchi_key": ["KEY", ""],
+            "valid_smiles": [True, False],
+            "error_message": ["", "invalid"],
+        }
+    ).to_csv(paths.standardized, index=False)
+    monkeypatch.setattr(
+        app,
+        "lookup_pubchem",
+        lambda molecule_id, canonical_smiles, inchi_key, client, timeout: (
+            app.placeholder_result(
+                molecule_id,
+                canonical_smiles,
+                inchi_key,
+                True,
+                source_database="PubChem",
+                match_type="lookup_error",
+                lookup_status="lookup_error",
+                evidence_note="Lookup failed.",
+                error_message="network blocked",
+            )
+        ),
+    )
+    progress = []
+
+    with pytest.raises(RuntimeError, match="PubChem lookup failed for all"):
+        app.run_public_demo_step3(
+            paths,
+            progress_callback=progress.append,
+            public_client=object(),
+            surechembl_client=object(),
+        )
+
+    assert [(item.database, item.completed, item.total) for item in progress] == [
+        ("PubChem", 1, 2),
+        ("PubChem", 2, 2),
+    ]
+    assert not paths.public_lookup.exists()
+    assert not paths.surechembl_lookup.exists()
+    assert not paths.public_lookup.with_suffix(".tmp.csv").exists()
+    assert not paths.surechembl_lookup.with_suffix(".tmp.csv").exists()
+
+
+def test_public_demo_opens_step_one_before_running_calculation() -> None:
+    original_preflight = app.pubchem_preflight
+    app.pubchem_preflight = lambda: app.OnlineLookupPreflight(
+        True, "python.exe", app.PUBCHEM_PREFLIGHT_URL
+    )
+    try:
+        app_test = AppTest.from_file("app.py").run(timeout=10)
+        demo_button = next(
+            button
+            for button in app_test.button
+            if button.label == "Run guided example workflow"
+        )
+        demo_button.click().run(timeout=10)
+
+        assert any(
+            heading.value == "Step 1: Load and validate SMILES"
+            for heading in app_test.header
+        )
+        assert any(
+            button.label == "Run Step 1 on public example"
+            for button in app_test.button
+        )
+        markdown_values = [item.value for item in app_test.markdown]
+        assert "#### What this step calculates" in markdown_values
+        assert "#### Why we run it" in markdown_values
+        assert "#### What you will get" in markdown_values
+        assert not app_test.dataframe
+    finally:
+        app.pubchem_preflight = original_preflight
 
 
 def test_display_label_mapping_uses_readable_names() -> None:
@@ -327,20 +692,331 @@ def test_validation_visualization_data_is_molecule_level() -> None:
 def test_identity_visualization_data_keeps_readable_molecule_parameters() -> None:
     frame = pd.DataFrame(
         {
-            "molecule_id": ["mol_a", "mol_b"],
-            "identity_status": ["exact_public_identity", "no_public_identity"],
-            "exact_public_name": ["Example", ""],
-            "iupac_name": ["example-name", ""],
-            "name_source": ["PubChem", ""],
-            "identity_confidence": ["high", "low"],
+            "molecule_id": ["mol_a", "mol_b", "mol_c"],
+            "identity_status": [
+                "exact_public_identity",
+                "no_public_identity",
+                "invalid_smiles",
+            ],
+            "lookup_status": ["match_found", "not_queried", "invalid_smiles"],
+            "exact_public_name": ["Example", "", ""],
+            "iupac_name": ["example-name", "", ""],
+            "pubchem_cid": ["123", "", ""],
+            "identity_confidence": ["high", "none", "none"],
         }
     )
 
     plot = app.identity_molecule_dataframe(frame)
 
-    assert len(plot) == 2
+    assert len(plot) == 3
     assert plot.loc[0, "exact_public_name"] == "Example"
-    assert plot["status_color"].tolist() == ["green", "red"]
+    assert plot["display_status"].tolist() == [
+        "Exact public identity",
+        "Not queried",
+        "Invalid SMILES",
+    ]
+    assert plot["status_color"].tolist() == ["green", "gray", "red"]
+
+
+def test_identity_status_mapping_uses_lookup_status_authoritatively() -> None:
+    assert (
+        app.chemical_identity_display_status(
+            pd.Series(
+                {
+                    "identity_status": "exact_public_identity",
+                    "lookup_status": "match_found",
+                }
+            )
+        )
+        == "Exact public identity"
+    )
+    assert (
+        app.chemical_identity_display_status(
+            pd.Series(
+                {
+                    "identity_status": "no_public_identity",
+                    "lookup_status": "not_queried",
+                }
+            )
+        )
+        == "Not queried"
+    )
+    assert (
+        app.chemical_identity_display_status(
+            pd.Series(
+                {
+                    "identity_status": "generated_iupac_name_only",
+                    "lookup_status": "no_match",
+                }
+            )
+        )
+        == "Generated IUPAC name only"
+    )
+    assert (
+        app.chemical_identity_display_status(
+            pd.Series(
+                {
+                    "identity_status": "exact_pubchem_match",
+                    "lookup_status": "match_found",
+                }
+            )
+        )
+        == "Exact public identity"
+    )
+    assert (
+        app.chemical_identity_display_status(
+            pd.Series(
+                {
+                    "identity_status": "exact_chembl_match",
+                    "lookup_status": "match_found",
+                }
+            )
+        )
+        == "Exact public identity"
+    )
+    assert (
+        app.chemical_identity_display_status(
+            pd.Series(
+                {
+                    "identity_status": "no_public_identity",
+                    "lookup_status": "no_match",
+                }
+            )
+        )
+        == "No public identity"
+    )
+    assert (
+        app.IDENTITY_DISPLAY_COLORS["Exact public identity"]
+        == app.MOLECULE_STATUS_COLORS["green"]
+    )
+
+
+def test_identity_plot_has_no_lookup_error_without_error_status() -> None:
+    frame = pd.DataFrame(
+        {
+            "molecule_id": ["mol_a", "mol_b"],
+            "identity_status": ["exact_public_identity", "no_public_identity"],
+            "lookup_status": ["match_found", "not_queried"],
+        }
+    )
+
+    plot = app.identity_molecule_dataframe(frame)
+
+    assert "Lookup error" not in plot["display_status"].tolist()
+    assert "No public identity" not in plot["display_status"].tolist()
+
+
+def test_identity_mapping_priority_sample_rows() -> None:
+    frame = pd.DataFrame(
+        {
+            "molecule_id": ["matched", "skipped", "invalid", "failed"],
+            "identity_status": [
+                "exact_public_identity",
+                "no_public_identity",
+                "invalid_smiles",
+                "lookup_error",
+            ],
+            "lookup_status": [
+                "match_found",
+                "not_queried",
+                "invalid_smiles",
+                "lookup_error",
+            ],
+            "error_message": ["", "", "", "service unavailable"],
+        }
+    )
+
+    plot = app.identity_molecule_dataframe(frame)
+
+    assert plot["display_status"].tolist() == [
+        "Exact public identity",
+        "Not queried",
+        "Invalid SMILES",
+        "Lookup error",
+    ]
+
+
+def test_identity_figure_legend_shows_fresh_matches_as_exact_identity() -> None:
+    frame = pd.DataFrame(
+        {
+            "molecule_id": [f"demo_{index:03d}" for index in range(1, 11)],
+            "identity_status": ["exact_public_identity"] * 10,
+            "lookup_status": ["match_found"] * 10,
+            "error_message": [""] * 10,
+        }
+    )
+    plot = app.identity_molecule_dataframe(frame)
+
+    figure = app.chemical_identity_figure(plot)
+    legend_names = [trace.name for trace in figure.data]
+
+    assert legend_names == ["Exact public identity"]
+    assert "Lookup error" not in legend_names
+
+
+def test_exact_identity_match_found_high_maps_to_exact_public_identity() -> None:
+    row = pd.Series(
+        {
+            "identity_status": "exact_public_identity",
+            "lookup_status": "match_found",
+            "identity_confidence": "high",
+            "error_message": "",
+        }
+    )
+
+    assert (
+        app.chemical_identity_display_status(row)
+        == "Exact public identity"
+    )
+
+
+def test_identity_debug_dataframe_contains_final_display_status() -> None:
+    frame = pd.DataFrame(
+        {
+            "molecule_id": ["demo_001"],
+            "identity_status": ["exact_public_identity"],
+            "lookup_status": ["match_found"],
+            "identity_confidence": ["high"],
+        }
+    )
+    plot = app.identity_molecule_dataframe(frame)
+
+    debug = app.chemical_identity_debug_dataframe(plot)
+
+    assert debug.columns.tolist() == [
+        "molecule_id",
+        "identity_status",
+        "lookup_status",
+        "identity_confidence",
+        "display_status",
+    ]
+    assert debug.loc[0, "display_status"] == "Exact public identity"
+
+
+def test_identity_sanity_summary_uses_chemical_identity_csv_counts(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "chemical_identity.csv"
+    frame = pd.DataFrame(
+        {
+            "molecule_id": ["a", "b", "c"],
+            "identity_status": [
+                "exact_public_identity",
+                "no_public_identity",
+                "invalid_smiles",
+            ],
+            "lookup_status": ["match_found", "not_queried", "invalid_smiles"],
+        }
+    )
+    frame.to_csv(csv_path, index=False)
+    loaded_frame = pd.read_csv(csv_path)
+
+    summary = app.chemical_identity_sanity_summary(
+        loaded_frame,
+        output_dir=tmp_path,
+        csv_path=csv_path,
+    )
+
+    assert summary["chemical_identity_csv"] == str(csv_path)
+    assert summary["identity_status_counts"] == {
+        "exact_public_identity": 1,
+        "no_public_identity": 1,
+        "invalid_smiles": 1,
+    }
+    assert summary["lookup_status_counts"] == {
+        "match_found": 1,
+        "not_queried": 1,
+        "invalid_smiles": 1,
+    }
+    assert summary["display_status_counts"] == {
+        "Exact public identity": 1,
+        "Not queried": 1,
+        "Invalid SMILES": 1,
+    }
+
+
+def test_identity_lookup_warning_only_for_real_lookup_errors() -> None:
+    successful = app.identity_molecule_dataframe(
+        pd.DataFrame(
+            {
+                "molecule_id": ["a", "b"],
+                "identity_status": [
+                    "exact_public_identity",
+                    "no_public_identity",
+                ],
+                "lookup_status": ["match_found", "not_queried"],
+            }
+        )
+    )
+    failed = app.identity_molecule_dataframe(
+        pd.DataFrame(
+            {
+                "molecule_id": ["a", "b", "c"],
+                "identity_status": [
+                    "lookup_error",
+                    "exact_public_identity",
+                    "lookup_error",
+                ],
+                "lookup_status": [
+                    "lookup_error",
+                    "match_found",
+                    "lookup_error",
+                ],
+            }
+        )
+    )
+
+    assert app.chemical_identity_lookup_warning(successful) == ""
+    assert (
+        app.chemical_identity_lookup_warning(failed)
+        == "External lookup failed for 2 molecules."
+    )
+
+
+def test_identity_all_lookup_failures_produce_actionable_message() -> None:
+    frame = pd.DataFrame(
+        {
+            "molecule_id": ["mol_a", "mol_b", "invalid"],
+            "identity_status": [
+                "lookup_error",
+                "lookup_error",
+                "invalid_smiles",
+            ],
+            "lookup_status": [
+                "lookup_error",
+                "lookup_error",
+                "invalid_smiles",
+            ],
+            "error_message": [
+                "Public name service request failed: WinError 10013",
+                "Public name service request failed: WinError 10013",
+                "unclosed ring",
+            ],
+        }
+    )
+
+    message = app.identity_lookup_failure_message(frame)
+
+    assert "failed for all 2 valid molecules" in message
+    assert "Windows blocked the outbound network connection" in message
+    assert "structures remain valid" in message
+
+
+def test_identity_failure_message_absent_for_successful_or_mixed_results() -> None:
+    successful = pd.DataFrame(
+        {
+            "lookup_status": ["match_found", "match_found", "invalid_smiles"],
+        }
+    )
+    mixed = pd.DataFrame(
+        {
+            "lookup_status": ["match_found", "lookup_error"],
+            "error_message": ["", "temporary failure"],
+        }
+    )
+
+    assert app.identity_lookup_failure_message(successful) == ""
+    assert app.identity_lookup_failure_message(mixed) == ""
 
 
 def test_public_evidence_visualization_returns_one_row_per_molecule() -> None:
