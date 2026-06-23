@@ -12,6 +12,8 @@ from typing import Iterable
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from rdkit import Chem
+from rdkit.Chem import Draw, rdDepictor
 
 from src.compound_qa import compound_qa
 from src.chemberta_embeddings import (
@@ -1110,6 +1112,41 @@ def molecule_image_message(image_path: Path) -> str:
     return "2D structure image is not available for this molecule."
 
 
+def molecule_structure_image(smiles: object) -> object | None:
+    """Create an in-memory 2D structure image for a valid SMILES value."""
+    text = str(smiles or "").strip()
+    if not text:
+        return None
+    molecule = Chem.MolFromSmiles(text)
+    if molecule is None:
+        return None
+    rdDepictor.Compute2DCoords(molecule)
+    return Draw.MolToImage(molecule, size=(420, 320))
+
+
+def molecule_smiles_from_outputs(loaded: LoadedOutputs, molecule_id: str) -> str:
+    """Return the best available standardized SMILES for a selected molecule."""
+    source_order = (
+        ("standardized", ("canonical_smiles", "smiles")),
+        ("descriptors", ("canonical_smiles",)),
+        ("chemical_identity", ("smiles",)),
+        ("prioritization", ("canonical_smiles", "smiles")),
+    )
+    for table_name, columns in source_order:
+        frame = loaded.tables[table_name]
+        if frame.empty or "molecule_id" not in frame.columns:
+            continue
+        row = frame[frame["molecule_id"].astype(str) == molecule_id]
+        if row.empty:
+            continue
+        for column in columns:
+            if column in row.columns:
+                value = str(row.iloc[0][column] or "").strip()
+                if value and value.lower() != "nan":
+                    return value
+    return ""
+
+
 def generate_report(
     loaded: LoadedOutputs,
     molecule_id: str,
@@ -1860,7 +1897,17 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
     if image_path.exists():
         st.image(str(image_path), caption=f"2D structure: {molecule_id}", width=360)
     else:
-        st.info(molecule_image_message(image_path))
+        structure_image = molecule_structure_image(
+            molecule_smiles_from_outputs(loaded, molecule_id)
+        )
+        if structure_image is not None:
+            st.image(
+                structure_image,
+                caption=f"2D structure: {molecule_id}",
+                width=360,
+            )
+        else:
+            st.info(molecule_image_message(image_path))
 
     standardized = loaded.tables["standardized"]
     if not standardized.empty and "molecule_id" in standardized.columns:

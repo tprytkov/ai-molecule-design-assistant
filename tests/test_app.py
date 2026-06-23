@@ -900,6 +900,31 @@ def test_missing_molecule_image_message(tmp_path: Path) -> None:
     )
 
 
+def test_molecule_structure_image_is_generated_for_valid_smiles() -> None:
+    image = app.molecule_structure_image("CCO")
+
+    assert image is not None
+    assert image.size == (420, 320)
+
+
+def test_molecule_structure_image_rejects_invalid_smiles() -> None:
+    assert app.molecule_structure_image("not-a-smiles") is None
+    assert app.molecule_structure_image("") is None
+
+
+def test_molecule_smiles_prefers_standardized_structure(tmp_path: Path) -> None:
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    (output_dir / "standardized.csv").write_text(
+        "molecule_id,smiles,canonical_smiles,valid_smiles\n"
+        "mol_a,OCC,CCO,True\n",
+        encoding="utf-8",
+    )
+    loaded = app.load_output_directory(output_dir)
+
+    assert app.molecule_smiles_from_outputs(loaded, "mol_a") == "CCO"
+
+
 def test_report_status_message_does_not_expose_path(tmp_path: Path) -> None:
     report_path = tmp_path / "reports" / "compound_intelligence_report_mol_a.md"
 
