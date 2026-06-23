@@ -1,16 +1,70 @@
 # AI Molecule Design Assistant
 
-Step-by-step support for evaluating generated SMILES using chemical identity,
-public database evidence, RDKit drug-likeness, ChemBERTa chemical-space
-embeddings, text evidence, and final design prioritization.
+## About the workflow
 
-This Python and Streamlit drug-design helper validates structures, calculates
-RDKit descriptors, measures structural similarity, builds conservative
-biomedical context, scores local text evidence, and generates molecule-level
-reports.
+### 1. SMILES validation and standardization
+
+Generated SMILES are parsed and standardized before downstream analysis. This
+establishes a chemically interpretable representation for identifier
+generation, descriptor calculation, fingerprints, and molecular embeddings.
+[RDKit documentation](https://www.rdkit.org/docs/) describes the open-source
+cheminformatics functionality used for molecular parsing and representation.
+
+### 2. Chemical identity lookup
+
+Standardized structures are assigned structure-derived identifiers such as
+InChIKey and are checked for exact public records when lookup services are
+enabled. [PubChem PUG-REST](https://pubmed.ncbi.nlm.nih.gov/27424744/) provides
+programmatic access to PubChem identifiers and properties, while
+[ChEMBL web services](https://academic.oup.com/nar/article/43/W1/W612/2467881)
+provide access to curated compound and bioactivity records.
+
+### 3. Public database evidence
+
+Exact PubChem or ChEMBL matches indicate that a standardized structure is
+represented in those public resources.
+[SureChEMBL](https://academic.oup.com/nar/article/44/D1/D1220/2503102) can add
+structure-level evidence extracted from chemically annotated patent documents.
+These results are interpreted only as public structure evidence.
+
+### 4. RDKit drug-likeness
+
+RDKit descriptors, fingerprint similarity, Lipinski-style property checks, and
+QED are presented as design heuristics. The
+[Lipinski framework](https://doi.org/10.1016/S0169-409X(00)00129-0) summarizes
+empirical property ranges, and [QED](https://doi.org/10.1038/nchem.1243)
+combines molecular-property distributions into a quantitative drug-likeness
+estimate. Neither constitutes evidence of biological activity or safety.
+
+### 5. ChemBERTa chemical-space embeddings
+
+[ChemBERTa](https://arxiv.org/abs/2010.09885) uses transformer-based
+self-supervised learning on SMILES to construct molecular representations.
+Low-dimensional views may use [UMAP](https://arxiv.org/abs/1802.03426) to
+display clusters, outliers, and reference-like neighborhoods. These plots are
+exploratory representations rather than experimental validation.
+
+### 6. Text-evidence matching
+
+After molecular identity and context are available, sentence embeddings compare
+molecule-context summaries with user-provided evidence text. The
+[Sentence-BERT](https://arxiv.org/abs/1908.10084) approach and the
+[Sentence Transformers documentation](https://www.sbert.net/) describe the
+methodological and software basis for efficient semantic similarity matching.
+This stage organizes evidence for review and hypothesis generation; it does not
+establish biological activity.
+
+### 7. Final design prioritization
+
+The final ranking integrates chemical identity, public-database status, RDKit
+drug-likeness, reference similarity, ChemBERTa chemical-space context,
+text-evidence matching, and evidence completeness. It is a transparent
+research-prioritization aid for selecting candidates for further computational
+or experimental review, not a prediction of efficacy, safety, novelty, or
+clinical value.
 
 The default workflow is local and reproducible. Online lookups are optional and
-are not required for the included demonstration.
+are not required for the included guided example.
 
 ## Key Features
 
@@ -59,7 +113,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-## Run the Public Demo Pipeline
+## Run the Guided Example Pipeline
 
 ```powershell
 python -m src.pipeline --input data/examples/druglike_candidate_demo.csv --references data/examples/druglike_reference_panel.csv --text-evidence data/examples/text_evidence_demo.csv --output-dir outputs/public_druglike_demo_context_nlp_fixed --use-chemberta --report-top-n 5 --report-dir outputs/public_druglike_demo_context_nlp_fixed/reports --clean-report-dir
@@ -82,7 +136,7 @@ Important generated files include:
 - `report_images/`
 
 Because outputs are ignored by Git, rerun the command above after cloning to
-regenerate the complete public demonstration.
+regenerate the complete public example.
 
 ## Launch the Streamlit App
 
@@ -91,12 +145,13 @@ streamlit run app.py
 ```
 
 The app opens on a clean welcome screen and does not automatically load an old
-output folder. Start with **Run public demo** or open **Upload my own SMILES**.
-Returning users can optionally load a completed output folder from the sidebar.
-No results appear until one of these actions is explicitly submitted.
+output folder. Start with **Guided example workflow** to learn each evaluation
+stage, or open **Upload my own SMILES**. Returning users can optionally load a
+completed output folder from the sidebar. No results appear until one of these
+actions is explicitly submitted.
 
-The public demo is executed incrementally rather than as one hidden batch process.
-Starting the tutorial creates a fresh workspace but does not perform any
+The guided example is executed incrementally rather than as one hidden batch
+process. Starting it creates a fresh workspace but does not perform any
 calculation. At each stage the app first explains:
 
 - what will be calculated;
@@ -153,7 +208,7 @@ does not rerun the pipeline or call online services.
 The dashboard reads local output files and clearly distinguishes available,
 not-run, unavailable, and error states. Missing or empty NLP output is explained
 for the selected folder. The app does not require online database access for the
-public demonstration. UI tables, filters, plot axes, and hover labels use
+guided example. UI tables, filters, plot axes, and hover labels use
 readable presentation names while generated CSV files retain stable
 machine-readable column names.
 

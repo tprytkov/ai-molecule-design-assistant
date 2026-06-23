@@ -52,11 +52,6 @@ OUTPUT_FILES = {
     "chemberta_embeddings": "chemberta_embeddings.csv",
 }
 APP_TITLE = "AI Molecule Design Assistant"
-APP_SUBTITLE = (
-    "Step-by-step support for evaluating generated SMILES using chemical identity, "
-    "public database evidence, RDKit drug-likeness, ChemBERTa chemical-space "
-    "embeddings, text evidence, and final design prioritization."
-)
 IMPORTANT_COLUMNS = [
     "molecule_id",
     "prioritization_score",
@@ -188,8 +183,72 @@ WELCOME_TEXT = (
     "evidence, and molecule-level reports."
 )
 START_GUIDANCE = (
-    "Start with the public demo to see what information the app can extract, "
-    "then run your own generated SMILES."
+    "Start with the guided example workflow to learn how each evidence stage "
+    "supports molecule-design prioritization, then evaluate your own generated SMILES."
+)
+ABOUT_WORKFLOW_SECTIONS = (
+    (
+        "1. SMILES validation and standardization",
+        "Generated SMILES are parsed and standardized before downstream analysis. "
+        "This establishes a chemically interpretable representation for identifier "
+        "generation, descriptor calculation, fingerprints, and molecular embeddings. "
+        "[RDKit documentation](https://www.rdkit.org/docs/) describes the open-source "
+        "cheminformatics functionality used for molecular parsing and representation.",
+    ),
+    (
+        "2. Chemical identity lookup",
+        "Standardized structures are assigned structure-derived identifiers such as "
+        "InChIKey and are checked for exact public records when lookup services are "
+        "enabled. [PubChem PUG-REST](https://pubmed.ncbi.nlm.nih.gov/27424744/) "
+        "provides programmatic access to PubChem identifiers and properties, while "
+        "[ChEMBL web services](https://academic.oup.com/nar/article/43/W1/W612/2467881) "
+        "provide access to curated compound and bioactivity records.",
+    ),
+    (
+        "3. Public database evidence",
+        "Exact PubChem or ChEMBL matches indicate that a standardized structure is "
+        "represented in those public resources. "
+        "[SureChEMBL](https://academic.oup.com/nar/article/44/D1/D1220/2503102) "
+        "can add structure-level evidence extracted from chemically annotated patent "
+        "documents. These results are interpreted only as public structure evidence.",
+    ),
+    (
+        "4. RDKit drug-likeness",
+        "RDKit descriptors, fingerprint similarity, Lipinski-style property checks, "
+        "and QED are presented as design heuristics. The "
+        "[Lipinski framework](https://doi.org/10.1016/S0169-409X(00)00129-0) "
+        "summarizes empirical property ranges, and "
+        "[QED](https://doi.org/10.1038/nchem.1243) combines molecular-property "
+        "distributions into a quantitative drug-likeness estimate. Neither constitutes "
+        "evidence of biological activity or safety.",
+    ),
+    (
+        "5. ChemBERTa chemical-space embeddings",
+        "[ChemBERTa](https://arxiv.org/abs/2010.09885) uses transformer-based "
+        "self-supervised learning on SMILES to construct molecular representations. "
+        "Low-dimensional views may use [UMAP](https://arxiv.org/abs/1802.03426) to "
+        "display clusters, outliers, and reference-like neighborhoods. These plots are "
+        "exploratory representations rather than experimental validation.",
+    ),
+    (
+        "6. Text-evidence matching",
+        "After molecular identity and context are available, sentence embeddings "
+        "compare molecule-context summaries with user-provided evidence text. The "
+        "[Sentence-BERT](https://arxiv.org/abs/1908.10084) approach and the "
+        "[Sentence Transformers documentation](https://www.sbert.net/) describe the "
+        "methodological and software basis for efficient semantic similarity matching. "
+        "This stage organizes evidence for review and hypothesis generation; it does "
+        "not establish biological activity.",
+    ),
+    (
+        "7. Final design prioritization",
+        "The final ranking integrates chemical identity, public-database status, "
+        "RDKit drug-likeness, reference similarity, ChemBERTa chemical-space context, "
+        "text-evidence matching, and evidence completeness. It is a transparent "
+        "research-prioritization aid for selecting candidates for further computational "
+        "or experimental review, not a prediction of efficacy, safety, novelty, or "
+        "clinical value.",
+    ),
 )
 WORKFLOW_STEP_NAMES = (
     "Step 1: Load and validate SMILES",
@@ -971,6 +1030,20 @@ def readable_ui_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
     for column in value_columns:
         result[column] = result[column].map(readable_status)
     return result
+
+
+def compact_detail_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop detail fields whose selected-molecule value is empty or unavailable."""
+    if frame.empty:
+        return frame.copy()
+    result = frame.copy()
+    keep = []
+    for column in result.columns:
+        value = result.iloc[0][column]
+        text = "" if pd.isna(value) else str(value).strip()
+        if text.lower() not in {"", "nan", "none", "null", "not_available"}:
+            keep.append(column)
+    return result[keep]
 
 
 def status_display(value: object) -> str:
@@ -1806,7 +1879,8 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
                     "error_message",
                 ),
             )
-            st.table(display_dataframe(structure_row[columns]).T)
+            compact = compact_detail_dataframe(structure_row[columns])
+            st.table(display_dataframe(compact).T)
 
     row = (
         prioritization[prioritization["molecule_id"].astype(str) == molecule_id]
@@ -1839,8 +1913,9 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
                     "druglikeness_flags",
                 ),
             )
+            compact = compact_detail_dataframe(descriptor_row[columns])
             st.table(
-                display_dataframe(readable_ui_dataframe(descriptor_row[columns]))
+                display_dataframe(readable_ui_dataframe(compact))
                 .T.rename(columns={descriptor_row.index[0]: "Value"})
             )
 
@@ -1868,8 +1943,9 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
                 )
                 if column in identity_row.columns
             ]
+            compact = compact_detail_dataframe(identity_row[columns])
             st.table(
-                display_dataframe(readable_ui_dataframe(identity_row[columns]))
+                display_dataframe(readable_ui_dataframe(compact))
                 .T.rename(columns={identity_row.index[0]: "Value"})
             )
 
@@ -1997,14 +2073,6 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
             "evidence while preserving unavailable-stage statuses."
         )
         st.table(molecule_detail_rows(row.iloc[0].to_dict(), score_column(prioritization)))
-
-    report_path = existing_report_path(loaded, molecule_id)
-    report_status, report_message = report_status_message(report_path)
-    if report_status == "success":
-        st.success(report_message)
-    else:
-        st.info(report_message)
-
 
 def render_new_analysis_form() -> Path | None:
     """Render upload-and-run form and return new output path after success."""
@@ -2237,27 +2305,27 @@ def run_public_demo_step(
 
 def render_public_demo_choice() -> Path | None:
     """Start a fresh tutorial without running any pipeline stage."""
-    st.header("Run public demo example")
+    st.header("Guided example workflow")
     st.write(
-        "Start an interactive walkthrough. Each step explains the calculation "
-        "before you run it, then shows what that step produced."
+        "Learn the evaluation process one stage at a time. Each step explains "
+        "what is calculated, why it matters, and what evidence it produces."
     )
     st.markdown("**Public example files**")
     for path in public_demo_input_paths():
         st.code(str(path), language=None)
-    if not st.button("Run public demo", type="primary"):
+    if not st.button("Run guided example workflow", type="primary"):
         return None
     try:
         paths = create_public_demo_workflow()
     except Exception as exc:
-        st.error(f"Could not start the public demo: {exc}")
+        st.error(f"Could not start the guided example: {exc}")
         return None
     output_dir = paths.prioritized.parent
     st.session_state["active_output_dir"] = str(output_dir)
     st.session_state["workflow_step"] = 1
     st.session_state["completed_workflow_steps"] = []
     st.session_state["workflow_mode"] = "public_demo"
-    st.success("Public demo tutorial ready. Step 1 has not run yet.")
+    st.success("Guided example ready. Step 1 has not run yet.")
     return output_dir
 
 
@@ -2694,8 +2762,11 @@ def run_app() -> None:
     """Run the guided Streamlit workflow without loading old results."""
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    st.write(APP_SUBTITLE)
     st.info(START_GUIDANCE)
+    with st.expander("About the workflow"):
+        for heading, explanation in ABOUT_WORKFLOW_SECTIONS:
+            st.markdown(f"**{heading}**")
+            st.markdown(explanation)
 
     output_dir = active_output_directory()
     if output_dir is not None:
@@ -2703,7 +2774,7 @@ def run_app() -> None:
         return
 
     demo_tab, upload_tab = st.tabs(
-        ["Run public demo", "Upload my own SMILES"]
+        ["Guided example workflow", "Upload my own SMILES"]
     )
     with demo_tab:
         demo_output = render_public_demo_choice()

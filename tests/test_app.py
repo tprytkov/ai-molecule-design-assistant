@@ -19,8 +19,8 @@ def test_app_uses_molecule_design_title_and_subtitle() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
     assert app.APP_TITLE == "AI Molecule Design Assistant"
-    assert app.APP_SUBTITLE in [item.value for item in app_test.markdown]
     assert app.APP_TITLE in [item.value for item in app_test.title]
+    assert not hasattr(app, "APP_SUBTITLE")
 
 
 def test_app_startup_does_not_auto_load_output_folder() -> None:
@@ -33,14 +33,30 @@ def test_app_startup_does_not_auto_load_output_folder() -> None:
     assert not app_test.dataframe
 
 
-def test_subtitle_and_start_guidance_exist() -> None:
+def test_about_workflow_and_start_guidance_exist() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
-    assert app.APP_SUBTITLE in [item.value for item in app_test.markdown]
     assert app.START_GUIDANCE in [item.value for item in app_test.info]
     button_labels = [button.label for button in app_test.button]
-    assert "Run public demo" in button_labels
+    assert "Run guided example workflow" in button_labels
     assert "Run analysis" in button_labels
+    assert len(app.ABOUT_WORKFLOW_SECTIONS) == 7
+    about_text = " ".join(
+        f"{heading} {explanation}"
+        for heading, explanation in app.ABOUT_WORKFLOW_SECTIONS
+    )
+    for source_name in (
+        "PubChem PUG-REST",
+        "ChEMBL web services",
+        "SureChEMBL",
+        "RDKit documentation",
+        "Lipinski framework",
+        "QED",
+        "ChemBERTa",
+        "UMAP",
+        "Sentence Transformers documentation",
+    ):
+        assert source_name in about_text
 
 
 def test_workflow_step_names_exist() -> None:
@@ -64,7 +80,8 @@ def test_demo_results_require_explicit_action() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
     assert any(
-        button.label == "Run public demo" for button in app_test.button
+        button.label == "Run guided example workflow"
+        for button in app_test.button
     )
     assert not any(
         heading.value in app.WORKFLOW_STEP_NAMES for heading in app_test.header
@@ -187,7 +204,9 @@ def test_public_demo_step_one_runs_only_standardization(
 def test_public_demo_opens_step_one_before_running_calculation() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
     demo_button = next(
-        button for button in app_test.button if button.label == "Run public demo"
+        button
+        for button in app_test.button
+        if button.label == "Run guided example workflow"
     )
     demo_button.click().run(timeout=10)
 
@@ -789,6 +808,27 @@ def test_readable_ui_dataframe_hides_status_codes() -> None:
             ["identity_status", "lookup_status", "nlp_status", "design_category"],
         ].astype(str)
     )
+
+
+def test_compact_detail_dataframe_removes_empty_fields() -> None:
+    frame = pd.DataFrame(
+        {
+            "identity_status": ["no_public_identity"],
+            "exact_public_name": [""],
+            "preferred_name": [None],
+            "identity_confidence": ["none"],
+            "inchikey": ["ABC-DEF"],
+            "lookup_status": ["not_queried"],
+        }
+    )
+
+    compact = app.compact_detail_dataframe(frame)
+
+    assert compact.columns.tolist() == [
+        "identity_status",
+        "inchikey",
+        "lookup_status",
+    ]
 
 
 def test_artifact_display_name_hides_local_directories() -> None:
