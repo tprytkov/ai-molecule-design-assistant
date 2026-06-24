@@ -110,8 +110,9 @@ are not required for the included guided example.
 │   └── examples/
 ├── src/
 ├── tests/
-├── environment.yml
+├── environment-local.yml
 ├── requirements.txt
+├── requirements-dev.txt
 └── README.md
 ```
 
@@ -121,12 +122,17 @@ artifacts from being committed accidentally.
 
 ## Quick Start
 
-The recommended setup uses Python 3.11 in Conda:
+Streamlit Cloud installs the deployed app from the root-level
+`requirements.txt` file. For local development, the recommended setup uses
+Python 3.11 in Conda:
 
 ```powershell
-conda env create -f environment.yml
+conda env create -f environment-local.yml
 conda activate molecule-intelligence
 ```
+
+The optional `requirements-dev.txt` file lists pytest and Playwright browser
+testing dependencies for non-Conda development environments.
 
 Run the test suite:
 
@@ -256,6 +262,14 @@ online services:
 python -m pytest -q tests/test_browser_app.py --basetemp C:\tmp\pytest-molecule-intelligence-browser
 ```
 
+To smoke-test the deployed Streamlit app without running online lookup steps or
+model downloads, provide the public app URL as an environment variable:
+
+```powershell
+$env:STREAMLIT_APP_URL = "https://your-streamlit-app-url"
+python -m pytest -q tests/test_deployed_app_browser.py --basetemp C:\tmp\pytest-molecule-intelligence-browser
+```
+
 Run the complete test suite with:
 
 ```powershell
@@ -318,7 +332,9 @@ public-safe schema demonstrated in `data/examples/text_evidence_demo.csv`.
 ## Reproducibility Notes
 
 - Python version: 3.11
-- Dependencies are listed in both `environment.yml` and `requirements.txt`.
+- Streamlit Cloud deployment dependencies are listed in `requirements.txt`.
+- Local Conda dependencies are listed in `environment-local.yml`.
+- Non-Conda test tooling is listed in `requirements-dev.txt`.
 - Tests do not call online APIs.
 - ChemBERTa must already be available in the local model cache when used
   offline.
