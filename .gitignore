@@ -41,3 +41,7 @@ outputs/
 __pycache__/
 .pytest_cache/
 .streamlit/secrets.toml
+data/demo_generated_smiles.csv
+data/demo_surechembl_compounds.csv
+data/demo_text_evidence.csv
+data/reference_molecules.csv
