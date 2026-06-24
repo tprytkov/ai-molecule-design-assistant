@@ -1,3 +1,4 @@
+import builtins
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
@@ -1869,6 +1870,33 @@ def test_molecule_structure_image_is_generated_for_valid_smiles() -> None:
 
     assert image is not None
     assert image.size == (420, 320)
+
+
+def test_molecule_structure_image_handles_missing_drawing_support(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_import = builtins.__import__
+
+    def import_without_rdkit_drawing(
+        name: str,
+        globals=None,
+        locals=None,
+        fromlist=(),
+        level: int = 0,
+    ):
+        if name == "rdkit.Chem" and {"Draw", "rdDepictor"}.intersection(
+            set(fromlist or ())
+        ):
+            raise ImportError("RDKit drawing support is unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(app, "RDKIT_DRAWING_UNAVAILABLE", False)
+    monkeypatch.setattr(builtins, "__import__", import_without_rdkit_drawing)
+
+    assert app.molecule_structure_image("CCO") is None
+    assert app.molecule_image_message(tmp_path / "missing.png") == (
+        "2D structure image is unavailable in this environment."
+    )
 
 
 def test_molecule_structure_image_rejects_invalid_smiles() -> None:

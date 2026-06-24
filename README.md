@@ -123,8 +123,9 @@ artifacts from being committed accidentally.
 ## Quick Start
 
 Streamlit Cloud installs the deployed app from the root-level
-`requirements.txt` file. For local development, the recommended setup uses
-Python 3.11 in Conda:
+`requirements.txt` file. The root-level `packages.txt` file lists Linux system
+libraries used by RDKit structure drawing on Streamlit Cloud. For local
+development, the recommended setup uses Python 3.11 in Conda:
 
 ```powershell
 conda env create -f environment-local.yml

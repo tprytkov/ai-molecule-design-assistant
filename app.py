@@ -17,7 +17,6 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from rdkit import Chem
-from rdkit.Chem import Draw, rdDepictor
 
 from src.compound_qa import compound_qa
 from src.chemberta_embeddings import (
@@ -214,6 +213,7 @@ ONLINE_LOOKUP_NOTE = (
     "Online lookup is enabled by default for new analyses. PubChem, ChEMBL, "
     "and SureChEMBL are called only after you click Run analysis."
 )
+RDKIT_DRAWING_UNAVAILABLE = False
 LOAD_EXISTING_NOTE = (
     "This mode only loads an existing output folder. It does not rerun the "
     "pipeline or call online services."
@@ -1282,6 +1282,8 @@ def molecule_detail_rows(record: dict[str, object], active_score: str) -> pd.Dat
 
 def molecule_image_message(image_path: Path) -> str:
     """Return the message shown when a molecule image is missing."""
+    if RDKIT_DRAWING_UNAVAILABLE:
+        return "2D structure image is unavailable in this environment."
     if image_path.exists():
         return ""
     return "2D structure image is not available for this molecule."
@@ -1289,6 +1291,15 @@ def molecule_image_message(image_path: Path) -> str:
 
 def molecule_structure_image(smiles: object) -> object | None:
     """Create an in-memory 2D structure image for a valid SMILES value."""
+    global RDKIT_DRAWING_UNAVAILABLE
+
+    RDKIT_DRAWING_UNAVAILABLE = False
+    try:
+        from rdkit.Chem import Draw, rdDepictor
+    except ImportError:
+        RDKIT_DRAWING_UNAVAILABLE = True
+        return None
+
     text = str(smiles or "").strip()
     if not text:
         return None
