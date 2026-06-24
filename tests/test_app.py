@@ -10,6 +10,30 @@ from streamlit.testing.v1 import AppTest
 import app
 
 
+class NullExpander:
+    def __enter__(self) -> "NullExpander":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+class MetricColumn:
+    def __init__(self, metrics: list[tuple[str, object]]) -> None:
+        self.metrics = metrics
+        self.markdown_values: list[str] = []
+        self.caption_values: list[str] = []
+
+    def metric(self, label: str, value: object, *args, **kwargs) -> None:
+        self.metrics.append((label, value))
+
+    def markdown(self, value: str, *args, **kwargs) -> None:
+        self.markdown_values.append(value)
+
+    def caption(self, value: str, *args, **kwargs) -> None:
+        self.caption_values.append(value)
+
+
 def test_app_imports_without_crashing() -> None:
     assert hasattr(app, "run_app")
     assert hasattr(app, "load_output_directory")
@@ -30,7 +54,7 @@ def test_app_startup_does_not_auto_load_output_folder() -> None:
     assert not any(
         heading.value in app.WORKFLOW_STEP_NAMES for heading in app_test.header
     )
-    assert not app_test.dataframe
+    assert "active_output_dir" not in app_test.session_state
 
 
 def test_about_workflow_and_start_guidance_exist() -> None:
@@ -57,6 +81,239 @@ def test_about_workflow_and_start_guidance_exist() -> None:
         "Sentence Transformers documentation",
     ):
         assert source_name in about_text
+
+
+def test_guided_example_file_preview_section_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expanders = []
+    tables = []
+    downloads = []
+    text_areas = []
+    markdown = []
+    writes = []
+    codes = []
+    fake_streamlit = SimpleNamespace(
+        session_state={},
+        header=lambda *args, **kwargs: None,
+        write=lambda value, *args, **kwargs: writes.append(str(value)),
+        markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
+        code=lambda value, *args, **kwargs: codes.append(str(value)),
+        expander=lambda label, *args, **kwargs: (
+            expanders.append(label) or NullExpander()
+        ),
+        dataframe=lambda data, *args, **kwargs: tables.append(data),
+        download_button=lambda label, *args, **kwargs: downloads.append(
+            {"label": label, **kwargs}
+        ),
+        text_area=lambda label, *args, **kwargs: text_areas.append(
+            {"label": label, **kwargs}
+        ),
+        button=lambda *args, **kwargs: False,
+        error=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        success=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    result = app.render_public_demo_choice()
+
+    assert result is None
+    assert (
+        "Use these files as templates for preparing your own generated SMILES input."
+        in markdown
+    )
+    assert expanders == [
+        "Show raw CSV text: druglike_candidate_demo.csv",
+        "Show raw CSV text: druglike_reference_panel.csv",
+        "Show raw CSV text: text_evidence_demo.csv",
+    ]
+    assert codes == []
+    assert [item["file_name"] for item in downloads] == [
+        "druglike_candidate_demo.csv",
+        "druglike_reference_panel.csv",
+        "text_evidence_demo.csv",
+    ]
+    assert all(item["label"] == "Download CSV" for item in downloads)
+    assert len(text_areas) == 3
+    assert all(item["label"] == "Raw CSV text" for item in text_areas)
+    assert "molecule_id,smiles" in text_areas[0]["value"]
+    assert any("rows" in value and "columns" in value for value in writes)
+    assert any("**File purpose:**" in value for value in markdown)
+    assert any(
+        "Use this file as a template for preparing your own input." in value
+        for value in markdown
+    )
+
+
+def test_candidate_file_preview_shows_molecule_id_and_smiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tables = []
+    fake_streamlit = SimpleNamespace(
+        markdown=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: NullExpander(),
+        dataframe=lambda data, *args, **kwargs: tables.append(data),
+        download_button=lambda *args, **kwargs: None,
+        text_area=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_example_file_preview(app.DEMO_INPUT)
+
+    column_meanings = tables[0]
+    preview = tables[1]
+    assert {"molecule_id", "smiles"}.issubset(preview.columns)
+    assert len(preview) == 10
+    assert {"molecule_id", "smiles"}.issubset(
+        set(column_meanings["Column"].astype(str))
+    )
+
+
+def test_standardized_output_download_appears_after_step_one_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "standardized.csv"
+    output.write_text(
+        "molecule_id,smiles,canonical_smiles,valid_smiles\n"
+        "mol_1,CCO,CCO,True\n",
+        encoding="utf-8",
+    )
+    downloads = []
+    tables = []
+    markdown = []
+    writes = []
+    text_areas = []
+    fake_streamlit = SimpleNamespace(
+        markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
+        write=lambda value, *args, **kwargs: writes.append(str(value)),
+        dataframe=lambda data, *args, **kwargs: tables.append(data),
+        download_button=lambda label, *args, **kwargs: downloads.append(
+            {"label": label, **kwargs}
+        ),
+        expander=lambda *args, **kwargs: NullExpander(),
+        text_area=lambda label, *args, **kwargs: text_areas.append(
+            {"label": label, **kwargs}
+        ),
+        info=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_csv_output_artifact(output)
+
+    assert "#### standardized.csv" in markdown
+    assert any("1 row" in value for value in writes)
+    assert {"molecule_id", "smiles"}.issubset(tables[0].columns)
+    assert downloads == [
+        {
+            "label": "Download standardized.csv",
+            "data": output.read_bytes(),
+            "file_name": "standardized.csv",
+            "mime": "text/csv",
+            "key": "download_output_standardized.csv",
+        }
+    ]
+    assert text_areas[0]["value"] == output.read_bytes().decode("utf-8")
+
+
+def test_missing_output_shows_helpful_message(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    information = []
+    fake_streamlit = SimpleNamespace(
+        markdown=lambda *args, **kwargs: None,
+        info=lambda message, *args, **kwargs: information.append(message),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_csv_output_artifact(tmp_path / "standardized.csv")
+
+    assert information == ["Run this step to create the output file."]
+
+
+def test_surechembl_ui_hides_patent_columns_only_when_unavailable() -> None:
+    structure_only = pd.DataFrame(
+        {
+            "molecule_id": ["mol_1"],
+            "lookup_status": ["match_found"],
+            "surechembl_id": ["SCHEMBL1"],
+            "compound_name": ["demo"],
+            "tanimoto_similarity": ["0.910"],
+            "similarity_category": ["very_close_patent_analog"],
+            "patent_id": ["not_available"],
+            "patent_number": ["not_available"],
+            "patent_title": ["not_available"],
+            "patent_date": ["not_available"],
+            "patent_section": ["SureChEMBL API"],
+            "patent_metadata_status": ["structure_match_only"],
+            "patent_metadata_source": ["not_available"],
+            "evidence_note": [
+                "Structure match found, but patent document metadata was not retrieved."
+            ],
+        }
+    )
+    with_metadata = structure_only.copy()
+    with_metadata.loc[0, "patent_metadata_status"] = "found"
+    with_metadata.loc[0, "patent_id"] = "PAT-1"
+    with_metadata.loc[0, "patent_number"] = "US-PAT-1"
+
+    structure_columns = app.surechembl_detail_columns(structure_only)
+    metadata_columns = app.surechembl_detail_columns(with_metadata)
+
+    assert "surechembl_id" not in structure_columns
+    assert "molecule_id" in structure_columns
+    assert "patent_id" not in structure_columns
+    assert "patent_number" not in structure_columns
+    assert "patent_metadata_status" in structure_columns
+    assert "patent_section" in structure_columns
+    assert "patent_id" in metadata_columns
+    assert "patent_number" in metadata_columns
+
+
+def test_surechembl_ui_uses_readable_structure_evidence_labels() -> None:
+    frame = pd.DataFrame(
+        {
+            "molecule_id": ["mol_1", "mol_2", "mol_3"],
+            "lookup_status": ["match_found", "match_found", "lookup_error"],
+            "compound_name": ["demo", "demo 2", ""],
+            "tanimoto_similarity": ["0.910", "0.750", ""],
+            "similarity_category": [
+                "very_close_patent_analog",
+                "related_patent_chemotype",
+                "",
+            ],
+            "patent_metadata_status": [
+                "structure_match_only",
+                "found",
+                "",
+            ],
+            "patent_section": ["SureChEMBL API", "claims", ""],
+            "evidence_note": ["note", "note 2", "error"],
+        }
+    )
+
+    readable = app.display_dataframe(app.readable_surechembl_dataframe(frame))
+    values = " ".join(
+        readable.fillna("").astype(str).to_numpy().reshape(-1).tolist()
+    )
+
+    assert "very_close_patent_analog" not in values
+    assert "Very close SureChEMBL structure match" in values
+    assert "Structure match only" in values
+    assert "SureChEMBL structure lookup" in values
+    assert "Document metadata status" in readable.columns
+    assert "Metadata source" in readable.columns
+    assert app.surechembl_summary_counts(frame) == {
+        "Structure matches found": 2,
+        "Document metadata found": 1,
+        "Structure-only matches": 1,
+        "Lookup errors": 1,
+    }
 
 
 def test_workflow_step_names_exist() -> None:
@@ -106,6 +363,10 @@ def test_demo_results_load_after_explicit_action(
         write=lambda *args, **kwargs: None,
         markdown=lambda *args, **kwargs: None,
         code=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: NullExpander(),
+        dataframe=lambda *args, **kwargs: None,
+        download_button=lambda *args, **kwargs: None,
+        text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: label == "Run guided example workflow",
         error=lambda *args, **kwargs: None,
         info=lambda *args, **kwargs: None,
@@ -144,6 +405,10 @@ def test_failed_preflight_blocks_online_guided_example_run(
         write=lambda *args, **kwargs: None,
         markdown=lambda *args, **kwargs: None,
         code=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: NullExpander(),
+        dataframe=lambda *args, **kwargs: None,
+        download_button=lambda *args, **kwargs: None,
+        text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: label == "Run guided example workflow",
         error=lambda message, *args, **kwargs: errors.append(message),
         info=lambda message, *args, **kwargs: information.append(message),
@@ -180,6 +445,10 @@ def test_failed_preflight_does_not_activate_output_folder(
         write=lambda *args, **kwargs: None,
         markdown=lambda *args, **kwargs: None,
         code=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: NullExpander(),
+        dataframe=lambda *args, **kwargs: None,
+        download_button=lambda *args, **kwargs: None,
+        text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: label == "Run guided example workflow",
         error=lambda *args, **kwargs: None,
         info=lambda *args, **kwargs: None,
@@ -262,6 +531,10 @@ def test_connection_button_runs_same_preflight_without_activating_output(
         write=lambda *args, **kwargs: None,
         markdown=lambda *args, **kwargs: None,
         code=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: NullExpander(),
+        dataframe=lambda *args, **kwargs: None,
+        download_button=lambda *args, **kwargs: None,
+        text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: (
             label == "Test online lookup connection"
         ),
@@ -305,6 +578,10 @@ def test_connection_button_shows_success(
         write=lambda *args, **kwargs: None,
         markdown=lambda *args, **kwargs: None,
         code=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: NullExpander(),
+        dataframe=lambda *args, **kwargs: None,
+        download_button=lambda *args, **kwargs: None,
+        text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: (
             label == "Test online lookup connection"
         ),
@@ -585,7 +862,9 @@ def test_public_demo_opens_step_one_before_running_calculation() -> None:
         assert "#### What this step calculates" in markdown_values
         assert "#### Why we run it" in markdown_values
         assert "#### What you will get" in markdown_values
-        assert not app_test.dataframe
+        assert not any(
+            heading.value == "Output files" for heading in app_test.header
+        )
     finally:
         app.pubchem_preflight = original_preflight
 
@@ -1617,6 +1896,99 @@ def test_report_status_message_does_not_expose_path(tmp_path: Path) -> None:
     assert status == "success"
     assert message == "A molecule report is available for this candidate."
     assert str(report_path) not in message
+
+
+def test_report_artifact_bar_chart_is_removed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report = reports_dir / "compound_intelligence_report_mol_a.md"
+    report.write_text("# mol_a report\n\nPreview body.", encoding="utf-8")
+    metrics = []
+    downloads = []
+    tables = []
+    previews = []
+    images = []
+    metric_columns = []
+    def fake_columns(count: int) -> list[MetricColumn]:
+        metric_columns[:] = [MetricColumn(metrics) for _ in range(count)]
+        return metric_columns
+
+    fake_streamlit = SimpleNamespace(
+        columns=fake_columns,
+        dataframe=lambda data, *args, **kwargs: tables.append(data),
+        download_button=lambda label, *args, **kwargs: downloads.append(
+            {"label": label, **kwargs}
+        ),
+        expander=lambda *args, **kwargs: NullExpander(),
+        text_area=lambda label, *args, **kwargs: previews.append(
+            {"label": label, **kwargs}
+        ),
+        image=lambda *args, **kwargs: images.append((args, kwargs)),
+        info=lambda *args, **kwargs: None,
+        plotly_chart=lambda *args, **kwargs: pytest.fail(
+            "Report artifact bar chart should not be rendered."
+        ),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_reports_browser(reports_dir=reports_dir)
+
+    assert ("Reports generated", 1) in metrics
+    assert ("Molecules with reports", 1) in metrics
+    assert ("Report folder", reports_dir) not in metrics
+    assert any(str(reports_dir) in column.caption_values for column in metric_columns)
+    assert tables
+    assert "Molecule ID" in tables[0].columns
+    assert downloads[0]["label"] == "Download all reports as ZIP"
+    report_download = next(
+        item for item in downloads if item["label"] == f"Download {report.name}"
+    )
+    assert report_download["data"] == report.read_bytes()
+    assert previews[0]["label"] == "Markdown preview"
+
+
+def test_report_table_appears_when_reports_exist(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report = reports_dir / "compound_intelligence_report_mol_a.md"
+    report.write_text("# mol_a report", encoding="utf-8")
+    prioritization = pd.DataFrame(
+        {
+            "molecule_id": ["mol_a"],
+            "prioritization_category_with_nlp": ["high_priority"],
+            "exact_public_name": ["Example public name"],
+            "druglikeness_category": ["favorable"],
+            "nlp_status": ["available"],
+        }
+    )
+
+    table = app.report_table_dataframe([report], prioritization)
+
+    assert table.loc[0, "Molecule ID"] == "mol_a"
+    assert table.loc[0, "Report file"] == report.name
+    assert table.loc[0, "Priority/design category"] == "High priority"
+    assert table.loc[0, "Exact public identity"] == "Example public name"
+    assert table.loc[0, "Drug-likeness category"] == "Favorable"
+    assert table.loc[0, "Text-evidence status"] == "Available"
+    assert table.loc[0, "Download report button"] == f"Download {report.name}"
+
+
+def test_no_reports_message_appears_when_reports_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    information = []
+    fake_streamlit = SimpleNamespace(
+        info=lambda message, *args, **kwargs: information.append(message),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_reports_browser(reports_dir=tmp_path / "reports")
+
+    assert information == ["Run Step 8 to generate molecule reports."]
 
 
 def test_identity_acronym_labels_are_preserved() -> None:

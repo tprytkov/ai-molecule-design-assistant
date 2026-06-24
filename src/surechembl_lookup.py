@@ -34,10 +34,14 @@ OUTPUT_COLUMNS = (
     "canonical_smiles",
     "valid_smiles",
     "surechembl_id",
+    "compound_name",
     "patent_id",
+    "patent_number",
     "patent_title",
     "patent_date",
-    "compound_name",
+    "patent_section",
+    "patent_metadata_status",
+    "patent_metadata_source",
     "patent_compound_smiles",
     "tanimoto_similarity",
     "similarity_category",
@@ -171,10 +175,14 @@ class SurechemblHit:
     canonical_smiles: str
     valid_smiles: bool
     surechembl_id: str = ""
+    compound_name: str = ""
     patent_id: str = ""
+    patent_number: str = ""
     patent_title: str = ""
     patent_date: str = ""
-    compound_name: str = ""
+    patent_section: str = ""
+    patent_metadata_status: str = ""
+    patent_metadata_source: str = ""
     patent_compound_smiles: str = ""
     tanimoto_similarity: str = ""
     similarity_category: str = ""
@@ -189,9 +197,11 @@ class PatentDocumentMetadata:
     """Best-available patent/document metadata for a SureChEMBL structure."""
 
     patent_id: str = ""
+    patent_number: str = ""
     patent_title: str = ""
     patent_date: str = ""
-    source_section: str = ""
+    patent_section: str = ""
+    metadata_source: str = ""
     evidence_note: str = ""
 
 
@@ -305,10 +315,20 @@ def rank_hits(
             canonical_smiles=canonical_smiles,
             valid_smiles=True,
             surechembl_id=compound.surechembl_id,
+            compound_name=compound.compound_name,
             patent_id=compound.patent_id,
+            patent_number=compound.patent_id,
             patent_title=compound.patent_title,
             patent_date=compound.patent_date,
-            compound_name=compound.compound_name,
+            patent_section=compound.source_section,
+            patent_metadata_status=(
+                "found" if compound.patent_id else "structure_match_only"
+            ),
+            patent_metadata_source=(
+                "local_demo_surechembl_compounds"
+                if compound.patent_id
+                else "not_available"
+            ),
             patent_compound_smiles=compound.smiles,
             tanimoto_similarity=f"{score:.3f}",
             similarity_category=categorize_similarity(score),
@@ -470,6 +490,38 @@ def extract_patent_id(record: Mapping[str, object]) -> str:
     return ""
 
 
+def extract_patent_number(record: Mapping[str, object]) -> str:
+    """Extract a publication/patent number from common API fields."""
+    direct = first_text(
+        record,
+        (
+            "patent_number",
+            "publication_number",
+            "document_number",
+            "patent_id",
+            "document_id",
+        ),
+    )
+    if direct:
+        return direct
+    patents = record.get("patents")
+    if isinstance(patents, list) and patents:
+        first = patents[0]
+        if isinstance(first, dict):
+            return first_text(
+                first,
+                (
+                    "patent_number",
+                    "publication_number",
+                    "document_number",
+                    "patent_id",
+                    "document_id",
+                ),
+            )
+        return str(first).strip()
+    return ""
+
+
 def extract_document_records(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
     """Extract document records from common SureChEMBL response shapes."""
     data = extract_response_data(payload)
@@ -508,6 +560,7 @@ def parse_document_metadata(
         if not chemical_ids:
             continue
         patent_id = extract_patent_id(record)
+        patent_number = extract_patent_number(record)
         patent_title = first_text(
             record,
             (
@@ -537,10 +590,12 @@ def parse_document_metadata(
             "structure-level SureChEMBL hit to mapped patent document metadata."
         )
         parsed = PatentDocumentMetadata(
-            patent_id=patent_id,
+            patent_id=patent_id or patent_number,
+            patent_number=patent_number or patent_id,
             patent_title=patent_title,
             patent_date=patent_date,
-            source_section=source_section,
+            patent_section=source_section,
+            metadata_source="SureChEMBL documents_for_structures",
             evidence_note=note,
         )
         for chemical_id in chemical_ids:
@@ -624,6 +679,12 @@ def parse_online_hits(
     parsed.sort(key=lambda item: (-item[0], item[1]))
     results: list[SurechemblHit] = []
     for score, _, record in parsed[:top_k]:
+        patent_id = extract_patent_id(record)
+        patent_number = extract_patent_number(record)
+        source_section = first_text(
+            record,
+            ("source_section", "section", "source"),
+        ) or "SureChEMBL API"
         results.append(
             SurechemblHit(
                 molecule_id=molecule_id,
@@ -633,31 +694,31 @@ def parse_online_hits(
                     record,
                     ("surechembl_id", "schembl_id", "compound_id", "id"),
                 ),
-                patent_id=extract_patent_id(record),
+                compound_name=first_text(
+                    record,
+                    ("compound_name", "name", "preferred_name"),
+                ),
+                patent_id=patent_id,
+                patent_number=patent_number or patent_id,
                 patent_title=first_text(record, ("patent_title", "title")),
                 patent_date=first_text(
                     record,
                     ("patent_date", "publication_date", "date"),
                 ),
-                compound_name=first_text(
-                    record,
-                    ("compound_name", "name", "preferred_name"),
-                ),
+                patent_section=source_section,
+                patent_metadata_status="",
+                patent_metadata_source="",
                 patent_compound_smiles=first_text(
                     record,
                     ("smiles", "canonical_smiles", "compound_smiles"),
                 ),
                 tanimoto_similarity=f"{score:.3f}",
                 similarity_category=categorize_similarity(score),
-                source_section=first_text(
-                    record,
-                    ("source_section", "section", "source"),
-                )
-                or "SureChEMBL API",
+                source_section=source_section,
                 evidence_note=(
-                    "Online patent-associated chemical structure search sent the "
+                    "Online SureChEMBL public structure evidence search sent the "
                     "query structure to the SureChEMBL external public API. "
-                    "This row is a structure-level SureChEMBL hit."
+                    "This row is a structure-level public SureChEMBL hit."
                 ),
                 lookup_status="match_found",
             )
@@ -677,9 +738,13 @@ def enrich_hits_with_document_metadata(
             enriched.append(
                 replace(
                     hit,
-                    patent_id=hit.patent_id or "not_available",
-                    patent_title=hit.patent_title or "not_available",
-                    patent_date=hit.patent_date or "not_available",
+                    patent_id="not_available",
+                    patent_number="not_available",
+                    patent_title="not_available",
+                    patent_date="not_available",
+                    patent_section=hit.patent_section or hit.source_section,
+                    patent_metadata_status="structure_match_only",
+                    patent_metadata_source="not_available",
                     evidence_note=(
                         hit.evidence_note
                         + " Structure-level SureChEMBL hits were found, but "
@@ -692,13 +757,25 @@ def enrich_hits_with_document_metadata(
             replace(
                 hit,
                 patent_id=metadata.patent_id or hit.patent_id or "not_available",
+                patent_number=(
+                    metadata.patent_number
+                    or hit.patent_number
+                    or metadata.patent_id
+                    or "not_available"
+                ),
                 patent_title=(
                     metadata.patent_title or hit.patent_title or "not_available"
                 ),
                 patent_date=(
                     metadata.patent_date or hit.patent_date or "not_available"
                 ),
-                source_section=metadata.source_section or hit.source_section,
+                patent_section=metadata.patent_section or hit.patent_section,
+                patent_metadata_status="found",
+                patent_metadata_source=(
+                    metadata.metadata_source
+                    or "SureChEMBL documents_for_structures"
+                ),
+                source_section=metadata.patent_section or hit.source_section,
                 evidence_note=metadata.evidence_note or hit.evidence_note,
             )
         )

@@ -37,6 +37,7 @@ class MockSurechemblClient:
                         {
                             "chemical_id": "SCHEMBL-MOCK-ASPIRIN",
                             "patent_id": "MOCK-PATENT-001",
+                            "patent_number": "US-MOCK-001",
                             "patent_title": "Mock patent chemistry hit",
                             "publication_date": "2026-01-01",
                             "source_section": "claims",
@@ -190,7 +191,11 @@ def test_online_surechembl_uses_mocked_api_client(tmp_path: Path) -> None:
     assert tuple(rows[0]) == OUTPUT_COLUMNS
     assert rows[0]["surechembl_id"] == "SCHEMBL-MOCK-ASPIRIN"
     assert rows[0]["patent_id"] == "MOCK-PATENT-001"
+    assert rows[0]["patent_number"] == "US-MOCK-001"
     assert rows[0]["patent_title"] == "Mock patent chemistry hit"
+    assert rows[0]["patent_section"] == "claims"
+    assert rows[0]["patent_metadata_status"] == "found"
+    assert rows[0]["patent_metadata_source"] == "SureChEMBL documents_for_structures"
     assert rows[0]["lookup_status"] == "match_found"
     assert rows[1]["lookup_status"] == "invalid_molecule"
 
@@ -215,7 +220,38 @@ def test_missing_follow_up_metadata_does_not_crash(tmp_path: Path) -> None:
         rows = list(csv.DictReader(output_file))
     assert rows[0]["lookup_status"] == "match_found"
     assert rows[0]["patent_id"] == "not_available"
+    assert rows[0]["patent_number"] == "not_available"
     assert rows[0]["patent_title"] == "not_available"
+    assert rows[0]["patent_metadata_status"] == "structure_match_only"
+    assert rows[0]["patent_metadata_source"] == "not_available"
+
+
+def test_structure_match_without_patent_metadata_is_not_document_evidence(
+    tmp_path: Path,
+) -> None:
+    descriptors = tmp_path / "descriptors.csv"
+    surechembl = tmp_path / "surechembl.csv"
+    output = tmp_path / "output.csv"
+    write_inputs(descriptors, surechembl)
+
+    surechembl_lookup_csv(
+        descriptors,
+        None,
+        output,
+        top_k=5,
+        online_surechembl=True,
+        max_molecules=1,
+        client=MockSurechemblClient(metadata=False),
+    )
+
+    with output.open("r", encoding="utf-8", newline="") as output_file:
+        rows = list(csv.DictReader(output_file))
+    row = rows[0]
+    assert row["lookup_status"] == "match_found"
+    assert row["surechembl_id"] == "SCHEMBL-MOCK-ASPIRIN"
+    assert row["patent_metadata_status"] == "structure_match_only"
+    assert row["patent_id"] == "not_available"
+    assert row["patent_number"] == "not_available"
 
 
 def test_online_error_produces_lookup_error(tmp_path: Path) -> None:

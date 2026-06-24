@@ -6,8 +6,10 @@ import re
 import shutil
 import sys
 import time
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Iterable
 
@@ -96,6 +98,7 @@ DISPLAY_LABELS = {
     "prioritization_category_with_nlp": "Research-prioritization category",
     "prioritization_category": "Base prioritization category",
     "tanimoto_similarity": "Best reference similarity",
+    "similarity_category": "Structure match category",
     "best_reference_name": "Closest reference compound",
     "known_public_match": "Exact public match",
     "pubchem_status": "PubChem status",
@@ -131,6 +134,21 @@ DISPLAY_LABELS = {
     "pubchem_cid": "PubChem CID",
     "chembl_id": "ChEMBL ID",
     "surechembl_id": "SureChEMBL ID",
+    "compound_name": "Compound name",
+    "patent_id": "Patent document ID",
+    "patent_number": "Patent number",
+    "patent_title": "Patent title",
+    "patent_date": "Patent date",
+    "patent_section": "Metadata source",
+    "patent_metadata_status": "Document metadata status",
+    "patent_metadata_source": "Patent metadata source",
+    "Molecule ID": "Molecule ID",
+    "Report file": "Report file",
+    "Priority/design category": "Priority/design category",
+    "Exact public identity": "Exact public identity",
+    "Drug-likeness category": "Drug-likeness category",
+    "Text-evidence status": "Text-evidence status",
+    "Download report button": "Download report button",
     "lookup_status": "Lookup status",
     "source_database": "Public database",
     "public_id": "Public ID",
@@ -318,6 +336,56 @@ FINAL_RANKING_EXPLANATION = (
 DEMO_INPUT = Path("data/examples/druglike_candidate_demo.csv")
 DEMO_REFERENCES = Path("data/examples/druglike_reference_panel.csv")
 DEMO_TEXT_EVIDENCE = Path("data/examples/text_evidence_demo.csv")
+EXAMPLE_FILE_NOTES = {
+    DEMO_INPUT: (
+        "Candidate file",
+        {
+            "molecule_id": "unique molecule identifier",
+            "smiles": "generated molecule SMILES",
+            "notes": "optional notes or source context for the generated molecule",
+        },
+        (
+            "This file supplies the generated molecules that move through SMILES "
+            "validation, public lookup, descriptor calculation, and final ranking."
+        ),
+    ),
+    DEMO_REFERENCES: (
+        "Reference file",
+        {
+            "reference_id": "known or comparison molecule",
+            "reference_name": "known or comparison molecule",
+            "name": "known or comparison molecule",
+            "smiles": "reference molecule SMILES",
+            "reference_role": "optional annotation describing how the reference is used",
+            "target": "optional target or assay context annotation",
+            "target_family": "optional target or biological context annotation",
+            "evidence": "optional evidence annotation",
+            "evidence_note": "optional evidence annotation",
+            "notes": "optional annotation or evidence context",
+        },
+        (
+            "This file provides known or comparison molecules for reference "
+            "similarity and chemical-context interpretation."
+        ),
+    ),
+    DEMO_TEXT_EVIDENCE: (
+        "Text evidence file",
+        {
+            "evidence_id": "evidence row identifier",
+            "text": "notes, assay description, literature text, or target context",
+            "source": "optional metadata column",
+            "source_type": "optional metadata column",
+            "target": "optional metadata column",
+            "target_family": "optional metadata column",
+            "molecule_id": "optional metadata column linking evidence to a molecule",
+            "notes": "optional metadata column",
+        },
+        (
+            "This file supplies short text evidence that the workflow compares "
+            "against molecule context during the text-evidence stage."
+        ),
+    ),
+}
 GUIDED_EXAMPLE_MAX_MOLECULES = None
 PUBCHEM_PREFLIGHT_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/aspirin/cids/TXT"
@@ -1099,6 +1167,14 @@ def readable_status(value: object) -> str:
         "available": "Available",
         "offline": "Not run",
         "invalid_molecule": "Invalid molecule",
+        "structure_match_only": "Structure match only",
+        "very_close_patent_analog": "Very close SureChEMBL structure match",
+        "related_patent_chemotype": "Related SureChEMBL structure match",
+        "moderate_patent_similarity": "Moderate SureChEMBL structure match",
+        "structurally_distinct_from_patent_compound": (
+            "Structurally distinct SureChEMBL match"
+        ),
+        "SureChEMBL API": "SureChEMBL structure lookup",
     }
     return labels.get(status, status.replace("_", " ").strip().capitalize())
 
@@ -1747,6 +1823,7 @@ def render_public_evidence_view(
         subset=status_columns,
     )
     st.markdown("#### Molecule-level public evidence")
+    st.caption("SureChEMBL public structure evidence is reported as structure evidence; patent document metadata is shown only when retrieved.")
     st.dataframe(styled, width="stretch", hide_index=True)
     plot_evidence = evidence.copy()
     for column in status_fields:
@@ -2259,23 +2336,7 @@ def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
                 hide_index=True,
             )
         if not sure_rows.empty:
-            columns = available_columns(
-                sure_rows,
-                (
-                    "lookup_status",
-                    "surechembl_id",
-                    "compound_name",
-                    "tanimoto_similarity",
-                    "evidence_note",
-                    "error_message",
-                ),
-            )
-            st.caption("SureChEMBL")
-            st.dataframe(
-                display_dataframe(readable_ui_dataframe(sure_rows[columns])),
-                width="stretch",
-                hide_index=True,
-            )
+            render_surechembl_public_structure_evidence(sure_rows)
 
     visualization = loaded.tables["visualization"]
     visualization_row = (
@@ -2448,6 +2509,64 @@ def render_new_analysis_form() -> Path | None:
 def public_demo_input_paths() -> tuple[Path, Path, Path]:
     """Return the public-safe example files shown on the welcome workflow."""
     return DEMO_INPUT, DEMO_REFERENCES, DEMO_TEXT_EVIDENCE
+
+
+def format_file_size(path: Path) -> str:
+    """Return a compact human-readable file size."""
+    size = path.stat().st_size
+    if size < 1024:
+        return f"{size} bytes"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def example_column_meanings(path: Path, columns: Iterable[str]) -> pd.DataFrame:
+    """Return visible example-file column explanations for present columns."""
+    _, meanings, _ = EXAMPLE_FILE_NOTES[path]
+    rows = []
+    for column in columns:
+        meaning = meanings.get(column, "optional metadata column if present")
+        rows.append({"Column": column, "Meaning": meaning})
+    return pd.DataFrame(rows)
+
+
+def render_example_file_preview(path: Path) -> None:
+    """Show a public example CSV preview, schema hints, and a download button."""
+    label, _, note = EXAMPLE_FILE_NOTES[path]
+    data = path.read_bytes()
+    raw_text = data.decode("utf-8")
+    frame = pd.read_csv(path).fillna("")
+    row_word = "row" if len(frame) == 1 else "rows"
+    st.markdown(f"#### {label}")
+    st.markdown(f"**File purpose:** {note}")
+    st.markdown("Use this file as a template for preparing your own input.")
+    st.write(
+        f"{len(frame)} {row_word} · {format_file_size(path)} · "
+        f"{len(frame.columns)} columns"
+    )
+    st.markdown("**Required/important columns**")
+    st.dataframe(
+        example_column_meanings(path, frame.columns),
+        width="stretch",
+        hide_index=True,
+    )
+    st.markdown("**Preview: first 10 rows**")
+    st.dataframe(frame.head(10), width="stretch", hide_index=True)
+    st.download_button(
+        "Download CSV",
+        data=data,
+        file_name=path.name,
+        mime="text/csv",
+        key=f"download_{path.stem}",
+    )
+    with st.expander(f"Show raw CSV text: {path.name}"):
+        st.text_area(
+            "Raw CSV text",
+            value=raw_text,
+            height=240,
+            key=f"raw_csv_{path.stem}",
+        )
 
 
 def create_public_demo_workflow(
@@ -2869,8 +2988,11 @@ def render_public_demo_choice() -> Path | None:
         "what is calculated, why it matters, and what evidence it produces."
     )
     st.markdown("**Public example files**")
+    st.markdown(
+        "Use these files as templates for preparing your own generated SMILES input."
+    )
     for path in public_demo_input_paths():
-        st.code(str(path), language=None)
+        render_example_file_preview(path)
     if st.button("Test online lookup connection"):
         render_pubchem_preflight_result(pubchem_preflight())
     if not st.button("Run guided example workflow", type="primary"):
@@ -2933,6 +3055,21 @@ def available_columns(
     return [column for column in columns if column in frame.columns]
 
 
+def columns_with_available_values(
+    frame: pd.DataFrame, columns: Iterable[str]
+) -> list[str]:
+    """Return columns that exist and contain at least one useful value."""
+    available = []
+    unavailable = {"", "not_available", "nan", "none"}
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        values = frame[column].fillna("").astype(str).str.strip().str.lower()
+        if values.map(lambda value: value not in unavailable).any():
+            available.append(column)
+    return available
+
+
 def show_step_table(
     frame: pd.DataFrame,
     columns: Iterable[str],
@@ -2975,6 +3112,130 @@ def status_bar_chart(
     st.plotly_chart(figure, width="stretch")
 
 
+def surechembl_detail_columns(sure_rows: pd.DataFrame) -> list[str]:
+    """Return safe SureChEMBL detail columns, hiding empty patent metadata."""
+    structure_columns = available_columns(
+        sure_rows,
+        (
+            "molecule_id",
+            "compound_name",
+            "tanimoto_similarity",
+            "similarity_category",
+        ),
+    )
+    patent_columns = columns_with_available_values(
+        sure_rows,
+        (
+            "patent_metadata_status",
+            "patent_section",
+            "patent_id",
+            "patent_number",
+            "patent_title",
+            "patent_date",
+            "patent_metadata_source",
+        ),
+    )
+    trailing = available_columns(sure_rows, ("evidence_note",))
+    if (
+        "error_message" in sure_rows.columns
+        and sure_rows["error_message"].fillna("").astype(str).str.strip().ne("").any()
+    ):
+        trailing.append("error_message")
+    return structure_columns + patent_columns + trailing
+
+
+def surechembl_summary_counts(sure_rows: pd.DataFrame) -> dict[str, int]:
+    """Return headline SureChEMBL structure and metadata counts."""
+    lookup = (
+        sure_rows.get("lookup_status", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    metadata = (
+        sure_rows.get("patent_metadata_status", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    return {
+        "Structure matches found": int(lookup.eq("match_found").sum()),
+        "Document metadata found": int(metadata.eq("found").sum()),
+        "Structure-only matches": int(metadata.eq("structure_match_only").sum()),
+        "Lookup errors": int(lookup.eq("lookup_error").sum()),
+    }
+
+
+def render_surechembl_summary_cards(sure_rows: pd.DataFrame) -> None:
+    """Show compact SureChEMBL evidence counts."""
+    counts = surechembl_summary_counts(sure_rows)
+    columns = st.columns(len(counts))
+    for column, (label, value) in zip(columns, counts.items()):
+        column.metric(label, value)
+
+
+def readable_surechembl_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return SureChEMBL rows with safe, readable display values."""
+    result = readable_ui_dataframe(frame)
+    for column in ("similarity_category", "patent_metadata_status"):
+        if column in result.columns:
+            result[column] = result[column].map(readable_status)
+    for column in ("patent_section", "patent_metadata_source"):
+        if column in result.columns:
+            result[column] = result[column].map(
+                lambda value: (
+                    "SureChEMBL structure lookup"
+                    if str(value or "").strip() == "SureChEMBL API"
+                    else readable_status(value)
+                )
+            )
+    return result
+
+
+def render_surechembl_public_structure_evidence(sure_rows: pd.DataFrame) -> None:
+    """Render SureChEMBL structure matches and optional patent metadata."""
+    st.caption("SureChEMBL public structure evidence")
+    render_surechembl_summary_cards(sure_rows)
+    statuses = (
+        sure_rows.get("patent_metadata_status", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    if statuses.eq("found").any():
+        st.success("Patent document metadata found")
+    elif (
+        statuses.eq("structure_match_only").any()
+        or sure_rows.get("lookup_status", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .eq("match_found")
+        .any()
+    ):
+        st.info(
+            "Structure match found, but patent document metadata was not retrieved"
+        )
+        st.info(
+            "SureChEMBL returned public structure matches. Patent document metadata "
+            "was not returned by the current lookup, so this is structure-level "
+            "public evidence only."
+        )
+    columns = surechembl_detail_columns(sure_rows)
+    if not columns:
+        st.info("SureChEMBL public structure evidence is unavailable.")
+        return
+    st.dataframe(
+        display_dataframe(readable_surechembl_dataframe(sure_rows[columns])),
+        width="stretch",
+        hide_index=True,
+    )
+
+
 def artifact_display_name(item: Path | str) -> str:
     """Return a public-safe workflow artifact label without local directories."""
     if isinstance(item, Path):
@@ -2983,6 +3244,253 @@ def artifact_display_name(item: Path | str) -> str:
     if "/" in text or "\\" in text:
         return Path(text).name
     return text
+
+
+def render_artifact_name_list(items: Iterable[Path | str]) -> None:
+    """Show artifact names without code-style copy boxes."""
+    for item in items:
+        st.markdown(f"- {artifact_display_name(item)}")
+
+
+def render_csv_output_artifact(path: Path) -> None:
+    """Show one workflow CSV output with preview, download, and raw text copy."""
+    st.markdown(f"#### {path.name}")
+    if not path.exists():
+        st.info("Run this step to create the output file.")
+        return
+
+    data = path.read_bytes()
+    raw_text = data.decode("utf-8", errors="replace")
+    try:
+        frame = pd.read_csv(path).fillna("")
+    except Exception as exc:
+        st.error(f"Could not preview {path.name}: {exc}")
+        st.download_button(
+            f"Download {path.name}",
+            data=data,
+            file_name=path.name,
+            mime="text/csv",
+            key=f"download_output_{path.name}",
+        )
+        with st.expander(f"Show raw CSV text: {path.name}"):
+            st.text_area(
+                "Raw CSV text",
+                value=raw_text,
+                height=240,
+                key=f"raw_output_{path.name}",
+            )
+        return
+
+    row_word = "row" if len(frame) == 1 else "rows"
+    st.write(f"{len(frame)} {row_word} · {format_file_size(path)}")
+    st.dataframe(frame.head(10), width="stretch", hide_index=True)
+    st.download_button(
+        f"Download {path.name}",
+        data=data,
+        file_name=path.name,
+        mime="text/csv",
+        key=f"download_output_{path.name}",
+    )
+    with st.expander(f"Show raw CSV text: {path.name}"):
+        st.text_area(
+            "Raw CSV text",
+            value=raw_text,
+            height=240,
+            key=f"raw_output_{path.name}",
+        )
+
+
+def render_reports_output_artifact(reports_dir: Path) -> None:
+    """Show generated report artifacts for Step 8, when present."""
+    st.markdown(f"#### {reports_dir.name}")
+    render_reports_browser(
+        reports_dir=reports_dir,
+        key_prefix=f"output_artifact_reports_{reports_dir.name}",
+    )
+
+
+def report_molecule_id(path: Path) -> str:
+    """Extract a molecule ID from a generated report filename."""
+    prefix = "compound_intelligence_report_"
+    stem = path.stem
+    return stem[len(prefix):] if stem.startswith(prefix) else stem
+
+
+def first_existing_report_image(images_dir: Path, molecule_id: str) -> Path | None:
+    """Return a linked 2D structure image for a report, if one exists."""
+    for suffix in (".png", ".jpg", ".jpeg", ".svg"):
+        path = images_dir / f"{molecule_id}{suffix}"
+        if path.exists():
+            return path
+    return None
+
+
+def report_metadata_lookup(prioritization: pd.DataFrame) -> dict[str, dict[str, str]]:
+    """Return optional report table metadata keyed by molecule ID."""
+    if prioritization.empty or "molecule_id" not in prioritization.columns:
+        return {}
+    rows = {}
+    for _, row in prioritization.fillna("").iterrows():
+        molecule_id = str(row.get("molecule_id", "")).strip()
+        if not molecule_id:
+            continue
+        rows[molecule_id] = {
+            "Priority/design category": str(
+                row.get("prioritization_category_with_nlp")
+                or row.get("prioritization_category")
+                or row.get("design_category")
+                or ""
+            ),
+            "Exact public identity": str(
+                row.get("exact_public_name")
+                or row.get("preferred_name")
+                or row.get("known_public_match")
+                or ""
+            ),
+            "Drug-likeness category": str(row.get("druglikeness_category") or ""),
+            "Text-evidence status": str(row.get("nlp_status") or ""),
+        }
+    return rows
+
+
+def report_summary_values(
+    reports: Iterable[Path], reports_dir: Path
+) -> dict[str, object]:
+    """Return Step 8 report summary card values."""
+    report_list = list(reports)
+    molecule_ids = {report_molecule_id(path) for path in report_list}
+    return {
+        "Reports generated": len(report_list),
+        "Molecules with reports": len(molecule_ids),
+        "Report folder": reports_dir,
+        "Downloadable files available": len(report_list),
+    }
+
+
+def render_report_summary_cards(reports: list[Path], reports_dir: Path) -> None:
+    """Show Step 8 report summary cards."""
+    values = report_summary_values(reports, reports_dir)
+    columns = st.columns(len(values))
+    for column, (label, value) in zip(columns, values.items()):
+        if label == "Report folder":
+            column.markdown(f"**{label}**")
+            column.caption(str(value))
+        else:
+            column.metric(label, value)
+
+
+def build_reports_zip(reports: Iterable[Path]) -> bytes:
+    """Create an in-memory ZIP containing report Markdown files."""
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for report in reports:
+            archive.writestr(report.name, report.read_bytes())
+    return buffer.getvalue()
+
+
+def report_table_dataframe(
+    reports: list[Path], prioritization: pd.DataFrame
+) -> pd.DataFrame:
+    """Return the readable Step 8 report table without button widgets."""
+    metadata = report_metadata_lookup(prioritization)
+    rows = []
+    for report in reports:
+        molecule_id = report_molecule_id(report)
+        row = {
+            "Molecule ID": molecule_id,
+            "Report file": report.name,
+            "Download report button": f"Download {report.name}",
+        }
+        row.update(metadata.get(molecule_id, {}))
+        rows.append(row)
+    columns = [
+        "Molecule ID",
+        "Report file",
+        "Priority/design category",
+        "Exact public identity",
+        "Drug-likeness category",
+        "Text-evidence status",
+        "Download report button",
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = ""
+    result = frame[columns].fillna("")
+    for column in (
+        "Priority/design category",
+        "Drug-likeness category",
+        "Text-evidence status",
+    ):
+        result[column] = result[column].map(readable_status)
+    return display_dataframe(result)
+
+
+def render_reports_browser(
+    *,
+    reports_dir: Path,
+    prioritization: pd.DataFrame | None = None,
+    images_dir: Path | None = None,
+    key_prefix: str = "reports_browser",
+) -> None:
+    """Render Step 8 reports without an artifact-count chart."""
+    reports = sorted(reports_dir.glob("compound_intelligence_report_*.md"))
+    if not reports:
+        st.info("Run Step 8 to generate molecule reports.")
+        return
+
+    prioritization = prioritization if prioritization is not None else pd.DataFrame()
+    images_dir = images_dir or reports_dir.parent / "report_images"
+    render_report_summary_cards(reports, reports_dir)
+    st.dataframe(
+        report_table_dataframe(reports, prioritization),
+        width="stretch",
+        hide_index=True,
+    )
+    st.download_button(
+        "Download all reports as ZIP",
+        data=build_reports_zip(reports),
+        file_name="molecule_reports.zip",
+        mime="application/zip",
+        key=f"{key_prefix}_download_all_reports_zip",
+    )
+    for report in reports:
+        data = report.read_bytes()
+        raw_text = data.decode("utf-8", errors="replace")
+        molecule_id = report_molecule_id(report)
+        image_path = first_existing_report_image(images_dir, molecule_id)
+        st.download_button(
+            f"Download {report.name}",
+            data=data,
+            file_name=report.name,
+            mime="text/markdown",
+            key=f"{key_prefix}_download_report_{report.name}",
+        )
+        with st.expander(f"Preview report: {report.name}"):
+            if image_path is not None:
+                st.image(
+                    str(image_path),
+                    caption=f"2D structure: {molecule_id}",
+                    width=240,
+                )
+            st.text_area(
+                "Markdown preview",
+                value=raw_text[:4000],
+                height=240,
+                key=f"{key_prefix}_preview_report_{report.name}",
+            )
+
+
+def render_output_artifacts(outputs: Iterable[Path]) -> None:
+    """Show the preview/download/copy panel for workflow outputs."""
+    st.markdown("#### Output files")
+    for path in outputs:
+        if path.suffix.lower() == ".csv":
+            render_csv_output_artifact(path)
+        else:
+            render_reports_output_artifact(path)
 
 
 def render_step_header(
@@ -3002,12 +3510,11 @@ def render_step_header(
     left, right = st.columns(2)
     with left:
         st.markdown("**Input used**")
-        for item in inputs:
-            st.code(artifact_display_name(item), language=None)
+        render_artifact_name_list(inputs)
     with right:
         st.markdown("**Output file created**")
-        for path in outputs:
-            st.code(artifact_display_name(path), language=None)
+        render_artifact_name_list(outputs)
+    render_output_artifacts(outputs)
 
 
 def render_workflow_step(
@@ -3171,25 +3678,12 @@ def render_workflow_step(
         )
         if not results_available:
             return
-        reports = sorted(loaded.reports_dir.glob("compound_intelligence_report_*.md"))
-        report_frame = pd.DataFrame(
-            {
-                "report": [path.name for path in reports],
-                "location": [str(path) for path in reports],
-            }
+        render_reports_browser(
+            reports_dir=loaded.reports_dir,
+            prioritization=prioritization,
+            images_dir=loaded.images_dir,
+            key_prefix="workflow_step_8_reports",
         )
-        show_step_table(report_frame, ("report", "location"), rows=20)
-        if reports:
-            figure = px.bar(
-                pd.DataFrame({"artifact": ["Markdown reports"], "count": [len(reports)]}),
-                x="artifact",
-                y="count",
-                title="Generated report artifacts",
-                labels={"artifact": "Artifact", "count": "Files"},
-            )
-            st.plotly_chart(figure, width="stretch")
-        else:
-            st.info("No reports were generated for this run.")
 
 
 def render_step_workflow(output_dir: Path) -> None:
