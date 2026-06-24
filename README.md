@@ -1,5 +1,26 @@
 # AI Molecule Design Assistant
 
+## Project Motivation
+
+Generative molecular models can rapidly produce large numbers of chemically valid and drug-like candidate structures. However, generated molecules are not automatically useful for discovery or intellectual-property planning. Many generated structures may be invalid, already known, too close to public compounds, poorly drug-like, weakly supported by evidence, or difficult to interpret.
+
+This project was developed as a practical research assistant for exploring molecules produced by generative AI workflows. The goal is to help researchers move from a raw list of generated SMILES to an interpretable, evidence-supported set of prioritized candidates.
+
+The application evaluates generated molecules through several complementary questions:
+
+1. Is the generated SMILES chemically valid and standardized?
+2. Does the molecule have an exact public identity in databases such as PubChem or ChEMBL?
+3. Is the molecule close to known reference compounds or structurally differentiated from them?
+4. Does the molecule have acceptable RDKit-based drug-likeness properties?
+5. Where does the molecule sit in ChemBERTa chemical-embedding space?
+6. Is there relevant text evidence or biological context supporting further review?
+7. Does public structure evidence suggest that the molecule is already represented in public chemical or patent-derived resources?
+8. Which generated molecules should be prioritized for additional computational, experimental, or expert review?
+
+In this context, “IP potential” is used as an early-stage research signal. It reflects whether a generated molecule appears chemically differentiated from exact public matches or close public analogs while retaining favorable drug-like properties and interpretable evidence. This score is intended to support triage and hypothesis generation. It is not a legal opinion and does not determine patentability, novelty, freedom to operate, ownership, infringement risk, efficacy, safety, or clinical value.
+
+The intended use case is therefore not to replace expert review, but to organize generated molecular candidates into a more interpretable decision space before investing time in synthesis, docking, biological testing, patent review, or medicinal chemistry optimization.
+
 ## About the workflow
 
 ### 1. SMILES validation and standardization
