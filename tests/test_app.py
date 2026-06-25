@@ -9,6 +9,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import app
+import src.text_nlp as text_nlp_module
 
 
 class NullExpander:
@@ -721,6 +722,57 @@ def test_guided_example_online_steps_query_all_valid_molecules(
         ("identity", {"online": True, "max_molecules": None}),
         ("step3", paths),
     ]
+
+
+def test_public_demo_step_six_handles_unavailable_nlp_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=tmp_path / "generated.csv",
+        references_path=tmp_path / "references.csv",
+        text_evidence_path=tmp_path / "text_evidence.csv",
+        output_dir=tmp_path / "outputs",
+    )
+    paths.generated_smiles.write_text(
+        "molecule_id,smiles,compound_description\n"
+        "mol_1,CCO,Generated local description\n",
+        encoding="utf-8",
+    )
+    paths.descriptors.parent.mkdir(parents=True, exist_ok=True)
+    paths.descriptors.write_text(
+        "molecule_id,valid_smiles\nmol_1,True\n",
+        encoding="utf-8",
+    )
+    paths.text_evidence.write_text(
+        "evidence_id,text,source,target_family,notes\n"
+        "ev_1,Public kinase reference evidence.,local,protein_kinase,"
+        "Grounded local note.\n",
+        encoding="utf-8",
+    )
+
+    def write_context(*args, **kwargs) -> None:
+        context_path = args[4]
+        context_path.parent.mkdir(parents=True, exist_ok=True)
+        context_path.write_text(
+            "molecule_id,closest_public_compound,reported_targets\n"
+            "mol_1,Public comparator,protein_kinase\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(app, "compound_context_csv", write_context)
+    monkeypatch.setattr(
+        text_nlp_module,
+        "load_model",
+        lambda model_name=text_nlp_module.MODEL_NAME: (_ for _ in ()).throw(
+            text_nlp_module.ModelUnavailableError("missing model")
+        ),
+    )
+
+    app.run_public_demo_step(6, paths)
+
+    text_nlp = pd.read_csv(paths.text_nlp)
+    assert text_nlp.loc[0, "nlp_status"] == "model_unavailable"
+    assert text_nlp.loc[0, "nlp_relevance_category"] == "not_run"
 
 
 def test_step3_summary_reports_requested_counts() -> None:
@@ -1515,6 +1567,66 @@ def test_nonempty_text_nlp_file_produces_ran_note(tmp_path: Path) -> None:
     assert app.nlp_output_note(
         path, pd.DataFrame({"molecule_id": ["mol_a"]})
     ) == "NLP evidence matching was run using molecule context and text evidence."
+
+
+def test_model_unavailable_text_nlp_file_produces_cloud_note(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "text_nlp.csv"
+    path.write_text(
+        "molecule_id,evidence_id,nlp_status\n"
+        "mol_a,ev_1,model_unavailable\n",
+        encoding="utf-8",
+    )
+
+    assert app.nlp_output_note(path, pd.read_csv(path)) == (
+        "Text-evidence NLP was skipped because the embedding model is "
+        "unavailable in this cloud environment."
+    )
+
+
+def test_step_seven_scoring_runs_after_nlp_model_fallback(
+    tmp_path: Path,
+) -> None:
+    descriptor_path = tmp_path / "descriptors.csv"
+    similarity_path = tmp_path / "similarity.csv"
+    nlp_path = tmp_path / "text_nlp.csv"
+    output_path = tmp_path / "prioritization_results.csv"
+    descriptor_path.write_text(
+        "molecule_id,canonical_smiles,valid_smiles,molecular_weight,logp,"
+        "tpsa,hbd,hba,rotatable_bonds,qed,lipinski_violations,"
+        "lipinski_pass,descriptor_error\n"
+        "mol_a,CCO,True,46.069,0.000,20.230,1,1,0,0.407,0,True,\n",
+        encoding="utf-8",
+    )
+    similarity_path.write_text(
+        "molecule_id,best_reference_name,tanimoto_similarity,"
+        "similarity_category\n"
+        "mol_a,reference,0.400,structurally_distinct\n",
+        encoding="utf-8",
+    )
+    nlp_path.write_text(
+        "molecule_id,evidence_id,similarity_score,nlp_status,"
+        "max_relevance_score,nlp_relevance_category,evidence_note\n"
+        "mol_a,ev_1,0.000,model_unavailable,0.000,not_run,"
+        "Sentence-transformers model unavailable in this environment; "
+        "NLP evidence was skipped.\n",
+        encoding="utf-8",
+    )
+
+    app.scoring_csv(
+        descriptor_path,
+        similarity_path,
+        output_path,
+        nlp_path=nlp_path,
+        nlp_was_run=True,
+    )
+
+    rows = pd.read_csv(output_path).fillna("")
+    row = rows.iloc[0]
+    assert row["nlp_status"] == "model_unavailable"
+    assert row["nlp_relevance_category"] == "not_run"
+    assert row["prioritization_score_with_nlp"] == row["prioritization_score"]
 
 
 def test_expected_files_loaded_from_existing_quality_output_if_present() -> None:

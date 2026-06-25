@@ -203,6 +203,7 @@ class NlpEvidenceSummary:
     score: float
     category: str
     count: int
+    status: str = "available"
 
 
 @dataclass(frozen=True)
@@ -378,12 +379,16 @@ def aggregate_nlp_evidence(
     """Aggregate NLP rows by molecule using maximum score and row count."""
     scores_by_molecule: dict[str, list[float]] = {}
     counts_by_molecule: dict[str, int] = {}
+    statuses_by_molecule: dict[str, list[str]] = {}
 
     for row in rows:
         molecule_id = row.get("molecule_id", "").strip()
         counts_by_molecule[molecule_id] = counts_by_molecule.get(
             molecule_id, 0
         ) + 1
+        statuses_by_molecule.setdefault(molecule_id, []).append(
+            row.get("nlp_status", "").strip()
+        )
         score = parse_float(
             row.get("similarity_score", "")
             or row.get("max_relevance_score", "")
@@ -393,6 +398,17 @@ def aggregate_nlp_evidence(
 
     summaries: dict[str, NlpEvidenceSummary] = {}
     for molecule_id, count in counts_by_molecule.items():
+        statuses = {
+            status for status in statuses_by_molecule.get(molecule_id, []) if status
+        }
+        if statuses == {"model_unavailable"}:
+            summaries[molecule_id] = NlpEvidenceSummary(
+                score=0.0,
+                category="not_run",
+                count=count,
+                status="model_unavailable",
+            )
+            continue
         available_scores = scores_by_molecule.get(molecule_id, [])
         raw_score = max(available_scores) if available_scores else 0.0
         score = min(1.0, max(0.0, raw_score))
@@ -400,6 +416,7 @@ def aggregate_nlp_evidence(
             score=score,
             category=categorize_nlp_relevance(score),
             count=count,
+            status="available",
         )
     return summaries
 
@@ -714,7 +731,10 @@ def score_molecule(
     category = categorize_prioritization(
         prioritization_score, valid_smiles=valid_smiles
     )
-    nlp_score_available = nlp_summary is not None
+    nlp_status = nlp_summary.status if nlp_summary else ""
+    nlp_score_available = (
+        nlp_summary is not None and nlp_status != "model_unavailable"
+    )
     nlp_score = nlp_summary.score if nlp_summary else None
     score_with_nlp = (
         0.8 * prioritization_score + 0.2 * nlp_score
@@ -806,7 +826,7 @@ def score_molecule(
             public_summary.chembl_status if public_summary else "not_available"
         ),
         nlp_status=(
-            "available"
+            nlp_summary.status
             if nlp_summary
             else ("no_match" if nlp_was_run else "not_run")
         ),

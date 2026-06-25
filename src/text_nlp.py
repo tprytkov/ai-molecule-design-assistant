@@ -11,6 +11,10 @@ from typing import Iterable, Protocol, Sequence
 
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL_UNAVAILABLE_NOTE = (
+    "Sentence-transformers model unavailable in this environment; NLP evidence "
+    "was skipped."
+)
 CHEMICAL_CONTEXT_QUERY = (
     "small molecule chemical structure public evidence reference context "
     "research prioritization"
@@ -52,7 +56,12 @@ OUTPUT_COLUMNS = (
     "max_relevance_score",
     "nlp_relevance_category",
     "nlp_notes",
+    "evidence_note",
 )
+
+
+class ModelUnavailableError(RuntimeError):
+    """Raised when sentence-transformers cannot provide the requested model."""
 
 
 class SentenceEncoder(Protocol):
@@ -88,6 +97,7 @@ class TextRelevanceResult:
     max_relevance_score: str = ""
     nlp_relevance_category: str = "not_relevant"
     nlp_notes: str = ""
+    evidence_note: str = ""
 
 
 def categorize_relevance(score: float | None) -> str:
@@ -123,15 +133,15 @@ def load_model(model_name: str = MODEL_NAME) -> SentenceEncoder:
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
-        raise RuntimeError(
+        raise ModelUnavailableError(
             "sentence-transformers is not installed. Update the "
-            "molecule-intelligence environment from environment.yml."
+            "molecule-intelligence environment from environment-local.yml."
         ) from exc
 
     try:
         return SentenceTransformer(model_name, local_files_only=True)
     except Exception as exc:
-        raise RuntimeError(
+        raise ModelUnavailableError(
             f"Model '{model_name}' is not available in the local cache. "
             "The NLP CLI requires a previously cached model for offline use."
         ) from exc
@@ -167,6 +177,35 @@ def missing_text_result(
         title=row.get("title", "").strip(),
         model_name=model_name,
         nlp_notes="Evidence text is missing; relevance scores unavailable.",
+    )
+
+
+def model_unavailable_result(
+    *,
+    molecule_id: str = "",
+    row: dict[str, str] | None = None,
+    molecule_text: str = "",
+    model_name: str = MODEL_NAME,
+) -> TextRelevanceResult:
+    """Create a schema-valid row when NLP embeddings cannot be loaded."""
+    evidence = row or {}
+    return TextRelevanceResult(
+        molecule_id=molecule_id or evidence.get("molecule_id", "").strip(),
+        evidence_id=evidence.get("evidence_id", "").strip(),
+        molecule_text=molecule_text,
+        evidence_text=evidence.get("text", "").strip(),
+        similarity_score="0.000",
+        nlp_status="model_unavailable",
+        source_type=evidence.get("source_type", "").strip(),
+        title=evidence.get("title", "").strip(),
+        model_name=model_name,
+        chemical_context_relevance_score="0.000",
+        bioactivity_relevance_score="0.000",
+        novelty_relevance_score="0.000",
+        max_relevance_score="0.000",
+        nlp_relevance_category="not_run",
+        nlp_notes=MODEL_UNAVAILABLE_NOTE,
+        evidence_note=MODEL_UNAVAILABLE_NOTE,
     )
 
 
@@ -395,6 +434,59 @@ def match_molecules_to_evidence(
     return results
 
 
+def model_unavailable_rows(
+    evidence_rows: Iterable[dict[str, str]],
+    *,
+    model_name: str = MODEL_NAME,
+    context_rows: Iterable[dict[str, str]] = (),
+    molecule_rows: Iterable[dict[str, str]] = (),
+    descriptor_rows: Iterable[dict[str, str]] = (),
+    identity_rows: Iterable[dict[str, str]] = (),
+) -> list[TextRelevanceResult]:
+    """Return fallback NLP rows without requiring embedding model access."""
+    evidence = [row for row in evidence_rows if row.get("text", "").strip()]
+    if not evidence:
+        return []
+
+    identity_by_id = index_context_rows(identity_rows)
+    merged_context = [
+        {**row, **identity_by_id.get(row.get("molecule_id", "").strip(), {})}
+        for row in context_rows
+    ]
+    molecules = merge_molecule_context(
+        merged_context, molecule_rows, descriptor_rows
+    )
+    valid_molecules = [
+        row
+        for row in molecules
+        if str(row.get("valid_smiles", "")).strip().lower()
+        in {"true", "1", "yes", "y"}
+    ]
+    if not valid_molecules:
+        return [
+            model_unavailable_result(row=row, model_name=model_name)
+            for row in evidence
+        ]
+
+    results: list[TextRelevanceResult] = []
+    for molecule in valid_molecules:
+        molecule_id = molecule.get("molecule_id", "").strip()
+        molecule_text = context_text(molecule)
+        for evidence_row in evidence:
+            evidence_molecule = evidence_row.get("molecule_id", "").strip()
+            if evidence_molecule and evidence_molecule != molecule_id:
+                continue
+            results.append(
+                model_unavailable_result(
+                    molecule_id=molecule_id,
+                    row=evidence_row,
+                    molecule_text=molecule_text,
+                    model_name=model_name,
+                )
+            )
+    return results
+
+
 def write_output_csv(
     output_path: Path, records: Iterable[TextRelevanceResult]
 ) -> None:
@@ -418,8 +510,11 @@ def text_nlp_csv(
     identity_path: Path | None = None,
 ) -> int:
     """Score an evidence CSV and return the output row count."""
-    active_model = model or load_model(model_name)
     evidence_rows = read_input_csv(input_path)
+    context_rows: list[dict[str, str]] = []
+    molecule_rows: list[dict[str, str]] = []
+    descriptor_rows: list[dict[str, str]] = []
+    identity_rows: list[dict[str, str]] = []
     if context_path is not None and context_path.exists():
         context_rows = read_csv_rows(context_path)
         molecule_rows = (
@@ -437,6 +532,21 @@ def text_nlp_csv(
             if identity_path is not None and identity_path.exists()
             else []
         )
+    try:
+        active_model = model or load_model(model_name)
+    except ModelUnavailableError:
+        results = model_unavailable_rows(
+            evidence_rows,
+            model_name=model_name,
+            context_rows=context_rows,
+            molecule_rows=molecule_rows,
+            descriptor_rows=descriptor_rows,
+            identity_rows=identity_rows,
+        )
+        write_output_csv(output_path, results)
+        return len(results)
+
+    if context_rows:
         identity_by_id = index_context_rows(identity_rows)
         context_rows = [
             {**row, **identity_by_id.get(row.get("molecule_id", "").strip(), {})}

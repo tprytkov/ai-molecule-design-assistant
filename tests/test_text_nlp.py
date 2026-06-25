@@ -3,8 +3,11 @@ from pathlib import Path
 
 import pytest
 
+import src.text_nlp as text_nlp_module
 from src.text_nlp import (
     MODEL_NAME,
+    MODEL_UNAVAILABLE_NOTE,
+    ModelUnavailableError,
     OUTPUT_COLUMNS,
     RELEVANCE_QUERIES,
     categorize_relevance,
@@ -176,3 +179,60 @@ def test_context_aware_nlp_writes_molecule_evidence_rows(
     assert "Generated local description" in rows[0]["molecule_text"]
     assert "local scaffold" in rows[0]["molecule_text"]
     assert "mol_1" not in rows[0]["molecule_text"]
+
+
+def test_model_unavailable_writes_valid_fallback_csv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    evidence_path = tmp_path / "evidence.csv"
+    context_path = tmp_path / "compound_context.csv"
+    molecules_path = tmp_path / "molecules.csv"
+    descriptors_path = tmp_path / "descriptors.csv"
+    output_path = tmp_path / "text_nlp.csv"
+    evidence_path.write_text(
+        "evidence_id,text,source,target_family,notes\n"
+        "ev_1,Public kinase reference evidence.,local,protein_kinase,"
+        "Grounded local note.\n",
+        encoding="utf-8",
+    )
+    context_path.write_text(
+        "molecule_id,exact_public_name,closest_public_compound,"
+        "reported_targets,biological_reference_summary\n"
+        "mol_1,,Public comparator,protein_kinase,Public reference summary.\n",
+        encoding="utf-8",
+    )
+    molecules_path.write_text(
+        "molecule_id,smiles,compound_description\n"
+        "mol_1,CCO,Generated local description\n",
+        encoding="utf-8",
+    )
+    descriptors_path.write_text(
+        "molecule_id,valid_smiles\nmol_1,True\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        text_nlp_module,
+        "load_model",
+        lambda model_name=MODEL_NAME: (_ for _ in ()).throw(
+            ModelUnavailableError("missing model")
+        ),
+    )
+
+    count = text_nlp_csv(
+        evidence_path,
+        output_path,
+        context_path=context_path,
+        molecule_path=molecules_path,
+        descriptor_path=descriptors_path,
+    )
+
+    with output_path.open("r", encoding="utf-8", newline="") as output_file:
+        reader = csv.DictReader(output_file)
+        rows = list(reader)
+    assert count == 1
+    assert tuple(reader.fieldnames or ()) == OUTPUT_COLUMNS
+    assert rows[0]["molecule_id"] == "mol_1"
+    assert rows[0]["nlp_status"] == "model_unavailable"
+    assert rows[0]["nlp_relevance_category"] == "not_run"
+    assert rows[0]["max_relevance_score"] == "0.000"
+    assert rows[0]["evidence_note"] == MODEL_UNAVAILABLE_NOTE

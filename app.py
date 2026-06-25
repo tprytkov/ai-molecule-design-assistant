@@ -750,9 +750,22 @@ def nlp_output_note(text_nlp_path: Path, text_nlp: pd.DataFrame) -> str:
         )
     if text_nlp.empty:
         return "NLP output exists but contains no evidence matches."
+    if text_nlp_model_unavailable(text_nlp):
+        return (
+            "Text-evidence NLP was skipped because the embedding model is "
+            "unavailable in this cloud environment."
+        )
     return (
         "NLP evidence matching was run using molecule context and text evidence."
     )
+
+
+def text_nlp_model_unavailable(text_nlp: pd.DataFrame) -> bool:
+    """Return whether text NLP output was written by the model fallback path."""
+    if text_nlp.empty or "nlp_status" not in text_nlp.columns:
+        return False
+    statuses = text_nlp["nlp_status"].fillna("").astype(str).str.strip()
+    return statuses.eq("model_unavailable").any()
 
 
 def score_column(df: pd.DataFrame) -> str:
@@ -821,6 +834,8 @@ def display_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 def molecule_status_color(value: object) -> str:
     """Map workflow statuses to the shared molecule color vocabulary."""
     status = str(value or "").strip().lower().replace(" ", "_")
+    if status == "model_unavailable":
+        return "gray"
     if any(token in status for token in ("not_run", "offline", "skipped")):
         return "gray"
     if any(
@@ -941,6 +956,7 @@ def best_status(values: Iterable[object]) -> str:
         "available",
         "no_match",
         "not_queried",
+        "model_unavailable",
         "lookup_error",
         "error",
         "not_run",
@@ -1168,6 +1184,7 @@ def readable_status(value: object) -> str:
         "error": "Error",
         "not_queried": "Not queried",
         "not_run": "Not run",
+        "model_unavailable": "Model unavailable",
         "not_available": "Not available",
         "available": "Available",
         "offline": "Not run",
@@ -2162,6 +2179,11 @@ def render_text_evidence_view(
     if plot_df.empty:
         st.info("Text evidence is unavailable.")
         return ""
+    if text_nlp_model_unavailable(text_nlp):
+        st.info(
+            "Text-evidence NLP was skipped because the embedding model is "
+            "unavailable in this cloud environment."
+        )
     plot_df["display_evidence_score"] = pd.to_numeric(
         plot_df["max_relevance_score"], errors="coerce"
     ).fillna(0.0)
