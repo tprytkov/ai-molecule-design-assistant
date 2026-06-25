@@ -9,6 +9,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import app
+import src.biomedical_evidence as biomedical_evidence_module
+import src.patent_evidence_embeddings as patent_evidence_module
 import src.text_nlp as text_nlp_module
 
 
@@ -75,7 +77,7 @@ def test_about_workflow_and_start_guidance_exist() -> None:
     button_labels = [button.label for button in app_test.button]
     assert "Run guided example workflow" in button_labels
     assert "Run analysis" in button_labels
-    assert len(app.ABOUT_WORKFLOW_SECTIONS) == 7
+    assert len(app.ABOUT_WORKFLOW_SECTIONS) == 8
     about_text = " ".join(
         f"{heading} {explanation}"
         for heading, explanation in app.ABOUT_WORKFLOW_SECTIONS
@@ -92,6 +94,7 @@ def test_about_workflow_and_start_guidance_exist() -> None:
         "Sentence Transformers documentation",
     ):
         assert source_name in about_text
+    assert "Patent/IP-context evidence" in about_text
 
 
 def test_guided_example_file_preview_section_exists(
@@ -334,9 +337,10 @@ def test_workflow_step_names_exist() -> None:
         "Step 3: Public database lookup",
         "Step 4: RDKit molecular properties",
         "Step 5: ChemBERTa chemical space",
-        "Step 6: Text evidence and biomedical context",
-        "Step 7: Final prioritization",
-        "Step 8: Reports",
+        "Step 6: Biomedical evidence and biological context",
+        "Step 7: Patent/IP-context evidence",
+        "Step 8: Final prioritization",
+        "Step 9: Reports",
     )
     assert app.FINAL_RANKING_EXPLANATION == (
         "Final ranking combines evidence from chemical identity, public lookup, "
@@ -405,11 +409,18 @@ def test_demo_results_load_after_explicit_action(
     assert fake_streamlit.session_state["completed_workflow_steps"] == []
 
 
-def test_failed_preflight_blocks_online_guided_example_run(
-    monkeypatch: pytest.MonkeyPatch,
+def test_failed_preflight_warns_but_allows_guided_example_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     errors = []
     information = []
+    output = tmp_path / "outputs"
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=output,
+    )
     fake_streamlit = SimpleNamespace(
         session_state={},
         header=lambda *args, **kwargs: None,
@@ -434,22 +445,27 @@ def test_failed_preflight_blocks_online_guided_example_run(
         "network unavailable",
     )
     monkeypatch.setattr(app, "pubchem_preflight", lambda: failure)
-    monkeypatch.setattr(
-        app,
-        "create_public_demo_workflow",
-        lambda: pytest.fail("A failed preflight must block the guided run."),
-    )
+    monkeypatch.setattr(app, "create_public_demo_workflow", lambda: paths)
 
     result = app.render_public_demo_choice()
 
-    assert result is None
+    assert result == output
     assert errors == [app.pubchem_preflight_failure_message(failure)]
     assert information == [app.ONLINE_LOOKUP_RESTART_MESSAGE]
+    assert fake_streamlit.session_state["active_output_dir"] == str(output)
+    assert fake_streamlit.session_state["workflow_step"] == 1
 
 
-def test_failed_preflight_does_not_activate_output_folder(
-    monkeypatch: pytest.MonkeyPatch,
+def test_failed_preflight_preserves_existing_state_and_starts_workflow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    output = tmp_path / "outputs"
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=output,
+    )
     fake_streamlit = SimpleNamespace(
         session_state={"unrelated": "preserved"},
         header=lambda *args, **kwargs: None,
@@ -475,14 +491,16 @@ def test_failed_preflight_does_not_activate_output_folder(
             app.PUBCHEM_PREFLIGHT_URL,
             "OSError",
             "network unavailable",
-        ),
+            ),
     )
+    monkeypatch.setattr(app, "create_public_demo_workflow", lambda: paths)
 
     result = app.render_public_demo_choice()
 
-    assert result is None
-    assert "active_output_dir" not in fake_streamlit.session_state
-    assert fake_streamlit.session_state == {"unrelated": "preserved"}
+    assert result == output
+    assert fake_streamlit.session_state["unrelated"] == "preserved"
+    assert fake_streamlit.session_state["active_output_dir"] == str(output)
+    assert fake_streamlit.session_state["workflow_mode"] == "public_demo"
 
 
 def test_successful_pubchem_preflight_allows_guided_example_run() -> None:
@@ -767,12 +785,110 @@ def test_public_demo_step_six_handles_unavailable_nlp_model(
             text_nlp_module.ModelUnavailableError("missing model")
         ),
     )
+    monkeypatch.setattr(
+        biomedical_evidence_module,
+        "load_model",
+        lambda model_name=biomedical_evidence_module.DEFAULT_BIOMEDICAL_MODEL: (
+            _ for _ in ()
+        ).throw(biomedical_evidence_module.BiomedicalModelUnavailableError("missing")),
+    )
 
     app.run_public_demo_step(6, paths)
 
     text_nlp = pd.read_csv(paths.text_nlp)
+    biomedical = pd.read_csv(paths.biomedical_evidence)
     assert text_nlp.loc[0, "nlp_status"] == "model_unavailable"
     assert text_nlp.loc[0, "nlp_relevance_category"] == "not_run"
+    assert biomedical.loc[0, "biomedical_model_status"] == "model_unavailable"
+    assert biomedical.loc[0, "biomedical_evidence_status"] == "skipped"
+
+
+def test_public_demo_step_seven_fallback_allows_step_eight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=tmp_path / "generated.csv",
+        references_path=tmp_path / "references.csv",
+        text_evidence_path=tmp_path / "text_evidence.csv",
+        output_dir=tmp_path / "outputs",
+    )
+    paths.generated_smiles.write_text(
+        "molecule_id,smiles\nmol_1,CCO\n",
+        encoding="utf-8",
+    )
+    paths.references.write_text(
+        "reference_id,reference_name,smiles\nref_1,ethanol,CCO\n",
+        encoding="utf-8",
+    )
+    paths.text_evidence.write_text(
+        "evidence_id,molecule_id,source_type,title,text\n",
+        encoding="utf-8",
+    )
+    paths.descriptors.parent.mkdir(parents=True, exist_ok=True)
+    paths.descriptors.write_text(
+        "molecule_id,canonical_smiles,valid_smiles,molecular_weight,logp,tpsa,"
+        "hbd,hba,rotatable_bonds,qed,lipinski_violations,lipinski_pass\n"
+        "mol_1,CCO,True,46.069,0.0,20.23,1,1,0,0.400,0,True\n",
+        encoding="utf-8",
+    )
+    paths.similarity.write_text(
+        "molecule_id,best_reference_name,tanimoto_similarity,similarity_category\n"
+        "mol_1,ethanol,1.000,identical_to_reference\n",
+        encoding="utf-8",
+    )
+    paths.public_lookup.write_text(
+        "molecule_id,source_database,match_type,public_id,similarity,lookup_status\n"
+        "mol_1,PubChem,exact,CID1,,match_found\n",
+        encoding="utf-8",
+    )
+    paths.surechembl_lookup.write_text(
+        "molecule_id,lookup_status,tanimoto_similarity,surechembl_id,"
+        "compound_name,patent_id,patent_number,patent_title,patent_date,"
+        "patent_metadata_status,evidence_note\n"
+        "mol_1,match_found,0.900,SC1,Patent compound,US-1,US1,"
+        "Patent kinase document,2024-01-01,available,"
+        "SureChEMBL structure evidence.\n",
+        encoding="utf-8",
+    )
+    identity_path = paths.chemical_identity or paths.prioritized.parent / "chemical_identity.csv"
+    context_path = paths.compound_context or paths.prioritized.parent / "compound_context.csv"
+    identity_path.write_text(
+        "molecule_id,identity_status,lookup_status,preferred_name\n"
+        "mol_1,no_public_identity,no_match,Demo molecule\n",
+        encoding="utf-8",
+    )
+    context_path.write_text(
+        "molecule_id,context_status,closest_public_compound\n"
+        "mol_1,available,Patent comparator\n",
+        encoding="utf-8",
+    )
+    paths.text_nlp.write_text(
+        "molecule_id,evidence_id,max_relevance_score,nlp_status,"
+        "nlp_relevance_category\n",
+        encoding="utf-8",
+    )
+    paths.chemberta_embeddings.write_text(
+        "molecule_id,embedding_available\nmol_1,False\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        patent_evidence_module,
+        "load_model",
+        lambda model_name=patent_evidence_module.DEFAULT_PATENT_MODEL: (
+            _ for _ in ()
+        ).throw(patent_evidence_module.PatentModelUnavailableError("missing")),
+    )
+    monkeypatch.setattr(app, "merge_chemberta_into_prioritized", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "visualization_coordinates_csv", lambda *args, **kwargs: None)
+
+    app.run_public_demo_step(7, paths)
+    app.run_public_demo_step(8, paths)
+
+    patent = pd.read_csv(paths.patent_evidence_embeddings)
+    prioritization = pd.read_csv(paths.prioritized)
+    assert patent.loc[0, "patent_model_status"] == "model_unavailable"
+    assert patent.loc[0, "patent_evidence_status"] == "skipped"
+    assert prioritization.loc[0, "molecule_id"] == "mol_1"
 
 
 def test_step3_summary_reports_requested_counts() -> None:
@@ -1506,8 +1622,43 @@ def test_output_loading_handles_missing_optional_files(tmp_path: Path) -> None:
     assert len(loaded.tables["prioritization"]) == 1
     assert loaded.tables["visualization"].empty
     assert loaded.tables["descriptors"].empty
+    assert loaded.tables["biomedical_evidence"].empty
+    assert loaded.tables["patent_evidence_embeddings"].empty
     assert loaded.reports_dir == output_dir / "reports"
     assert loaded.images_dir == output_dir / "report_images"
+
+
+def test_step_six_biomedical_output_can_be_loaded_by_app(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    (output_dir / "prioritization_results.csv").write_text(
+        "molecule_id,prioritization_score,known_public_match\n"
+        "mol_a,0.750,False\n",
+        encoding="utf-8",
+    )
+    (output_dir / "biomedical_evidence.csv").write_text(
+        "molecule_id,biomedical_model_name,biomedical_model_status,"
+        "biomedical_evidence_status,biomedical_similarity_score,"
+        "biomedical_relevance_category,biomedical_evidence_count,"
+        "top_biomedical_evidence_id,top_biomedical_evidence_text,evidence_note\n"
+        "mol_a,fake-biomedical-model,available,available,0.900,"
+        "high_biomedical_relevance,2,ev_1,Kinase evidence,Matched.\n",
+        encoding="utf-8",
+    )
+
+    loaded = app.load_output_directory(output_dir)
+    summary = app.biomedical_evidence_molecule_dataframe(
+        loaded.tables["biomedical_evidence"],
+        ["mol_a"],
+    )
+
+    assert loaded.tables["biomedical_evidence"].loc[
+        0, "biomedical_model_status"
+    ] == "available"
+    assert summary.loc[0, "biomedical_evidence_status"] == "available"
+    assert summary.loc[0, "top_biomedical_evidence_id"] == "ev_1"
 
 
 def test_output_loading_preserves_prioritization_nlp_status(
@@ -2137,7 +2288,7 @@ def test_no_reports_message_appears_when_reports_missing(
 
     app.render_reports_browser(reports_dir=tmp_path / "reports")
 
-    assert information == ["Run Step 8 to generate molecule reports."]
+    assert information == ["Run Step 9 to generate molecule reports."]
 
 
 def test_identity_acronym_labels_are_preserved() -> None:

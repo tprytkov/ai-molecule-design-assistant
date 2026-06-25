@@ -18,6 +18,7 @@ import plotly.express as px
 import streamlit as st
 from rdkit import Chem
 
+from src.biomedical_evidence import biomedical_evidence_csv
 from src.compound_qa import compound_qa
 from src.chemberta_embeddings import (
     chemberta_embeddings_csv,
@@ -28,6 +29,7 @@ from src.chemical_identity import UrllibIdentityClient, chemical_identity_csv
 from src.compound_context import compound_context_csv
 from src.compound_search import top_hits_csv
 from src.descriptors import descriptor_csv
+from src.patent_evidence_embeddings import patent_evidence_embeddings_csv
 from src.pipeline import (
     PipelinePaths,
     build_paths,
@@ -59,6 +61,8 @@ OUTPUT_FILES = {
     "public_lookup": "public_lookup.csv",
     "chemical_identity": "chemical_identity.csv",
     "text_nlp": "text_nlp.csv",
+    "biomedical_evidence": "biomedical_evidence.csv",
+    "patent_evidence_embeddings": "patent_evidence_embeddings.csv",
     "surechembl": "surechembl_evidence.csv",
     "visualization": "visualization_coordinates.csv",
     "standardized": "standardized.csv",
@@ -105,6 +109,24 @@ DISPLAY_LABELS = {
     "surechembl_query_status": "SureChEMBL status",
     "chemberta_status": "ChemBERTa status",
     "nlp_status": "Text-evidence status",
+    "biomedical_model_name": "Biomedical model",
+    "biomedical_model_status": "Biomedical model status",
+    "biomedical_evidence_status": "Biomedical evidence status",
+    "biomedical_similarity_score": "Biomedical similarity score",
+    "biomedical_relevance_category": "Biomedical relevance",
+    "biomedical_evidence_count": "Biomedical evidence count",
+    "top_biomedical_evidence_id": "Top biomedical evidence ID",
+    "top_biomedical_evidence_text": "Top biomedical evidence text",
+    "patent_model_name": "Patent/IP model",
+    "patent_model_status": "Patent/IP model status",
+    "patent_evidence_status": "Patent-text embedding status",
+    "patent_similarity_score": "Patent/IP similarity score",
+    "patent_relevance_category": "Patent/IP relevance",
+    "patent_evidence_count": "Patent evidence count",
+    "top_patent_evidence_id": "Top patent evidence ID",
+    "top_patent_evidence_text": "Top patent evidence text",
+    "surechembl_structure_status": "SureChEMBL structure status",
+    "patent_document_metadata_status": "Patent document metadata status",
     "molecular_weight": "Molecular weight",
     "logp": "LogP",
     "tpsa": "TPSA",
@@ -277,9 +299,9 @@ ABOUT_WORKFLOW_SECTIONS = (
         "exploratory representations rather than experimental validation.",
     ),
     (
-        "6. Text-evidence matching",
+        "6. Biomedical evidence and biological context",
         "After molecular identity and context are available, sentence embeddings "
-        "compare molecule-context summaries with user-provided evidence text. The "
+        "compare molecule-context summaries with user-provided biomedical evidence text. The "
         "[Sentence-BERT](https://arxiv.org/abs/1908.10084) approach and the "
         "[Sentence Transformers documentation](https://www.sbert.net/) describe the "
         "methodological and software basis for efficient semantic similarity matching. "
@@ -287,7 +309,17 @@ ABOUT_WORKFLOW_SECTIONS = (
         "not establish biological activity.",
     ),
     (
-        "7. Final design prioritization",
+        "7. Patent/IP-context evidence",
+        "Patent/IP-context evidence is represented as a separate optional evidence "
+        "embedding stage. When a local PaECTER or patent-BERT-style encoder is "
+        "available, it compares molecule IP-context summaries with patent text "
+        "signals. When the model is unavailable, the workflow creates a "
+        "schema-valid skipped output while preserving SureChEMBL structure "
+        "evidence and patent document metadata separately. These outputs are "
+        "research triage signals, not legal conclusions.",
+    ),
+    (
+        "8. Final design prioritization",
         "The final ranking integrates chemical identity, public-database status, "
         "RDKit drug-likeness, reference similarity, ChemBERTa chemical-space context, "
         "text-evidence matching, and evidence completeness. It is a transparent "
@@ -302,9 +334,10 @@ WORKFLOW_STEP_NAMES = (
     "Step 3: Public database lookup",
     "Step 4: RDKit molecular properties",
     "Step 5: ChemBERTa chemical space",
-    "Step 6: Text evidence and biomedical context",
-    "Step 7: Final prioritization",
-    "Step 8: Reports",
+    "Step 6: Biomedical evidence and biological context",
+    "Step 7: Patent/IP-context evidence",
+    "Step 8: Final prioritization",
+    "Step 9: Reports",
 )
 WORKFLOW_STEP_WHY = (
     "Invalid or inconsistent structures can make every downstream result "
@@ -317,8 +350,10 @@ WORKFLOW_STEP_WHY = (
     "drug-likeness, and rule-based property concerns.",
     "Learned embeddings provide a complementary view of structural relationships "
     "that is not limited to a single hand-designed fingerprint.",
-    "Text and biomedical context help connect chemical evidence to cautious, "
-    "source-grounded research interpretation.",
+    "Biomedical evidence embeddings and biological context help connect chemical "
+    "evidence to cautious, source-grounded research interpretation.",
+    "Patent/IP-context evidence embeddings keep public structure evidence, "
+    "document metadata, and optional patent-text model signals separate.",
     "The prior evidence is combined into one transparent research-prioritization "
     "view while preserving each stage's availability status.",
     "A report collects the evidence for one molecule into a readable artifact "
@@ -330,7 +365,8 @@ WORKFLOW_STEP_GET = (
     "PubChem/ChEMBL lookup evidence and SureChEMBL structure-evidence status.",
     "RDKit descriptors, drug-likeness categories, flags, and property visualizations.",
     "ChemBERTa embeddings and two-dimensional chemical-space coordinates.",
-    "Grounded compound context and molecule-to-text evidence relevance results.",
+    "Grounded compound context and biomedical evidence relevance results.",
+    "A patent/IP-context evidence file that is safe when the patent model is unavailable.",
     "A ranked molecule table with component scores and evidence-stage statuses.",
     "Molecule-level Markdown reports with structures and evidence summaries.",
 )
@@ -768,6 +804,22 @@ def text_nlp_model_unavailable(text_nlp: pd.DataFrame) -> bool:
     return statuses.eq("model_unavailable").any()
 
 
+def biomedical_model_unavailable(biomedical: pd.DataFrame) -> bool:
+    """Return whether biomedical evidence was skipped by the model fallback."""
+    if biomedical.empty or "biomedical_model_status" not in biomedical.columns:
+        return False
+    statuses = biomedical["biomedical_model_status"].fillna("").astype(str).str.strip()
+    return statuses.eq("model_unavailable").any()
+
+
+def patent_model_unavailable(patent: pd.DataFrame) -> bool:
+    """Return whether patent evidence was skipped by the model fallback."""
+    if patent.empty or "patent_model_status" not in patent.columns:
+        return False
+    statuses = patent["patent_model_status"].fillna("").astype(str).str.strip()
+    return statuses.eq("model_unavailable").any()
+
+
 def score_column(df: pd.DataFrame) -> str:
     """Return the preferred score column."""
     if "prioritization_score_with_nlp" in df.columns:
@@ -1111,6 +1163,108 @@ def text_evidence_molecule_dataframe(
     return pd.DataFrame(rows)
 
 
+def biomedical_evidence_molecule_dataframe(
+    biomedical: pd.DataFrame,
+    molecule_ids: Iterable[str] = (),
+) -> pd.DataFrame:
+    """Prepare molecule-level biomedical evidence rows for Step 6."""
+    ids = {str(value) for value in molecule_ids if str(value).strip()}
+    if "molecule_id" in biomedical.columns:
+        ids.update(biomedical["molecule_id"].dropna().astype(str))
+    rows = []
+    for position, molecule_id in enumerate(sorted(ids), start=1):
+        matches = (
+            biomedical[biomedical["molecule_id"].astype(str) == molecule_id].copy()
+            if not biomedical.empty and "molecule_id" in biomedical.columns
+            else pd.DataFrame()
+        )
+        selected = matches.iloc[0].to_dict() if not matches.empty else {}
+        model_status = normalize_status(
+            selected.get("biomedical_model_status", "not_run")
+        )
+        evidence_status = normalize_status(
+            selected.get("biomedical_evidence_status", "not_run")
+        )
+        rows.append(
+            {
+                "molecule_id": molecule_id,
+                "biomedical_model_status": model_status,
+                "biomedical_evidence_status": evidence_status,
+                "biomedical_similarity_score": selected.get(
+                    "biomedical_similarity_score", "0.000"
+                ),
+                "biomedical_relevance_category": selected.get(
+                    "biomedical_relevance_category", "not_run"
+                ),
+                "biomedical_evidence_count": selected.get(
+                    "biomedical_evidence_count", "0"
+                ),
+                "top_biomedical_evidence_id": selected.get(
+                    "top_biomedical_evidence_id", ""
+                ),
+                "top_biomedical_evidence_text": selected.get(
+                    "top_biomedical_evidence_text", ""
+                ),
+                "molecule_position": position,
+                "status_color": molecule_status_color(evidence_status),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def patent_evidence_molecule_dataframe(
+    patent: pd.DataFrame,
+    molecule_ids: Iterable[str] = (),
+) -> pd.DataFrame:
+    """Prepare molecule-level patent/IP-context evidence rows for Step 7."""
+    ids = {str(value) for value in molecule_ids if str(value).strip()}
+    if "molecule_id" in patent.columns:
+        ids.update(patent["molecule_id"].dropna().astype(str))
+    rows = []
+    for position, molecule_id in enumerate(sorted(ids), start=1):
+        matches = (
+            patent[patent["molecule_id"].astype(str) == molecule_id].copy()
+            if not patent.empty and "molecule_id" in patent.columns
+            else pd.DataFrame()
+        )
+        selected = matches.iloc[0].to_dict() if not matches.empty else {}
+        rows.append(
+            {
+                "molecule_id": molecule_id,
+                "surechembl_structure_status": normalize_status(
+                    selected.get("surechembl_structure_status", "not_run")
+                ),
+                "patent_document_metadata_status": normalize_status(
+                    selected.get("patent_document_metadata_status", "not_run")
+                ),
+                "patent_model_status": normalize_status(
+                    selected.get("patent_model_status", "not_run")
+                ),
+                "patent_evidence_status": normalize_status(
+                    selected.get("patent_evidence_status", "not_run")
+                ),
+                "patent_similarity_score": selected.get(
+                    "patent_similarity_score", "0.000"
+                ),
+                "patent_relevance_category": selected.get(
+                    "patent_relevance_category", "not_run"
+                ),
+                "patent_evidence_count": selected.get("patent_evidence_count", "0"),
+                "top_patent_evidence_id": selected.get(
+                    "top_patent_evidence_id", ""
+                ),
+                "top_patent_evidence_text": selected.get(
+                    "top_patent_evidence_text", ""
+                ),
+                "molecule_position": position,
+                "status_color": molecule_status_color(
+                    selected.get("patent_evidence_status", "not_run")
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def final_priority_molecule_dataframe(prioritization: pd.DataFrame) -> pd.DataFrame:
     """Prepare final score-versus-similarity data for each molecule."""
     if prioritization.empty or "molecule_id" not in prioritization.columns:
@@ -1180,10 +1334,12 @@ def readable_status(value: object) -> str:
         "match_found": "Match found",
         "hit": "Match found",
         "no_match": "No match",
+        "no_evidence": "No evidence",
         "lookup_error": "Lookup error",
         "error": "Error",
         "not_queried": "Not queried",
         "not_run": "Not run",
+        "skipped": "Skipped",
         "model_unavailable": "Model unavailable",
         "not_available": "Not available",
         "available": "Available",
@@ -1215,6 +1371,14 @@ def readable_ui_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
             "context_status",
             "nlp_status",
             "nlp_relevance_category",
+            "biomedical_model_status",
+            "biomedical_evidence_status",
+            "biomedical_relevance_category",
+            "patent_model_status",
+            "patent_evidence_status",
+            "patent_relevance_category",
+            "surechembl_structure_status",
+            "patent_document_metadata_status",
             "druglikeness_category",
             "prioritization_category",
             "prioritization_category_with_nlp",
@@ -2230,6 +2394,232 @@ def render_text_evidence_view(
     return render_molecule_selector(plot_df, key=key, plot_event=event)
 
 
+def render_biomedical_evidence_view(
+    biomedical: pd.DataFrame,
+    molecule_ids: Iterable[str],
+    *,
+    key: str,
+) -> str:
+    """Render molecule-level biomedical evidence status and matching results."""
+    plot_df = biomedical_evidence_molecule_dataframe(biomedical, molecule_ids)
+    if plot_df.empty:
+        st.info("Biomedical evidence matching was not run.")
+        return ""
+    if biomedical_model_unavailable(biomedical):
+        st.info(
+            "Biomedical evidence matching was skipped because the embedding "
+            "model is unavailable in this cloud environment."
+        )
+    left, middle, right = st.columns(3)
+    with left:
+        st.metric(
+            "Model available",
+            int(
+                plot_df["biomedical_model_status"]
+                .astype(str)
+                .str.strip()
+                .eq("available")
+                .sum()
+            ),
+        )
+    with middle:
+        st.metric(
+            "Model skipped",
+            int(
+                plot_df["biomedical_model_status"]
+                .astype(str)
+                .str.strip()
+                .eq("model_unavailable")
+                .sum()
+            ),
+        )
+    with right:
+        st.metric(
+            "Evidence matched",
+            int(
+                plot_df["biomedical_evidence_status"]
+                .astype(str)
+                .str.strip()
+                .eq("available")
+                .sum()
+            ),
+        )
+    plot_df = coerce_numeric(
+        plot_df,
+        ("biomedical_similarity_score", "biomedical_evidence_count"),
+    )
+    table_columns = available_columns(
+        plot_df,
+        (
+            "molecule_id",
+            "biomedical_model_status",
+            "biomedical_evidence_status",
+            "biomedical_similarity_score",
+            "biomedical_relevance_category",
+            "biomedical_evidence_count",
+            "top_biomedical_evidence_id",
+        ),
+    )
+    st.dataframe(
+        display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
+        width="stretch",
+        hide_index=True,
+    )
+    plot_df["display_biomedical_status"] = plot_df[
+        "biomedical_evidence_status"
+    ].map(readable_status)
+    figure = px.scatter(
+        plot_df,
+        x="molecule_position",
+        y="biomedical_similarity_score",
+        color="display_biomedical_status",
+        size="biomedical_evidence_count",
+        hover_name="molecule_id",
+        hover_data=available_columns(
+            plot_df,
+            (
+                "biomedical_model_status",
+                "biomedical_relevance_category",
+                "top_biomedical_evidence_id",
+            ),
+        ),
+        custom_data=["molecule_id"],
+        color_discrete_map={
+            readable_status(value): color
+            for value, color in category_color_map(
+                plot_df, "biomedical_evidence_status"
+            ).items()
+        },
+        labels={
+            **display_labels(plot_df.columns),
+            "display_biomedical_status": "Biomedical evidence status",
+        },
+        title="Biomedical evidence by molecule",
+    )
+    event = st.plotly_chart(
+        figure,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_df, key=key, plot_event=event)
+
+
+def render_patent_evidence_view(
+    patent: pd.DataFrame,
+    molecule_ids: Iterable[str],
+    *,
+    key: str,
+) -> str:
+    """Render patent/IP-context evidence without making legal conclusions."""
+    plot_df = patent_evidence_molecule_dataframe(patent, molecule_ids)
+    if plot_df.empty:
+        st.info("Patent/IP-context evidence matching was not run.")
+        return ""
+    if patent_model_unavailable(patent):
+        st.info(
+            "Patent/IP-context evidence matching was skipped because the "
+            "embedding model is unavailable in this cloud environment."
+        )
+    st.caption(
+        "These outputs separate public structure evidence, patent document "
+        "metadata, and optional patent-text embedding evidence. They are "
+        "research triage signals, not legal conclusions."
+    )
+    structure_available = (
+        plot_df["surechembl_structure_status"]
+        .astype(str)
+        .str.strip()
+        .isin(["match_found", "available", "hit"])
+        .sum()
+    )
+    metadata_available = (
+        plot_df["patent_document_metadata_status"]
+        .astype(str)
+        .str.strip()
+        .isin(["available", "match_found", "hit"])
+        .sum()
+    )
+    embedding_available = (
+        plot_df["patent_evidence_status"]
+        .astype(str)
+        .str.strip()
+        .eq("available")
+        .sum()
+    )
+    left, middle, right = st.columns(3)
+    with left:
+        st.metric("SureChEMBL structure evidence", int(structure_available))
+    with middle:
+        st.metric("Patent document metadata", int(metadata_available))
+    with right:
+        st.metric("Patent-text embeddings", int(embedding_available))
+    plot_df = coerce_numeric(
+        plot_df,
+        ("patent_similarity_score", "patent_evidence_count"),
+    )
+    table_columns = available_columns(
+        plot_df,
+        (
+            "molecule_id",
+            "surechembl_structure_status",
+            "patent_document_metadata_status",
+            "patent_model_status",
+            "patent_evidence_status",
+            "patent_similarity_score",
+            "patent_relevance_category",
+            "patent_evidence_count",
+            "top_patent_evidence_id",
+        ),
+    )
+    st.dataframe(
+        display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
+        width="stretch",
+        hide_index=True,
+    )
+    plot_df["display_patent_status"] = plot_df["patent_evidence_status"].map(
+        readable_status
+    )
+    figure = px.scatter(
+        plot_df,
+        x="molecule_position",
+        y="patent_similarity_score",
+        color="display_patent_status",
+        size="patent_evidence_count",
+        hover_name="molecule_id",
+        hover_data=available_columns(
+            plot_df,
+            (
+                "surechembl_structure_status",
+                "patent_document_metadata_status",
+                "patent_relevance_category",
+                "top_patent_evidence_id",
+            ),
+        ),
+        custom_data=["molecule_id"],
+        color_discrete_map={
+            readable_status(value): color
+            for value, color in category_color_map(
+                plot_df, "patent_evidence_status"
+            ).items()
+        },
+        labels={
+            **display_labels(plot_df.columns),
+            "display_patent_status": "Patent/IP evidence status",
+        },
+        title="Patent/IP-context evidence by molecule",
+    )
+    event = st.plotly_chart(
+        figure,
+        width="stretch",
+        key=f"{key}_plot",
+        on_select="rerun",
+        selection_mode="points",
+    )
+    return render_molecule_selector(plot_df, key=key, plot_event=event)
+
+
 def render_detail_panel(loaded: LoadedOutputs, molecule_id: str) -> None:
     """Render the shared cross-workflow detail panel for one molecule."""
     prioritization = loaded.tables["prioritization"]
@@ -2539,7 +2929,9 @@ def render_new_analysis_form() -> Path | None:
     st.success(f"Analysis complete: {output_path.parent}")
     st.session_state["active_output_dir"] = str(output_path.parent)
     st.session_state["workflow_step"] = 1
-    st.session_state["completed_workflow_steps"] = list(range(1, 9))
+    st.session_state["completed_workflow_steps"] = list(
+        range(1, len(WORKFLOW_STEP_NAMES) + 1)
+    )
     st.session_state["workflow_mode"] = "completed_run"
     return output_path.parent
 
@@ -2985,7 +3377,22 @@ def run_public_demo_step(
             descriptor_path=paths.descriptors,
             identity_path=identity_path,
         )
+        biomedical_evidence_csv(
+            context_path,
+            paths.text_evidence,
+            paths.biomedical_evidence,
+            identity_path=identity_path,
+            descriptor_path=paths.descriptors,
+        )
     elif step_number == 7:
+        patent_evidence_embeddings_csv(
+            paths.surechembl_lookup,
+            paths.patent_evidence_embeddings,
+            public_lookup_path=paths.public_lookup,
+            identity_path=identity_path,
+            context_path=context_path,
+        )
+    elif step_number == 8:
         scoring_csv(
             paths.descriptors,
             paths.similarity,
@@ -3007,7 +3414,7 @@ def run_public_demo_step(
             paths.prioritized,
             paths.visualization_coordinates,
         )
-    elif step_number == 8:
+    elif step_number == 9:
         loaded = load_output_directory(paths.prioritized.parent)
         prioritization = loaded.tables["prioritization"]
         score = score_column(prioritization)
@@ -3038,7 +3445,6 @@ def render_public_demo_choice() -> Path | None:
     preflight = pubchem_preflight()
     if not preflight.available:
         render_pubchem_preflight_result(preflight)
-        return None
     try:
         paths = create_public_demo_workflow()
     except Exception as exc:
@@ -3075,7 +3481,9 @@ def render_load_existing_choice() -> Path | None:
         return None
     st.session_state["active_output_dir"] = str(output_dir)
     st.session_state["workflow_step"] = 1
-    st.session_state["completed_workflow_steps"] = list(range(1, 9))
+    st.session_state["completed_workflow_steps"] = list(
+        range(1, len(WORKFLOW_STEP_NAMES) + 1)
+    )
     st.session_state["workflow_mode"] = "existing_results"
     return output_dir
 
@@ -3339,7 +3747,7 @@ def render_csv_output_artifact(path: Path) -> None:
 
 
 def render_reports_output_artifact(reports_dir: Path) -> None:
-    """Show generated report artifacts for Step 8, when present."""
+    """Show generated report artifacts for Step 9, when present."""
     st.markdown(f"#### {reports_dir.name}")
     render_reports_browser(
         reports_dir=reports_dir,
@@ -3394,7 +3802,7 @@ def report_metadata_lookup(prioritization: pd.DataFrame) -> dict[str, dict[str, 
 def report_summary_values(
     reports: Iterable[Path], reports_dir: Path
 ) -> dict[str, object]:
-    """Return Step 8 report summary card values."""
+    """Return Step 9 report summary card values."""
     report_list = list(reports)
     molecule_ids = {report_molecule_id(path) for path in report_list}
     return {
@@ -3406,7 +3814,7 @@ def report_summary_values(
 
 
 def render_report_summary_cards(reports: list[Path], reports_dir: Path) -> None:
-    """Show Step 8 report summary cards."""
+    """Show Step 9 report summary cards."""
     values = report_summary_values(reports, reports_dir)
     columns = st.columns(len(values))
     for column, (label, value) in zip(columns, values.items()):
@@ -3429,7 +3837,7 @@ def build_reports_zip(reports: Iterable[Path]) -> bytes:
 def report_table_dataframe(
     reports: list[Path], prioritization: pd.DataFrame
 ) -> pd.DataFrame:
-    """Return the readable Step 8 report table without button widgets."""
+    """Return the readable Step 9 report table without button widgets."""
     metadata = report_metadata_lookup(prioritization)
     rows = []
     for report in reports:
@@ -3473,10 +3881,10 @@ def render_reports_browser(
     images_dir: Path | None = None,
     key_prefix: str = "reports_browser",
 ) -> None:
-    """Render Step 8 reports without an artifact-count chart."""
+    """Render Step 9 reports without an artifact-count chart."""
     reports = sorted(reports_dir.glob("compound_intelligence_report_*.md"))
     if not reports:
-        st.info("Run Step 8 to generate molecule reports.")
+        st.info("Run Step 9 to generate molecule reports.")
         return
 
     prioritization = prioritization if prioritization is not None else pd.DataFrame()
@@ -3660,11 +4068,12 @@ def render_workflow_step(
         render_detail_panel(loaded, selected)
     elif step_number == 6:
         context = loaded.tables["compound_context"]
-        nlp = loaded.tables["text_nlp"]
+        biomedical = loaded.tables["biomedical_evidence"]
         render_step_header(
             6,
-            "Connects public-safe text evidence with grounded molecule identity "
-            "and similarity context while keeping reference-derived annotations explicit.",
+            "Connects biomedical text evidence with grounded molecule identity "
+            "and biological context using an optional local biomedical embedding "
+            "model while keeping reference-derived annotations explicit.",
             [
                 DEMO_TEXT_EVIDENCE
                 if "public_demo_" in str(output_dir)
@@ -3672,7 +4081,11 @@ def render_workflow_step(
                 loaded.paths["chemical_identity"],
                 loaded.paths["public_lookup"],
             ],
-            [loaded.paths["text_nlp"], loaded.paths["compound_context"]],
+            [
+                loaded.paths["biomedical_evidence"],
+                loaded.paths["text_nlp"],
+                loaded.paths["compound_context"],
+            ],
         )
         if not results_available:
             return
@@ -3681,13 +4094,40 @@ def render_workflow_step(
             if not context.empty and "molecule_id" in context.columns
             else ()
         )
-        selected = render_text_evidence_view(
-            nlp, molecule_ids, key="workflow_step_6"
+        selected = render_biomedical_evidence_view(
+            biomedical, molecule_ids, key="workflow_step_6"
         )
         render_detail_panel(loaded, selected)
     elif step_number == 7:
         render_step_header(
             7,
+            "Matches molecule IP-context summaries against public patent text "
+            "signals when a local patent embedding model is available, while "
+            "separately preserving SureChEMBL structure evidence and document metadata.",
+            [
+                loaded.paths["surechembl"],
+                loaded.paths["public_lookup"],
+                loaded.paths["chemical_identity"],
+                loaded.paths["compound_context"],
+            ],
+            [loaded.paths["patent_evidence_embeddings"]],
+        )
+        if not results_available:
+            return
+        patent = loaded.tables["patent_evidence_embeddings"]
+        molecule_ids = (
+            loaded.tables["compound_context"]["molecule_id"].astype(str).tolist()
+            if not loaded.tables["compound_context"].empty
+            and "molecule_id" in loaded.tables["compound_context"].columns
+            else ()
+        )
+        selected = render_patent_evidence_view(
+            patent, molecule_ids, key="workflow_step_7"
+        )
+        render_detail_panel(loaded, selected)
+    elif step_number == 8:
+        render_step_header(
+            8,
             FINAL_RANKING_EXPLANATION,
             [
                 loaded.paths["chemical_identity"],
@@ -3695,6 +4135,8 @@ def render_workflow_step(
                 loaded.paths["descriptors"],
                 loaded.paths["visualization"],
                 loaded.paths["text_nlp"],
+                loaded.paths["biomedical_evidence"],
+                loaded.paths["patent_evidence_embeddings"],
                 loaded.paths["compound_context"],
             ],
             [loaded.paths["prioritization"]],
@@ -3703,12 +4145,12 @@ def render_workflow_step(
             return
         st.info(FINAL_RANKING_EXPLANATION)
         selected = render_score_similarity(
-            prioritization, key="workflow_step_7"
+            prioritization, key="workflow_step_8"
         )
         render_detail_panel(loaded, selected)
     else:
         render_step_header(
-            8,
+            9,
             "Creates molecule-level Markdown reports that bring the available "
             "identity, properties, public evidence, context, and ranking into one view.",
             [loaded.paths["prioritization"], loaded.paths["compound_context"]],
@@ -3720,7 +4162,7 @@ def render_workflow_step(
             reports_dir=loaded.reports_dir,
             prioritization=prioritization,
             images_dir=loaded.images_dir,
-            key_prefix="workflow_step_8_reports",
+            key_prefix="workflow_step_9_reports",
         )
 
 

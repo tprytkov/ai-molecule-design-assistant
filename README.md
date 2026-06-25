@@ -65,17 +65,31 @@ Low-dimensional views may use [UMAP](https://arxiv.org/abs/1802.03426) to
 display clusters, outliers, and reference-like neighborhoods. These plots are
 exploratory representations rather than experimental validation.
 
-### 6. Text-evidence matching
+### 6. Biomedical evidence and biological context
 
-After molecular identity and context are available, sentence embeddings compare
-molecule-context summaries with user-provided evidence text. The
-[Sentence-BERT](https://arxiv.org/abs/1908.10084) approach and the
-[Sentence Transformers documentation](https://www.sbert.net/) describe the
-methodological and software basis for efficient semantic similarity matching.
-This stage organizes evidence for review and hypothesis generation; it does not
-establish biological activity.
+After molecular identity and context are available, an optional configurable
+sentence-transformer compatible biomedical encoder compares molecule-context
+summaries with user-provided biomedical evidence text. Local users may point
+this step at a cached BioBERT/PubMedBERT-style sentence embedding model, while
+the public Streamlit app writes a valid skipped output if the configured model
+is unavailable. The [Sentence-BERT](https://arxiv.org/abs/1908.10084) approach
+and the [Sentence Transformers documentation](https://www.sbert.net/) describe
+the methodological and software basis for efficient semantic similarity
+matching. This stage organizes evidence for review and hypothesis generation;
+it does not establish biological activity.
 
-### 7. Final design prioritization
+### 7. Patent/IP-context evidence
+
+Patent/IP-context evidence is represented as a separate optional evidence
+embedding stage. Local users may point this step at a cached PaECTER,
+patent-BERT-style, or other sentence-transformer compatible patent encoder.
+The public Streamlit app does not require that model: if it is unavailable, the
+workflow writes a schema-valid skipped output while preserving SureChEMBL
+structure evidence and patent document metadata separately. These outputs are
+early research triage signals and do not determine patentability, novelty,
+freedom to operate, ownership, or infringement risk.
+
+### 8. Final design prioritization
 
 The final ranking integrates chemical identity, public-database status, RDKit
 drug-likeness, reference similarity, ChemBERTa chemical-space context,
@@ -157,6 +171,8 @@ Important generated files include:
 - `compound_context.csv`
 - `chemical_identity.csv`
 - `text_nlp.csv`
+- `biomedical_evidence.csv`
+- `patent_evidence_embeddings.csv`
 - `similarity_top_hits.csv`
 - `chemberta_embeddings.csv`
 - `visualization_coordinates.csv`
@@ -198,9 +214,10 @@ The tutorial follows these stages:
 3. Public database lookup
 4. RDKit molecular properties
 5. ChemBERTa chemical space
-6. Text evidence and biomedical context
-7. Final prioritization
-8. Reports
+6. Biomedical evidence and biological context
+7. Patent/IP-context evidence
+8. Final prioritization
+9. Reports
 
 Each stage explains its purpose, shows its inputs and generated files, presents
 a compact result table, and includes a relevant visualization when available.
@@ -214,9 +231,11 @@ The command-line pipeline creates artifacts in the same logical order:
 3. `public_lookup.csv` and `surechembl_evidence.csv`
 4. `descriptors.csv` plus local reference-similarity outputs
 5. `chemberta_embeddings.csv` and `visualization_coordinates.csv` when enabled
-6. `compound_context.csv` and `text_nlp.csv`
-7. `prioritization_results.csv`
-8. Markdown reports
+6. `compound_context.csv`, legacy-compatible `text_nlp.csv`, and molecule-level
+   `biomedical_evidence.csv`
+7. `patent_evidence_embeddings.csv`
+8. `prioritization_results.csv`
+9. Markdown reports
 
 Final prioritization retains evidence status from preceding stages. Unrun
 optional stages are labeled `not_run` rather than being represented as a

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from src.biomedical_evidence import (
+    DEFAULT_BIOMEDICAL_MODEL,
+    BiomedicalEncoder,
+    biomedical_evidence_csv,
+)
 from src.chemberta_embeddings import (
     DEFAULT_CHEMBERTA_MODEL,
     ChembertaEmbedder,
@@ -20,6 +25,11 @@ from src.compound_context import compound_context_csv
 from src.compound_qa import compound_qa
 from src.compound_search import top_hits_csv
 from src.descriptors import descriptor_csv
+from src.patent_evidence_embeddings import (
+    DEFAULT_PATENT_MODEL,
+    PatentEncoder,
+    patent_evidence_embeddings_csv,
+)
 from src.public_lookup import JsonClient, public_lookup_csv
 from src.scoring import scoring_csv
 from src.similarity import similarity_csv
@@ -45,12 +55,15 @@ class PipelinePaths:
     generated_smiles: Path = DEFAULT_INPUT
     references: Path = DEFAULT_REFERENCES
     text_evidence: Path = DEFAULT_TEXT_EVIDENCE
+    patent_text_evidence: Path | None = None
     surechembl_compounds: Path = DEFAULT_SURECHEMBL_COMPOUNDS
     standardized: Path = Path("outputs/standardized.csv")
     descriptors: Path = Path("outputs/descriptors.csv")
     similarity: Path = Path("outputs/similarity.csv")
     similarity_top_hits: Path = Path("outputs/similarity_top_hits.csv")
     text_nlp: Path = Path("outputs/text_nlp.csv")
+    biomedical_evidence: Path = Path("outputs/biomedical_evidence.csv")
+    patent_evidence_embeddings: Path = Path("outputs/patent_evidence_embeddings.csv")
     public_lookup: Path = Path("outputs/public_lookup.csv")
     chemical_identity: Path | None = None
     compound_context: Path | None = None
@@ -81,6 +94,8 @@ def build_paths(
         similarity=output_dir / "similarity.csv",
         similarity_top_hits=output_dir / "similarity_top_hits.csv",
         text_nlp=output_dir / "text_nlp.csv",
+        biomedical_evidence=output_dir / "biomedical_evidence.csv",
+        patent_evidence_embeddings=output_dir / "patent_evidence_embeddings.csv",
         public_lookup=output_dir / "public_lookup.csv",
         chemical_identity=output_dir / "chemical_identity.csv",
         compound_context=output_dir / "compound_context.csv",
@@ -123,6 +138,45 @@ def write_empty_text_evidence(path: Path) -> None:
             fieldnames=("evidence_id", "molecule_id", "source_type", "title", "text"),
         )
         writer.writeheader()
+
+
+def write_not_run_evidence_embeddings_csv(
+    descriptor_path: Path,
+    output_path: Path,
+    *,
+    note: str,
+) -> int:
+    """Write a schema-valid placeholder evidence-embedding CSV."""
+    rows: list[dict[str, str]] = []
+    if descriptor_path.exists():
+        with descriptor_path.open("r", encoding="utf-8-sig", newline="") as input_file:
+            rows = list(csv.DictReader(input_file))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as output_file:
+        writer = csv.DictWriter(
+            output_file,
+            fieldnames=(
+                "molecule_id",
+                "evidence_id",
+                "embedding_status",
+                "max_relevance_score",
+                "evidence_relevance_category",
+                "evidence_note",
+            ),
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "molecule_id": row.get("molecule_id", "").strip(),
+                    "evidence_id": "",
+                    "embedding_status": "not_run",
+                    "max_relevance_score": "0.000",
+                    "evidence_relevance_category": "not_run",
+                    "evidence_note": note,
+                }
+            )
+    return len(rows)
 
 
 def csv_has_data_rows(path: Path) -> bool:
@@ -249,6 +303,10 @@ def run_pipeline(
     paths: PipelinePaths | None = None,
     nlp_model: SentenceEncoder | None = None,
     *,
+    biomedical_model: BiomedicalEncoder | None = None,
+    biomedical_model_name: str = DEFAULT_BIOMEDICAL_MODEL,
+    patent_model: PatentEncoder | None = None,
+    patent_model_name: str = DEFAULT_PATENT_MODEL,
     online_lookup: bool = False,
     max_molecules: int | None = None,
     top_k: int = 5,
@@ -282,10 +340,10 @@ def run_pipeline(
         or active_paths.prioritized.parent / "chemical_identity.csv"
     )
 
-    print("Step 1/8: Standardizing and validating generated SMILES")
+    print("Step 1/9: Standardizing and validating generated SMILES")
     standardize_csv(active_paths.generated_smiles, active_paths.standardized)
 
-    print("Step 2/8: Identifying exact public chemical names")
+    print("Step 2/9: Identifying exact public chemical names")
     chemical_identity_csv(
         active_paths.standardized,
         identity_path,
@@ -295,7 +353,7 @@ def run_pipeline(
         client=identity_client,
     )
 
-    print("Step 3/8: Running public database and SureChEMBL lookups")
+    print("Step 3/9: Running public database and SureChEMBL lookups")
     if active_paths.public_lookup.exists() and not refresh_public_lookup:
         print("Using existing public lookup file.")
     else:
@@ -337,7 +395,7 @@ def run_pipeline(
             client=surechembl_client,
         )
 
-    print("Step 4/8: Calculating RDKit properties and reference similarity")
+    print("Step 4/9: Calculating RDKit properties and reference similarity")
     descriptor_csv(active_paths.standardized, active_paths.descriptors)
     similarity_csv(
         active_paths.descriptors,
@@ -351,7 +409,7 @@ def run_pipeline(
         top_k,
     )
 
-    print("Step 5/8: Generating ChemBERTa chemical-space outputs")
+    print("Step 5/9: Generating ChemBERTa chemical-space outputs")
     if use_chemberta:
         if active_paths.chemberta_embeddings.exists() and not refresh_chemberta:
             print("Using existing ChemBERTa embeddings file.")
@@ -370,7 +428,7 @@ def run_pipeline(
     else:
         print("ChemBERTa was not run for this workflow.")
 
-    print("Step 6/8: Building biomedical context and scoring text evidence")
+    print("Step 6/9: Building biomedical context and scoring biomedical evidence")
     compound_context_csv(
         active_paths.descriptors,
         active_paths.public_lookup,
@@ -397,8 +455,29 @@ def run_pipeline(
             active_paths.text_nlp,
             model=nlp_model,
         )
+    biomedical_evidence_csv(
+        context_path,
+        active_paths.text_evidence,
+        active_paths.biomedical_evidence,
+        model=biomedical_model,
+        model_name=biomedical_model_name,
+        identity_path=identity_path,
+        descriptor_path=active_paths.descriptors,
+    )
 
-    print("Step 7/8: Calculating final prioritization")
+    print("Step 7/9: Scoring patent/IP-context evidence")
+    patent_evidence_embeddings_csv(
+        active_paths.surechembl_lookup,
+        active_paths.patent_evidence_embeddings,
+        public_lookup_path=active_paths.public_lookup,
+        identity_path=identity_path,
+        context_path=context_path,
+        patent_text_path=active_paths.patent_text_evidence,
+        model=patent_model,
+        model_name=patent_model_name,
+    )
+
+    print("Step 8/9: Calculating final prioritization")
     scoring_csv(
         active_paths.descriptors,
         active_paths.similarity,
@@ -442,7 +521,7 @@ def run_pipeline(
                 "compound_intelligence_report_*.md"
             ):
                 old_report.unlink()
-        print(f"Step 8/8: Generating {len(report_ids)} compound report(s)")
+        print(f"Step 9/9: Generating {len(report_ids)} compound report(s)")
         for molecule_id in report_ids:
             report_path = active_report_dir / (
                 f"compound_intelligence_report_{molecule_id}.md"
@@ -465,7 +544,7 @@ def run_pipeline(
             )
             print(f"Compound report complete: {report_path}")
     else:
-        print("Step 8/8: Compound report generation skipped")
+        print("Step 9/9: Compound report generation skipped")
 
     print(f"Pipeline complete: {active_paths.prioritized}")
     return active_paths.prioritized
@@ -506,6 +585,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Text evidence CSV for local NLP scoring.",
+    )
+    parser.add_argument(
+        "--patent-evidence",
+        type=Path,
+        default=None,
+        help="Optional patent/IP-context text evidence CSV for Step 7 embeddings.",
     )
     parser.add_argument(
         "--output-dir",
@@ -607,6 +692,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hugging Face ChemBERTa model name.",
     )
     parser.add_argument(
+        "--biomedical-model",
+        default=DEFAULT_BIOMEDICAL_MODEL,
+        help=(
+            "Cached sentence-transformer compatible biomedical evidence model "
+            "name. BioBERT/PubMedBERT-style sentence embedding models may be "
+            "used when available locally."
+        ),
+    )
+    parser.add_argument(
+        "--patent-model",
+        default=DEFAULT_PATENT_MODEL,
+        help=(
+            "Cached sentence-transformer compatible patent/IP-context model "
+            "name. PaECTER or patent-BERT-style sentence embedding models may "
+            "be used when available locally."
+        ),
+    )
+    parser.add_argument(
         "--refresh-chemberta",
         action="store_true",
         help="Regenerate ChemBERTa embeddings even if the output file exists.",
@@ -649,6 +752,7 @@ def main(
         output_dir=args.output_dir,
         surechembl_compounds_path=surechembl_compounds,
     )
+    paths = replace(paths, patent_text_evidence=args.patent_evidence)
     report_dir = args.report_dir or (args.output_dir / "reports")
     try:
         output_path = run_pipeline(
@@ -668,6 +772,8 @@ def main(
             clean_report_dir=args.clean_report_dir,
             use_chemberta=args.use_chemberta,
             chemberta_model=args.chemberta_model,
+            biomedical_model_name=args.biomedical_model,
+            patent_model_name=args.patent_model,
             refresh_chemberta=args.refresh_chemberta,
         )
         minimum, maximum = final_score_range(output_path)

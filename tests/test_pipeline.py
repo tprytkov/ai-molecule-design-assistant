@@ -166,6 +166,8 @@ def create_pipeline_inputs(root: Path) -> PipelinePaths:
         similarity=output_dir / "similarity.csv",
         similarity_top_hits=output_dir / "similarity_top_hits.csv",
         text_nlp=output_dir / "text_nlp.csv",
+        biomedical_evidence=output_dir / "biomedical_evidence.csv",
+        patent_evidence_embeddings=output_dir / "patent_evidence_embeddings.csv",
         public_lookup=output_dir / "public_lookup.csv",
         surechembl_lookup=output_dir / "surechembl_lookup.csv",
         chemberta_embeddings=output_dir / "chemberta_embeddings.csv",
@@ -217,6 +219,8 @@ def create_non_demo_inputs(root: Path) -> PipelinePaths:
         similarity=output_dir / "similarity.csv",
         similarity_top_hits=output_dir / "similarity_top_hits.csv",
         text_nlp=output_dir / "text_nlp.csv",
+        biomedical_evidence=output_dir / "biomedical_evidence.csv",
+        patent_evidence_embeddings=output_dir / "patent_evidence_embeddings.csv",
         public_lookup=output_dir / "public_lookup.csv",
         surechembl_lookup=output_dir / "surechembl_lookup.csv",
         chemberta_embeddings=output_dir / "chemberta_embeddings.csv",
@@ -255,6 +259,8 @@ def test_pipeline_creates_expected_outputs(tmp_path: Path) -> None:
         paths.similarity_top_hits,
         paths.prioritized.parent / "compound_context.csv",
         paths.text_nlp,
+        paths.biomedical_evidence,
+        paths.patent_evidence_embeddings,
         paths.prioritized,
     )
     assert final_path == paths.prioritized
@@ -319,14 +325,15 @@ def test_pipeline_reports_logical_file_order(
 
     output = capsys.readouterr().out
     markers = [
-        "Step 1/8: Standardizing and validating generated SMILES",
-        "Step 2/8: Identifying exact public chemical names",
-        "Step 3/8: Running public database and SureChEMBL lookups",
-        "Step 4/8: Calculating RDKit properties and reference similarity",
-        "Step 5/8: Generating ChemBERTa chemical-space outputs",
-        "Step 6/8: Building biomedical context and scoring text evidence",
-        "Step 7/8: Calculating final prioritization",
-        "Step 8/8: Compound report generation skipped",
+        "Step 1/9: Standardizing and validating generated SMILES",
+        "Step 2/9: Identifying exact public chemical names",
+        "Step 3/9: Running public database and SureChEMBL lookups",
+        "Step 4/9: Calculating RDKit properties and reference similarity",
+        "Step 5/9: Generating ChemBERTa chemical-space outputs",
+        "Step 6/9: Building biomedical context and scoring biomedical evidence",
+        "Step 7/9: Scoring patent/IP-context evidence",
+        "Step 8/9: Calculating final prioritization",
+        "Step 9/9: Compound report generation skipped",
     ]
     positions = [output.index(marker) for marker in markers]
     assert positions == sorted(positions)
@@ -557,6 +564,8 @@ def test_custom_cli_inputs_outputs_and_report_top_n(tmp_path: Path) -> None:
         "similarity_top_hits.csv",
         "compound_context.csv",
         "text_nlp.csv",
+        "biomedical_evidence.csv",
+        "patent_evidence_embeddings.csv",
         "public_lookup.csv",
         "surechembl_evidence.csv",
         "prioritization_results.csv",
