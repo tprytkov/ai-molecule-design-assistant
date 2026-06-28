@@ -101,6 +101,28 @@ clinical value.
 The default workflow is local and reproducible. Online lookups are optional and
 are not required for the included guided example.
 
+## Optional embedding models
+
+Step 6 and Step 7 are cloud-safe optional embedding stages. The app can write
+valid skipped outputs when an embedding model is unavailable, and skipped
+biomedical or patent-text evidence is not treated as a workflow error.
+
+For local runs, these stages use sentence-transformer compatible models only
+when the configured model is already available in the local cache. The app does
+not automatically download large embedding models on Streamlit Cloud.
+
+Recommended biomedical model category: BioBERT/PubMedBERT-style sentence
+embedding models for biomedical evidence and biological-context matching.
+
+Recommended patent model category: PaECTER/patent-BERT-style embedding models
+for patent/IP-context text matching.
+
+The default biomedical configuration remains a lightweight general
+sentence-transformer baseline so the workflow can run safely in constrained
+environments. Users who need domain-specific biomedical or patent semantics can
+configure cached local models without making those models required for app
+startup or public deployment.
+
 ## Key Features
 
 - SMILES validation, canonicalization, and molecular descriptors with RDKit

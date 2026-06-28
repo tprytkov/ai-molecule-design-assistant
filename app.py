@@ -300,8 +300,12 @@ ABOUT_WORKFLOW_SECTIONS = (
     ),
     (
         "6. Biomedical evidence and biological context",
-        "After molecular identity and context are available, sentence embeddings "
-        "compare molecule-context summaries with user-provided biomedical evidence text. The "
+        "After molecular identity and context are available, a lightweight general "
+        "sentence-transformer baseline can compare molecule-context summaries with "
+        "user-provided biomedical evidence text. BioBERT/PubMedBERT-style biomedical "
+        "sentence embedding models are optional advanced local/cached models. If the "
+        "configured model is unavailable in the public Streamlit Cloud app, this step "
+        "writes a valid skipped output; skipped biomedical evidence is not an error. The "
         "[Sentence-BERT](https://arxiv.org/abs/1908.10084) approach and the "
         "[Sentence Transformers documentation](https://www.sbert.net/) describe the "
         "methodological and software basis for efficient semantic similarity matching. "
@@ -311,11 +315,10 @@ ABOUT_WORKFLOW_SECTIONS = (
     (
         "7. Patent/IP-context evidence",
         "Patent/IP-context evidence is represented as a separate optional evidence "
-        "embedding stage. When a local PaECTER or patent-BERT-style encoder is "
-        "available, it compares molecule IP-context summaries with patent text "
-        "signals. When the model is unavailable, the workflow creates a "
-        "schema-valid skipped output while preserving SureChEMBL structure "
-        "evidence and patent document metadata separately. These outputs are "
+        "embedding stage. PaECTER/patent-BERT-style encoders are optional advanced "
+        "local/cached models for comparing molecule IP-context summaries with patent "
+        "text signals. SureChEMBL structure evidence, patent document metadata, and "
+        "patent-text embedding evidence are preserved separately. These outputs are "
         "research triage signals, not legal conclusions.",
     ),
     (
@@ -350,10 +353,12 @@ WORKFLOW_STEP_WHY = (
     "drug-likeness, and rule-based property concerns.",
     "Learned embeddings provide a complementary view of structural relationships "
     "that is not limited to a single hand-designed fingerprint.",
-    "Biomedical evidence embeddings and biological context help connect chemical "
-    "evidence to cautious, source-grounded research interpretation.",
-    "Patent/IP-context evidence embeddings keep public structure evidence, "
-    "document metadata, and optional patent-text model signals separate.",
+    "Biomedical evidence uses a lightweight general embedding baseline by default; "
+    "BioBERT/PubMedBERT-style local cached models are optional, and a skipped cloud "
+    "model is not an error.",
+    "Patent/IP-context evidence keeps SureChEMBL structure evidence separate from "
+    "optional PaECTER/patent-BERT-style patent-text embeddings and is not a legal "
+    "conclusion.",
     "The prior evidence is combined into one transparent research-prioritization "
     "view while preserving each stage's availability status.",
     "A report collects the evidence for one molecule into a readable artifact "
@@ -4074,8 +4079,11 @@ def render_workflow_step(
         render_step_header(
             6,
             "Connects biomedical text evidence with grounded molecule identity "
-            "and biological context using an optional local biomedical embedding "
-            "model while keeping reference-derived annotations explicit.",
+            "and biological context. The default model is a lightweight general "
+            "sentence-transformer baseline; BioBERT/PubMedBERT-style biomedical "
+            "models are optional advanced local/cached models. On Streamlit Cloud, "
+            "biomedical embeddings may be skipped when the model is unavailable, "
+            "and that skipped state is not an error.",
             [
                 DEMO_TEXT_EVIDENCE
                 if "public_demo_" in str(output_dir)
@@ -4104,8 +4112,10 @@ def render_workflow_step(
         render_step_header(
             7,
             "Matches molecule IP-context summaries against public patent text "
-            "signals when a local patent embedding model is available, while "
-            "separately preserving SureChEMBL structure evidence and document metadata.",
+            "signals when an optional advanced local/cached PaECTER or patent-BERT-style "
+            "model is available. SureChEMBL structure evidence and patent-text "
+            "embedding evidence stay separate, and patent/IP-context evidence is a "
+            "research triage signal rather than a legal conclusion.",
             [
                 loaded.paths["surechembl"],
                 loaded.paths["public_lookup"],

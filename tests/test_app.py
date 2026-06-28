@@ -50,6 +50,18 @@ def test_readme_project_motivation_section_exists() -> None:
     assert "Generative molecular models" in readme
 
 
+def test_readme_optional_embedding_models_section_exists() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    normalized_readme = " ".join(readme.split())
+
+    assert "## Optional embedding models" in readme
+    assert "cloud-safe optional embedding stages" in readme
+    assert "already available in the local cache" in readme
+    assert "BioBERT/PubMedBERT-style sentence" in readme
+    assert "PaECTER/patent-BERT-style embedding models" in readme
+    assert "does not automatically download large embedding models" in normalized_readme
+
+
 def test_app_uses_molecule_design_title_and_subtitle() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
@@ -95,6 +107,11 @@ def test_about_workflow_and_start_guidance_exist() -> None:
     ):
         assert source_name in about_text
     assert "Patent/IP-context evidence" in about_text
+    assert "lightweight general sentence-transformer baseline" in about_text
+    assert "BioBERT/PubMedBERT-style biomedical sentence embedding models" in about_text
+    assert "skipped biomedical evidence is not an error" in about_text
+    assert "PaECTER/patent-BERT-style encoders" in about_text
+    assert "research triage signals, not legal conclusions" in about_text
 
 
 def test_guided_example_file_preview_section_exists(
@@ -348,6 +365,12 @@ def test_workflow_step_names_exist() -> None:
         "availability. Biomedical and patent embedding outputs remain separate "
         "review evidence in this version."
     )
+    assert "lightweight general embedding baseline" in app.WORKFLOW_STEP_WHY[5]
+    assert "BioBERT/PubMedBERT-style local cached models" in app.WORKFLOW_STEP_WHY[5]
+    assert "skipped cloud model is not an error" in app.WORKFLOW_STEP_WHY[5]
+    assert "SureChEMBL structure evidence separate" in app.WORKFLOW_STEP_WHY[6]
+    assert "PaECTER/patent-BERT-style patent-text embeddings" in app.WORKFLOW_STEP_WHY[6]
+    assert "not a legal conclusion" in app.WORKFLOW_STEP_WHY[6]
 
 
 def test_demo_results_require_explicit_action() -> None:
