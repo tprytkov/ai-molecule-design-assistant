@@ -15,6 +15,7 @@ from typing import Iterable
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from rdkit import Chem
 
@@ -1823,6 +1824,146 @@ def nearest_reference_table(plot_df: pd.DataFrame) -> pd.DataFrame:
     return display_dataframe(readable_ui_dataframe(generated[columns])) if columns else pd.DataFrame()
 
 
+def nearest_similarity_distribution(plot_df: pd.DataFrame) -> pd.DataFrame:
+    """Return compact nearest-reference similarity category counts."""
+    if "source_type" not in plot_df.columns:
+        return pd.DataFrame(columns=["Category", "Generated molecules"])
+    generated = plot_df[plot_df["source_type"].fillna("").astype(str) == "generated"]
+    values = pd.to_numeric(
+        generated.get("nearest_reference_similarity", pd.Series(dtype=float)),
+        errors="coerce",
+    ).dropna()
+    return pd.DataFrame(
+        {
+            "Category": ["High similarity", "Moderate similarity", "Low similarity"],
+            "Generated molecules": [
+                int((values >= 0.70).sum()),
+                int(((values >= 0.40) & (values < 0.70)).sum()),
+                int((values < 0.40).sum()),
+            ],
+        }
+    )
+
+
+def nearest_reference_link_rows(plot_df: pd.DataFrame) -> pd.DataFrame:
+    """Select generated molecules for optional nearest-reference link overlays."""
+    if "source_type" not in plot_df.columns:
+        return pd.DataFrame()
+    generated = plot_df[plot_df["source_type"].fillna("").astype(str) == "generated"].copy()
+    references = plot_df[plot_df["source_type"].fillna("").astype(str) == "reference"].copy()
+    if generated.empty or references.empty:
+        return pd.DataFrame()
+    reference_lookup = {}
+    for _, reference in references.iterrows():
+        for column in ("reference_id", "molecule_id", "reference_name"):
+            value = str(reference.get(column, "")).strip()
+            if value:
+                reference_lookup[value] = reference
+    generated["link_score"] = pd.to_numeric(
+        generated.get("prioritization_score_with_nlp", pd.Series(dtype=float)),
+        errors="coerce",
+    )
+    if generated["link_score"].notna().any():
+        generated = generated.sort_values("link_score", ascending=False)
+    else:
+        generated["link_score"] = pd.to_numeric(
+            generated.get("nearest_reference_similarity", pd.Series(dtype=float)),
+            errors="coerce",
+        )
+        generated = generated.sort_values("link_score", ascending=False)
+    rows = []
+    for _, row in generated.head(10).iterrows():
+        reference = reference_lookup.get(str(row.get("nearest_reference_id", "")).strip())
+        if reference is None:
+            reference = reference_lookup.get(str(row.get("nearest_reference_name", "")).strip())
+        if reference is None:
+            continue
+        rows.append(
+            {
+                "generated_x": row.get("x"),
+                "generated_y": row.get("y"),
+                "reference_x": reference.get("x"),
+                "reference_y": reference.get("y"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def chemical_space_hover_columns(plot_df: pd.DataFrame) -> list[str]:
+    """Return hover columns for generated/reference chemical-space points."""
+    return [
+        column
+        for column in (
+            "molecule_id",
+            "source_type",
+            "reference_name",
+            "reference_role",
+            "target",
+            "canonical_smiles",
+            "nearest_reference_id",
+            "nearest_reference_name",
+            "nearest_reference_similarity",
+            "nearest_reference_interpretation",
+            "best_reference_name",
+            "tanimoto_similarity",
+            "cluster_id",
+            "druglikeness_category",
+            "novelty_flag",
+        )
+        if column in plot_df.columns
+    ]
+
+
+def build_chemical_space_figure(
+    plot_df: pd.DataFrame,
+    *,
+    show_links: bool = False,
+) -> go.Figure:
+    """Build the generated/reference chemical-space scatter plot."""
+    figure_df = plot_df.copy()
+    if "source_type" not in figure_df.columns:
+        figure_df["source_type"] = "generated"
+    figure_df["source_type"] = figure_df["source_type"].fillna("generated").astype(str)
+    figure_df["marker_size"] = figure_df["source_type"].map(
+        {"generated": 8, "reference": 12}
+    ).fillna(8)
+    if "cluster_id" in figure_df.columns:
+        figure_df["cluster_id"] = figure_df["cluster_id"].fillna("not assigned").astype(str)
+    fig = px.scatter(
+        figure_df,
+        x="x",
+        y="y",
+        color="source_type",
+        symbol="source_type",
+        symbol_map={"generated": "circle", "reference": "diamond"},
+        size="marker_size",
+        size_max=13,
+        hover_name="molecule_id",
+        hover_data=chemical_space_hover_columns(figure_df),
+        custom_data=["molecule_id"],
+        labels=display_labels(figure_df.columns),
+        title="Generated and Reference Molecules in Chemical Space",
+        color_discrete_map={
+            "generated": "#1f77b4",
+            "reference": "#d95f02",
+        },
+    )
+    fig.update_traces(marker={"opacity": 0.88, "line": {"width": 0.7, "color": "white"}})
+    if show_links:
+        for _, link in nearest_reference_link_rows(figure_df).iterrows():
+            fig.add_trace(
+                go.Scatter(
+                    x=[link["generated_x"], link["reference_x"]],
+                    y=[link["generated_y"], link["reference_y"]],
+                    mode="lines",
+                    line={"color": "rgba(120, 120, 120, 0.35)", "width": 1},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+    return fig
+
+
 def category_color_map(frame: pd.DataFrame, column: str) -> dict[str, str]:
     """Return Plotly colors for each readable status/category value."""
     if column not in frame.columns:
@@ -2195,67 +2336,41 @@ def render_chemical_space(
     if not nearest_table.empty:
         with st.expander("Nearest-reference table", expanded=False):
             st.dataframe(nearest_table.head(10), width="stretch", hide_index=True, height=260)
-    color_column = next(
-        (
-            column
-            for column in (
-                "druglikeness_category",
-                "novelty_flag",
-                "cluster_id",
-                "chemberta_status",
+    distribution = nearest_similarity_distribution(plot_df)
+    if int(distribution["Generated molecules"].sum()) > 0:
+        with st.expander("Nearest-reference similarity distribution", expanded=False):
+            st.table(distribution)
+            histogram_df = plot_df[
+                plot_df["source_type"].fillna("").astype(str) == "generated"
+            ].copy()
+            histogram_df = coerce_numeric(histogram_df, ["nearest_reference_similarity"])
+            histogram = px.histogram(
+                histogram_df,
+                x="nearest_reference_similarity",
+                nbins=12,
+                labels=display_labels(histogram_df.columns),
+                title="Nearest-reference similarity distribution",
             )
-            if column in plot_df.columns
-        ),
-        "",
+            histogram.update_layout(height=230, margin={"l": 20, "r": 20, "t": 45, "b": 35})
+            st.plotly_chart(histogram, width="stretch", key=f"{key}_similarity_histogram")
+    show_links = st.checkbox(
+        "Show nearest-reference links",
+        value=False,
+        key=f"{key}_show_nearest_reference_links",
     )
-    if color_column == "cluster_id":
-        plot_df[color_column] = plot_df[color_column].fillna("not assigned").astype(str)
-    hover = [
-        column
-        for column in (
-            "molecule_id",
-            "source_type",
-            "reference_name",
-            "reference_role",
-            "target",
-            "canonical_smiles",
-            "best_reference_name",
-            "tanimoto_similarity",
-            "nearest_reference_name",
-            "nearest_reference_similarity",
-            "nearest_reference_interpretation",
-            "cluster_id",
-            "druglikeness_category",
-            "novelty_flag",
-        )
-        if column in plot_df.columns
-    ]
-    fig = px.scatter(
-        plot_df,
-        x="x",
-        y="y",
-        color=color_column or None,
-        symbol="source_type",
-        symbol_map={"generated": "circle", "reference": "diamond"},
-        hover_name="molecule_id",
-        hover_data=hover,
-        custom_data=["molecule_id"],
-        labels=display_labels(plot_df.columns),
-        title="Generated and Reference Molecules in Chemical Space",
-        color_discrete_map=(
-            None
-            if color_column == "cluster_id"
-            else category_color_map(plot_df, color_column)
-            if color_column
-            else None
-        ),
-    )
+    fig = build_chemical_space_figure(plot_df, show_links=show_links)
     event = st.plotly_chart(
         fig,
         width="stretch",
         key=f"{key}_plot",
         on_select="rerun",
         selection_mode="points",
+    )
+    st.caption(
+        "Generated and reference molecules are projected together using the same "
+        "fingerprint representation and dimensionality-reduction fit. The 2D map "
+        "is intended for visual triage; nearest-reference Tanimoto similarity "
+        "should be used for more reliable similarity interpretation."
     )
     return render_molecule_selector(plot_df, key=key, plot_event=event)
 

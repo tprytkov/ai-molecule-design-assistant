@@ -1911,6 +1911,63 @@ def test_chemical_space_works_when_reference_molecules_missing() -> None:
     assert app.chemical_space_summary_values(plot)["References plotted"] == 0
 
 
+def test_chemical_space_figure_uses_source_type_color_symbol_and_hover() -> None:
+    plot = pd.DataFrame(
+        {
+            "molecule_id": ["gen_1", "ref_1"],
+            "source_type": ["generated", "reference"],
+            "x": [0.1, 0.0],
+            "y": [0.2, 0.0],
+            "reference_id": ["", "ref_1"],
+            "reference_name": ["", "Reference One"],
+            "nearest_reference_id": ["ref_1", ""],
+            "nearest_reference_name": ["Reference One", ""],
+            "nearest_reference_similarity": [0.850, None],
+            "nearest_reference_interpretation": ["high_similarity", ""],
+            "cluster_id": ["0", "0"],
+            "prioritization_score_with_nlp": [0.9, None],
+        }
+    )
+
+    figure = app.build_chemical_space_figure(plot)
+
+    scatter_traces = [trace for trace in figure.data if trace.mode == "markers"]
+    assert {trace.name for trace in scatter_traces} == {"generated", "reference"}
+    generated = next(trace for trace in scatter_traces if trace.name == "generated")
+    reference = next(trace for trace in scatter_traces if trace.name == "reference")
+    assert generated.marker.symbol == "circle"
+    assert reference.marker.symbol == "diamond"
+    assert generated.marker.color != reference.marker.color
+    assert max(reference.marker.size) > max(generated.marker.size)
+    hover = " ".join(str(trace.hovertemplate) for trace in scatter_traces)
+    assert "Source type" in hover
+    assert "Nearest reference ID" in hover
+    assert "Nearest reference similarity" in hover
+    assert "Nearest reference interpretation" in hover
+    assert "Reference name" in hover
+
+
+def test_chemical_space_figure_can_add_nearest_reference_links() -> None:
+    plot = pd.DataFrame(
+        {
+            "molecule_id": ["gen_1", "ref_1"],
+            "source_type": ["generated", "reference"],
+            "x": [0.1, 0.0],
+            "y": [0.2, 0.0],
+            "reference_id": ["", "ref_1"],
+            "reference_name": ["", "Reference One"],
+            "nearest_reference_id": ["ref_1", ""],
+            "nearest_reference_name": ["Reference One", ""],
+            "nearest_reference_similarity": [0.850, None],
+            "prioritization_score_with_nlp": [0.9, None],
+        }
+    )
+
+    figure = app.build_chemical_space_figure(plot, show_links=True)
+
+    assert any(trace.mode == "lines" for trace in figure.data)
+
+
 def test_status_counts_and_column_order() -> None:
     df = pd.DataFrame(
         {

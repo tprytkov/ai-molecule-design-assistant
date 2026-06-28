@@ -65,8 +65,10 @@ Low-dimensional views may use [UMAP](https://arxiv.org/abs/1802.03426) to
 display clusters, outliers, and reference-like neighborhoods. Generated and
 reference molecules are fit into the same projection when reference molecules
 are available, with nearest-reference fingerprint similarity shown for visual
-triage. These plots are exploratory representations rather than experimental
-validation.
+triage. The dashboard colors and shapes generated versus reference molecules
+separately, and can optionally show nearest-reference links and a compact
+similarity distribution. These plots are exploratory representations rather
+than experimental validation.
 
 ### 6. Biomedical evidence and biological context
 
