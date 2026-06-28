@@ -2406,13 +2406,6 @@ def render_chemical_space(
     if not nearest_table.empty:
         with st.expander("Nearest-reference table", expanded=False):
             st.dataframe(nearest_table.head(10), width="stretch", hide_index=True, height=260)
-    color_options = chemical_space_color_options(plot_df)
-    color_label = st.selectbox(
-        "Color points by",
-        list(color_options),
-        index=0,
-        key=f"{key}_color_points_by",
-    )
     cluster_summary = chemical_space_cluster_summary(plot_df)
     if not cluster_summary.empty:
         cluster_count = int(len(cluster_summary))
@@ -2436,6 +2429,17 @@ def render_chemical_space(
             )
             histogram.update_layout(height=230, margin={"l": 20, "r": 20, "t": 45, "b": 35})
             st.plotly_chart(histogram, width="stretch", key=f"{key}_similarity_histogram")
+    color_options = chemical_space_color_options(plot_df)
+    color_label = st.selectbox(
+        "Color points by",
+        list(color_options),
+        index=0,
+        key=f"{key}_color_points_by",
+    )
+    st.caption(
+        "Use Source type to compare generated vs reference molecules. Use "
+        "Chemical-space cluster to inspect local regions of chemical similarity."
+    )
     show_links = st.checkbox(
         "Show nearest-reference links",
         value=False,

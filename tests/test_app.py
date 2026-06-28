@@ -1968,6 +1968,70 @@ def test_chemical_space_figure_can_add_nearest_reference_links() -> None:
     assert any(trace.mode == "lines" for trace in figure.data)
 
 
+def test_chemical_space_color_selector_is_visible_above_plot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events = []
+    selectboxes = []
+    captions = []
+    metrics = []
+    visualization_path = tmp_path / "visualization_coordinates.csv"
+    visualization_path.write_text(
+        "molecule_id,source_type,x,y,cluster_id\n"
+        "gen_1,generated,0.1,0.2,0\n"
+        "ref_1,reference,0.0,0.0,reference\n",
+        encoding="utf-8",
+    )
+    loaded = app.LoadedOutputs(
+        output_dir=tmp_path,
+        reports_dir=tmp_path / "reports",
+        images_dir=tmp_path / "images",
+        paths={"visualization": visualization_path},
+        tables={
+            "visualization": pd.read_csv(visualization_path),
+        },
+    )
+
+    fake_streamlit = SimpleNamespace(
+        session_state={},
+        caption=lambda value, *args, **kwargs: (
+            events.append(("caption", value)) or captions.append(value)
+        ),
+        info=lambda *args, **kwargs: None,
+        columns=lambda count: [MetricColumn(metrics) for _ in range(count)],
+        metric=lambda *args, **kwargs: None,
+        download_button=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: NullExpander(),
+        dataframe=lambda *args, **kwargs: None,
+        table=lambda *args, **kwargs: None,
+        selectbox=lambda label, options, index=0, *args, **kwargs: (
+            events.append(("selectbox", label))
+            or selectboxes.append((label, list(options), index))
+            or list(options)[index]
+        ),
+        checkbox=lambda label, *args, **kwargs: (
+            events.append(("checkbox", label)) or False
+        ),
+        plotly_chart=lambda *args, **kwargs: events.append(("plot", kwargs.get("key"))),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_chemical_space(loaded, pd.DataFrame(), key="test_space")
+
+    assert selectboxes[0] == (
+        "Color points by",
+        ["Source type", "Chemical-space cluster"],
+        0,
+    )
+    assert any(
+        "Use Source type to compare generated vs reference molecules" in caption
+        for caption in captions
+    )
+    assert events.index(("selectbox", "Color points by")) < events.index(
+        ("plot", "test_space_plot")
+    )
+
+
 def test_chemical_space_figure_can_color_by_cluster_without_hiding_references() -> None:
     plot = pd.DataFrame(
         {
