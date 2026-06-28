@@ -372,7 +372,9 @@ WORKFLOW_STEP_GET = (
 )
 FINAL_RANKING_EXPLANATION = (
     "Final ranking combines evidence from chemical identity, public lookup, "
-    "RDKit descriptors, ChemBERTa embeddings, text evidence, and biomedical context."
+    "RDKit descriptors, ChemBERTa embeddings, text evidence, and evidence "
+    "availability. Biomedical and patent embedding outputs remain separate "
+    "review evidence in this version."
 )
 DEMO_INPUT = Path("data/examples/druglike_candidate_demo.csv")
 DEMO_REFERENCES = Path("data/examples/druglike_reference_panel.csv")
@@ -4135,8 +4137,6 @@ def render_workflow_step(
                 loaded.paths["descriptors"],
                 loaded.paths["visualization"],
                 loaded.paths["text_nlp"],
-                loaded.paths["biomedical_evidence"],
-                loaded.paths["patent_evidence_embeddings"],
                 loaded.paths["compound_context"],
             ],
             [loaded.paths["prioritization"]],

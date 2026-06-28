@@ -344,7 +344,9 @@ def test_workflow_step_names_exist() -> None:
     )
     assert app.FINAL_RANKING_EXPLANATION == (
         "Final ranking combines evidence from chemical identity, public lookup, "
-        "RDKit descriptors, ChemBERTa embeddings, text evidence, and biomedical context."
+        "RDKit descriptors, ChemBERTa embeddings, text evidence, and evidence "
+        "availability. Biomedical and patent embedding outputs remain separate "
+        "review evidence in this version."
     )
 
 
