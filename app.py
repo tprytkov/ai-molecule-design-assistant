@@ -109,6 +109,7 @@ DISPLAY_LABELS = {
     "reference_name": "Reference name",
     "reference_role": "Reference role",
     "target": "Target",
+    "cluster_display": "Chemical-space cluster",
     "nearest_reference_id": "Nearest reference ID",
     "nearest_reference_name": "Nearest reference",
     "nearest_reference_similarity": "Nearest reference similarity",
@@ -1845,6 +1846,66 @@ def nearest_similarity_distribution(plot_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def chemical_space_cluster_column(plot_df: pd.DataFrame) -> pd.Series:
+    """Return display cluster labels while keeping reference points visible."""
+    if "cluster_id" not in plot_df.columns:
+        return pd.Series(["not_clustered"] * len(plot_df), index=plot_df.index)
+    source = (
+        plot_df["source_type"].fillna("").astype(str)
+        if "source_type" in plot_df.columns
+        else pd.Series(["generated"] * len(plot_df), index=plot_df.index)
+    )
+    clusters = plot_df["cluster_id"].fillna("").astype(str).str.strip()
+    clusters = clusters.where(clusters.ne(""), "not_clustered")
+    return clusters.where(~source.eq("reference") | clusters.ne("not_clustered"), "reference")
+
+
+def chemical_space_cluster_summary(plot_df: pd.DataFrame) -> pd.DataFrame:
+    """Return generated/reference counts per chemical-space cluster."""
+    if plot_df.empty:
+        return pd.DataFrame(columns=["Cluster", "Generated molecules", "Reference molecules"])
+    frame = plot_df.copy()
+    frame["cluster_display"] = chemical_space_cluster_column(frame)
+    source = (
+        frame["source_type"].fillna("generated").astype(str)
+        if "source_type" in frame.columns
+        else pd.Series(["generated"] * len(frame), index=frame.index)
+    )
+    rows = []
+    for cluster in sorted(frame["cluster_display"].dropna().astype(str).unique()):
+        members = frame[frame["cluster_display"].astype(str) == cluster]
+        member_source = source.loc[members.index]
+        rows.append(
+            {
+                "Cluster": cluster,
+                "Generated molecules": int(member_source.eq("generated").sum()),
+                "Reference molecules": int(member_source.eq("reference").sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def chemical_space_color_options(plot_df: pd.DataFrame) -> dict[str, str]:
+    """Return available chemical-space color modes mapped to dataframe columns."""
+    options = {"Source type": "source_type", "Chemical-space cluster": "cluster_display"}
+    for label, candidates in (
+        (
+            "Priority category",
+            (
+                "prioritization_category_with_nlp",
+                "prioritization_category",
+                "design_category",
+            ),
+        ),
+        ("Public identity status", ("known_public_match", "novelty_flag")),
+    ):
+        for column in candidates:
+            if column in plot_df.columns:
+                options[label] = column
+                break
+    return options
+
+
 def nearest_reference_link_rows(plot_df: pd.DataFrame) -> pd.DataFrame:
     """Select generated molecules for optional nearest-reference link overlays."""
     if "source_type" not in plot_df.columns:
@@ -1917,6 +1978,7 @@ def chemical_space_hover_columns(plot_df: pd.DataFrame) -> list[str]:
 def build_chemical_space_figure(
     plot_df: pd.DataFrame,
     *,
+    color_by: str = "Source type",
     show_links: bool = False,
 ) -> go.Figure:
     """Build the generated/reference chemical-space scatter plot."""
@@ -1929,11 +1991,22 @@ def build_chemical_space_figure(
     ).fillna(8)
     if "cluster_id" in figure_df.columns:
         figure_df["cluster_id"] = figure_df["cluster_id"].fillna("not assigned").astype(str)
+    figure_df["cluster_display"] = chemical_space_cluster_column(figure_df)
+    color_options = chemical_space_color_options(figure_df)
+    color_column = color_options.get(color_by, "source_type")
+    color_map = (
+        {
+            "generated": "#1f77b4",
+            "reference": "#d95f02",
+        }
+        if color_column == "source_type"
+        else None
+    )
     fig = px.scatter(
         figure_df,
         x="x",
         y="y",
-        color="source_type",
+        color=color_column,
         symbol="source_type",
         symbol_map={"generated": "circle", "reference": "diamond"},
         size="marker_size",
@@ -1943,10 +2016,7 @@ def build_chemical_space_figure(
         custom_data=["molecule_id"],
         labels=display_labels(figure_df.columns),
         title="Generated and Reference Molecules in Chemical Space",
-        color_discrete_map={
-            "generated": "#1f77b4",
-            "reference": "#d95f02",
-        },
+        color_discrete_map=color_map,
     )
     fig.update_traces(marker={"opacity": 0.88, "line": {"width": 0.7, "color": "white"}})
     if show_links:
@@ -2336,6 +2406,19 @@ def render_chemical_space(
     if not nearest_table.empty:
         with st.expander("Nearest-reference table", expanded=False):
             st.dataframe(nearest_table.head(10), width="stretch", hide_index=True, height=260)
+    color_options = chemical_space_color_options(plot_df)
+    color_label = st.selectbox(
+        "Color points by",
+        list(color_options),
+        index=0,
+        key=f"{key}_color_points_by",
+    )
+    cluster_summary = chemical_space_cluster_summary(plot_df)
+    if not cluster_summary.empty:
+        cluster_count = int(len(cluster_summary))
+        st.metric("Chemical-space clusters", cluster_count)
+        with st.expander("Cluster summary", expanded=False):
+            st.dataframe(cluster_summary, width="stretch", hide_index=True, height=260)
     distribution = nearest_similarity_distribution(plot_df)
     if int(distribution["Generated molecules"].sum()) > 0:
         with st.expander("Nearest-reference similarity distribution", expanded=False):
@@ -2358,7 +2441,11 @@ def render_chemical_space(
         value=False,
         key=f"{key}_show_nearest_reference_links",
     )
-    fig = build_chemical_space_figure(plot_df, show_links=show_links)
+    fig = build_chemical_space_figure(
+        plot_df,
+        color_by=str(color_label),
+        show_links=show_links,
+    )
     event = st.plotly_chart(
         fig,
         width="stretch",
@@ -2370,7 +2457,9 @@ def render_chemical_space(
         "Generated and reference molecules are projected together using the same "
         "fingerprint representation and dimensionality-reduction fit. The 2D map "
         "is intended for visual triage; nearest-reference Tanimoto similarity "
-        "should be used for more reliable similarity interpretation."
+        "should be used for more reliable similarity interpretation. Use Source "
+        "type view to compare generated and reference molecules. Use Chemical-space "
+        "cluster view to inspect local regions of chemical similarity."
     )
     return render_molecule_selector(plot_df, key=key, plot_event=event)
 

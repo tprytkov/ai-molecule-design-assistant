@@ -1968,6 +1968,52 @@ def test_chemical_space_figure_can_add_nearest_reference_links() -> None:
     assert any(trace.mode == "lines" for trace in figure.data)
 
 
+def test_chemical_space_figure_can_color_by_cluster_without_hiding_references() -> None:
+    plot = pd.DataFrame(
+        {
+            "molecule_id": ["gen_1", "gen_2", "ref_1"],
+            "source_type": ["generated", "generated", "reference"],
+            "x": [0.1, 0.2, 0.0],
+            "y": [0.2, 0.3, 0.0],
+            "reference_id": ["", "", "ref_1"],
+            "reference_name": ["", "", "Reference One"],
+            "nearest_reference_id": ["ref_1", "ref_1", ""],
+            "nearest_reference_name": ["Reference One", "Reference One", ""],
+            "nearest_reference_similarity": [0.850, 0.300, None],
+            "nearest_reference_interpretation": ["high_similarity", "low_similarity", ""],
+            "cluster_id": ["0", "1", ""],
+        }
+    )
+
+    figure = app.build_chemical_space_figure(plot, color_by="Chemical-space cluster")
+
+    marker_traces = [trace for trace in figure.data if trace.mode == "markers"]
+    assert any("0" in str(trace.name) for trace in marker_traces)
+    assert any("1" in str(trace.name) for trace in marker_traces)
+    assert any("reference" in str(trace.name).lower() for trace in marker_traces)
+    assert {trace.marker.symbol for trace in marker_traces} >= {"circle", "diamond"}
+    assert sum(len(trace.x) for trace in marker_traces) == 3
+    hover = " ".join(str(trace.hovertemplate) for trace in marker_traces)
+    assert "Source type" in hover
+    assert "Nearest reference similarity" in hover
+
+
+def test_chemical_space_cluster_summary_counts_sources() -> None:
+    plot = pd.DataFrame(
+        {
+            "molecule_id": ["gen_1", "gen_2", "ref_1"],
+            "source_type": ["generated", "generated", "reference"],
+            "cluster_id": ["0", "1", ""],
+        }
+    )
+
+    summary = app.chemical_space_cluster_summary(plot)
+
+    assert summary["Cluster"].tolist() == ["0", "1", "reference"]
+    assert summary["Generated molecules"].tolist() == [1, 1, 0]
+    assert summary["Reference molecules"].tolist() == [0, 0, 1]
+
+
 def test_status_counts_and_column_order() -> None:
     df = pd.DataFrame(
         {
