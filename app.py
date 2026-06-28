@@ -890,6 +890,33 @@ def display_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=display_labels(df.columns))
 
 
+def shorten_display_text(value: object, max_chars: int = 80) -> str:
+    """Shorten long cell values for compact preview tables."""
+    text = "" if pd.isna(value) else str(value)
+    text = " ".join(text.split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def compact_preview_dataframe(
+    frame: pd.DataFrame,
+    *,
+    preview_rows: int = 10,
+    max_columns: int = 10,
+    max_text_chars: int = 80,
+) -> pd.DataFrame:
+    """Return a short, readable dataframe for collapsed artifact previews."""
+    preview = frame.head(preview_rows).copy()
+    if len(preview.columns) > max_columns:
+        preview = preview.iloc[:, :max_columns].copy()
+    for column in preview.columns:
+        preview[column] = preview[column].map(
+            lambda value: shorten_display_text(value, max_text_chars)
+        )
+    return display_dataframe(preview)
+
+
 def molecule_status_color(value: object) -> str:
     """Map workflow statuses to the shared molecule color vocabulary."""
     status = str(value or "").strip().lower().replace(" ", "_")
@@ -1776,11 +1803,13 @@ def render_validation_view(frame: pd.DataFrame, *, key: str) -> str:
         plot_df,
         ("molecule_id", "validation_status", "smiles", "canonical_smiles", "error_message"),
     )
-    st.dataframe(
-        display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
-        width="stretch",
-        hide_index=True,
-    )
+    with st.expander("Preview table", expanded=False):
+        st.dataframe(
+            display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
+            width="stretch",
+            hide_index=True,
+            height=260,
+        )
     figure = px.scatter(
         plot_df,
         x="molecule_position",
@@ -2467,11 +2496,13 @@ def render_biomedical_evidence_view(
             "top_biomedical_evidence_id",
         ),
     )
-    st.dataframe(
-        display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
-        width="stretch",
-        hide_index=True,
-    )
+    with st.expander("Preview table", expanded=False):
+        st.dataframe(
+            display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
+            width="stretch",
+            hide_index=True,
+            height=260,
+        )
     plot_df["display_biomedical_status"] = plot_df[
         "biomedical_evidence_status"
     ].map(readable_status)
@@ -2580,11 +2611,13 @@ def render_patent_evidence_view(
             "top_patent_evidence_id",
         ),
     )
-    st.dataframe(
-        display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
-        width="stretch",
-        hide_index=True,
-    )
+    with st.expander("Preview table", expanded=False):
+        st.dataframe(
+            display_dataframe(readable_ui_dataframe(plot_df[table_columns])),
+            width="stretch",
+            hide_index=True,
+            height=260,
+        )
     plot_df["display_patent_status"] = plot_df["patent_evidence_status"].map(
         readable_status
     )
@@ -2958,6 +2991,52 @@ def format_file_size(path: Path) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
+def render_output_artifact_card(
+    label: str,
+    dataframe: pd.DataFrame,
+    filename: str,
+    description: str,
+    *,
+    data: bytes,
+    mime: str = "text/csv",
+    preview_rows: int = 10,
+    key_prefix: str,
+    file_size: str | None = None,
+    raw_text: str | None = None,
+) -> None:
+    """Render a compact artifact summary with hidden optional previews."""
+    row_word = "row" if len(dataframe) == 1 else "rows"
+    size_text = f" - {file_size}" if file_size else ""
+    st.markdown(f"#### {label}")
+    st.write(description)
+    st.write(
+        f"Artifact: {filename} - {len(dataframe)} {row_word} - "
+        f"{len(dataframe.columns)} columns{size_text}"
+    )
+    st.download_button(
+        f"Download {filename}",
+        data=data,
+        file_name=filename,
+        mime=mime,
+        key=f"{key_prefix}_download_{filename}",
+    )
+    with st.expander("Preview table", expanded=False):
+        preview = compact_preview_dataframe(dataframe, preview_rows=preview_rows)
+        st.dataframe(preview, width="stretch", hide_index=True, height=260)
+        if len(dataframe.columns) > len(preview.columns):
+            hidden_count = len(dataframe.columns) - len(preview.columns)
+            if hasattr(st, "caption"):
+                st.caption(f"{hidden_count} additional column(s) hidden in preview.")
+    if raw_text is not None:
+        with st.expander(f"Show raw text: {filename}", expanded=False):
+            st.text_area(
+                "Raw text",
+                value=raw_text,
+                height=220,
+                key=f"{key_prefix}_raw_{filename}",
+            )
+
+
 def example_column_meanings(path: Path, columns: Iterable[str]) -> pd.DataFrame:
     """Return visible example-file column explanations for present columns."""
     _, meanings, _ = EXAMPLE_FILE_NOTES[path]
@@ -2969,11 +3048,33 @@ def example_column_meanings(path: Path, columns: Iterable[str]) -> pd.DataFrame:
 
 
 def render_example_file_preview(path: Path) -> None:
-    """Show a public example CSV preview, schema hints, and a download button."""
+    """Show a compact public example CSV card with optional previews."""
     label, _, note = EXAMPLE_FILE_NOTES[path]
     data = path.read_bytes()
     raw_text = data.decode("utf-8")
     frame = pd.read_csv(path).fillna("")
+    render_output_artifact_card(
+        label,
+        frame,
+        path.name,
+        (
+            f"File purpose: {note} Use this file as a template for preparing "
+            "your own input."
+        ),
+        data=data,
+        preview_rows=10,
+        key_prefix=f"example_{path.stem}",
+        file_size=format_file_size(path),
+        raw_text=raw_text,
+    )
+    with st.expander("Column guide", expanded=False):
+        st.dataframe(
+            example_column_meanings(path, frame.columns),
+            width="stretch",
+            hide_index=True,
+            height=240,
+        )
+    return
     row_word = "row" if len(frame) == 1 else "rows"
     st.markdown(f"#### {label}")
     st.markdown(f"**File purpose:** {note}")
@@ -2988,8 +3089,6 @@ def render_example_file_preview(path: Path) -> None:
         width="stretch",
         hide_index=True,
     )
-    st.markdown("**Preview: first 10 rows**")
-    st.dataframe(frame.head(10), width="stretch", hide_index=True)
     st.download_button(
         "Download CSV",
         data=data,
@@ -3706,9 +3805,9 @@ def render_artifact_name_list(items: Iterable[Path | str]) -> None:
 
 
 def render_csv_output_artifact(path: Path) -> None:
-    """Show one workflow CSV output with preview, download, and raw text copy."""
-    st.markdown(f"#### {path.name}")
+    """Show one workflow CSV output as a compact artifact card."""
     if not path.exists():
+        st.markdown(f"#### {path.name}")
         st.info("Run this step to create the output file.")
         return
 
@@ -3717,6 +3816,7 @@ def render_csv_output_artifact(path: Path) -> None:
     try:
         frame = pd.read_csv(path).fillna("")
     except Exception as exc:
+        st.markdown(f"#### {path.name}")
         st.error(f"Could not preview {path.name}: {exc}")
         st.download_button(
             f"Download {path.name}",
@@ -3734,6 +3834,18 @@ def render_csv_output_artifact(path: Path) -> None:
             )
         return
 
+    render_output_artifact_card(
+        path.name,
+        frame,
+        path.name,
+        "Generated workflow CSV output.",
+        data=data,
+        preview_rows=10,
+        key_prefix=f"output_{path.stem}",
+        file_size=format_file_size(path),
+        raw_text=raw_text,
+    )
+    return
     row_word = "row" if len(frame) == 1 else "rows"
     st.write(f"{len(frame)} {row_word} · {format_file_size(path)}")
     st.dataframe(frame.head(10), width="stretch", hide_index=True)
@@ -3897,11 +4009,13 @@ def render_reports_browser(
     prioritization = prioritization if prioritization is not None else pd.DataFrame()
     images_dir = images_dir or reports_dir.parent / "report_images"
     render_report_summary_cards(reports, reports_dir)
-    st.dataframe(
-        report_table_dataframe(reports, prioritization),
-        width="stretch",
-        hide_index=True,
-    )
+    with st.expander("Preview report table", expanded=False):
+        st.dataframe(
+            report_table_dataframe(reports, prioritization).head(10),
+            width="stretch",
+            hide_index=True,
+            height=260,
+        )
     st.download_button(
         "Download all reports as ZIP",
         data=build_reports_zip(reports),
@@ -4335,7 +4449,8 @@ def render_results_dashboard(output_dir: Path) -> None:
 
     st.header("Results Table")
     results_table = display_dataframe(filtered[ordered_columns(filtered)])
-    st.dataframe(results_table, width="stretch")
+    with st.expander("Preview table", expanded=False):
+        st.dataframe(results_table.head(10), width="stretch", height=260)
 
     molecule_ids = filtered["molecule_id"].astype(str).tolist() if "molecule_id" in filtered.columns else []
     default_molecule = molecule_ids[0] if molecule_ids else ""

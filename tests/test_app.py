@@ -131,7 +131,7 @@ def test_guided_example_file_preview_section_exists(
         markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
         code=lambda value, *args, **kwargs: codes.append(str(value)),
         expander=lambda label, *args, **kwargs: (
-            expanders.append(label) or NullExpander()
+            expanders.append({"label": label, **kwargs}) or NullExpander()
         ),
         dataframe=lambda data, *args, **kwargs: tables.append(data),
         download_button=lambda label, *args, **kwargs: downloads.append(
@@ -154,26 +154,36 @@ def test_guided_example_file_preview_section_exists(
         "Use these files as templates for preparing your own generated SMILES input."
         in markdown
     )
-    assert expanders == [
-        "Show raw CSV text: druglike_candidate_demo.csv",
-        "Show raw CSV text: druglike_reference_panel.csv",
-        "Show raw CSV text: text_evidence_demo.csv",
+    assert [item["label"] for item in expanders] == [
+        "Preview table",
+        "Show raw text: druglike_candidate_demo.csv",
+        "Column guide",
+        "Preview table",
+        "Show raw text: druglike_reference_panel.csv",
+        "Column guide",
+        "Preview table",
+        "Show raw text: text_evidence_demo.csv",
+        "Column guide",
     ]
+    assert all(item.get("expanded") is False for item in expanders)
     assert codes == []
     assert [item["file_name"] for item in downloads] == [
         "druglike_candidate_demo.csv",
         "druglike_reference_panel.csv",
         "text_evidence_demo.csv",
     ]
-    assert all(item["label"] == "Download CSV" for item in downloads)
+    assert [item["label"] for item in downloads] == [
+        "Download druglike_candidate_demo.csv",
+        "Download druglike_reference_panel.csv",
+        "Download text_evidence_demo.csv",
+    ]
     assert len(text_areas) == 3
-    assert all(item["label"] == "Raw CSV text" for item in text_areas)
+    assert all(item["label"] == "Raw text" for item in text_areas)
     assert "molecule_id,smiles" in text_areas[0]["value"]
-    assert any("rows" in value and "columns" in value for value in writes)
-    assert any("**File purpose:**" in value for value in markdown)
+    assert any("Artifact:" in value and "columns" in value for value in writes)
     assert any(
-        "Use this file as a template for preparing your own input." in value
-        for value in markdown
+        "File purpose:" in value and "Use this file as a template" in value
+        for value in writes
     )
 
 
@@ -194,9 +204,9 @@ def test_candidate_file_preview_shows_molecule_id_and_smiles(
 
     app.render_example_file_preview(app.DEMO_INPUT)
 
-    column_meanings = tables[0]
-    preview = tables[1]
-    assert {"molecule_id", "smiles"}.issubset(preview.columns)
+    preview = tables[0]
+    column_meanings = tables[1]
+    assert {"Molecule ID", "SMILES"}.issubset(preview.columns)
     assert len(preview) == 10
     assert {"molecule_id", "smiles"}.issubset(
         set(column_meanings["Column"].astype(str))
@@ -218,6 +228,7 @@ def test_standardized_output_download_appears_after_step_one_exists(
     markdown = []
     writes = []
     text_areas = []
+    expanders = []
     fake_streamlit = SimpleNamespace(
         markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
         write=lambda value, *args, **kwargs: writes.append(str(value)),
@@ -225,7 +236,9 @@ def test_standardized_output_download_appears_after_step_one_exists(
         download_button=lambda label, *args, **kwargs: downloads.append(
             {"label": label, **kwargs}
         ),
-        expander=lambda *args, **kwargs: NullExpander(),
+        expander=lambda label, *args, **kwargs: (
+            expanders.append({"label": label, **kwargs}) or NullExpander()
+        ),
         text_area=lambda label, *args, **kwargs: text_areas.append(
             {"label": label, **kwargs}
         ),
@@ -237,15 +250,22 @@ def test_standardized_output_download_appears_after_step_one_exists(
     app.render_csv_output_artifact(output)
 
     assert "#### standardized.csv" in markdown
-    assert any("1 row" in value for value in writes)
-    assert {"molecule_id", "smiles"}.issubset(tables[0].columns)
+    assert "Preview: first 10 rows" not in markdown
+    assert any("Generated workflow CSV output." in value for value in writes)
+    assert any("Artifact: standardized.csv - 1 row - 4 columns" in value for value in writes)
+    assert {"Molecule ID", "SMILES"}.issubset(tables[0].columns)
+    assert [item["label"] for item in expanders] == [
+        "Preview table",
+        "Show raw text: standardized.csv",
+    ]
+    assert all(item.get("expanded") is False for item in expanders)
     assert downloads == [
         {
             "label": "Download standardized.csv",
             "data": output.read_bytes(),
             "file_name": "standardized.csv",
             "mime": "text/csv",
-            "key": "download_output_standardized.csv",
+            "key": "output_standardized_download_standardized.csv",
         }
     ]
     assert text_areas[0]["value"] == output.read_bytes().decode("utf-8")
@@ -2237,6 +2257,7 @@ def test_report_artifact_bar_chart_is_removed(
     previews = []
     images = []
     metric_columns = []
+    expanders = []
     def fake_columns(count: int) -> list[MetricColumn]:
         metric_columns[:] = [MetricColumn(metrics) for _ in range(count)]
         return metric_columns
@@ -2247,7 +2268,9 @@ def test_report_artifact_bar_chart_is_removed(
         download_button=lambda label, *args, **kwargs: downloads.append(
             {"label": label, **kwargs}
         ),
-        expander=lambda *args, **kwargs: NullExpander(),
+        expander=lambda label, *args, **kwargs: (
+            expanders.append({"label": label, **kwargs}) or NullExpander()
+        ),
         text_area=lambda label, *args, **kwargs: previews.append(
             {"label": label, **kwargs}
         ),
@@ -2267,6 +2290,8 @@ def test_report_artifact_bar_chart_is_removed(
     assert any(str(reports_dir) in column.caption_values for column in metric_columns)
     assert tables
     assert "Molecule ID" in tables[0].columns
+    assert expanders[0] == {"label": "Preview report table", "expanded": False}
+    assert expanders[1]["label"] == f"Preview report: {report.name}"
     assert downloads[0]["label"] == "Download all reports as ZIP"
     report_download = next(
         item for item in downloads if item["label"] == f"Download {report.name}"
