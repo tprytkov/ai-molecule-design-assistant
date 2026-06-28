@@ -103,6 +103,15 @@ DISPLAY_LABELS = {
     "tanimoto_similarity": "Best reference similarity",
     "similarity_category": "Structure match category",
     "best_reference_name": "Closest reference compound",
+    "source_type": "Source type",
+    "reference_id": "Reference ID",
+    "reference_name": "Reference name",
+    "reference_role": "Reference role",
+    "target": "Target",
+    "nearest_reference_id": "Nearest reference ID",
+    "nearest_reference_name": "Nearest reference",
+    "nearest_reference_similarity": "Nearest reference similarity",
+    "nearest_reference_interpretation": "Nearest reference interpretation",
     "known_public_match": "Exact public match",
     "pubchem_status": "PubChem status",
     "chembl_status": "ChEMBL status",
@@ -1750,8 +1759,68 @@ def chemical_space_dataframe(
         plot_df = coords.copy()
     return coerce_numeric(
         plot_df,
-        ["x", "y", "prioritization_score_with_nlp", "prioritization_score", "tanimoto_similarity"],
+        [
+            "x",
+            "y",
+            "prioritization_score_with_nlp",
+            "prioritization_score",
+            "tanimoto_similarity",
+            "nearest_reference_similarity",
+        ],
     )
+
+
+def chemical_space_summary_values(plot_df: pd.DataFrame) -> dict[str, object]:
+    """Return compact generated/reference chemical-space summary metrics."""
+    source = (
+        plot_df["source_type"].fillna("generated").astype(str).str.strip()
+        if "source_type" in plot_df.columns
+        else pd.Series(["generated"] * len(plot_df), index=plot_df.index)
+    )
+    generated = plot_df[source.eq("generated")]
+    references = plot_df[source.eq("reference")]
+    similarities = pd.to_numeric(
+        generated.get("nearest_reference_similarity", pd.Series(dtype=float)),
+        errors="coerce",
+    ).dropna()
+    median = f"{similarities.median():.3f}" if not similarities.empty else "Not available"
+    high = int((similarities >= 0.70).sum()) if not similarities.empty else 0
+    far = int((similarities < 0.40).sum()) if not similarities.empty else 0
+    return {
+        "Generated plotted": int(len(generated)),
+        "References plotted": int(len(references)),
+        "Median nearest-reference similarity": median,
+        "Generated high similarity": high,
+        "Generated far from references": far,
+    }
+
+
+def render_chemical_space_summary(plot_df: pd.DataFrame) -> None:
+    """Render compact chemical-space summary metrics."""
+    values = chemical_space_summary_values(plot_df)
+    columns = st.columns(len(values))
+    for column, (label, value) in zip(columns, values.items()):
+        column.metric(label, value)
+
+
+def nearest_reference_table(plot_df: pd.DataFrame) -> pd.DataFrame:
+    """Return generated molecule nearest-reference rows for optional preview."""
+    if "source_type" not in plot_df.columns:
+        return pd.DataFrame()
+    generated = plot_df[plot_df["source_type"].fillna("").astype(str) == "generated"]
+    columns = available_columns(
+        generated,
+        (
+            "molecule_id",
+            "nearest_reference_id",
+            "nearest_reference_name",
+            "nearest_reference_similarity",
+            "nearest_reference_interpretation",
+            "best_reference_name",
+            "tanimoto_similarity",
+        ),
+    )
+    return display_dataframe(readable_ui_dataframe(generated[columns])) if columns else pd.DataFrame()
 
 
 def category_color_map(frame: pd.DataFrame, column: str) -> dict[str, str]:
@@ -2106,10 +2175,35 @@ def render_chemical_space(
         st.info("visualization_coordinates.csv was not found; chemical-space plot is unavailable.")
         return ""
     plot_df = chemical_space_dataframe(coords, prioritization)
+    if "source_type" not in plot_df.columns:
+        plot_df["source_type"] = "generated"
+    st.info(
+        "Reference molecules are plotted in the same chemical-space projection "
+        "as generated molecules. Distances are useful for visual triage but "
+        "should be interpreted together with fingerprint similarity and other evidence."
+    )
+    render_chemical_space_summary(plot_df)
+    if loaded.paths["visualization"].exists():
+        st.download_button(
+            "Download visualization_coordinates.csv",
+            data=loaded.paths["visualization"].read_bytes(),
+            file_name="visualization_coordinates.csv",
+            mime="text/csv",
+            key=f"{key}_download_visualization_coordinates",
+        )
+    nearest_table = nearest_reference_table(plot_df)
+    if not nearest_table.empty:
+        with st.expander("Nearest-reference table", expanded=False):
+            st.dataframe(nearest_table.head(10), width="stretch", hide_index=True, height=260)
     color_column = next(
         (
             column
-            for column in ("druglikeness_category", "cluster_id", "chemberta_status")
+            for column in (
+                "druglikeness_category",
+                "novelty_flag",
+                "cluster_id",
+                "chemberta_status",
+            )
             if column in plot_df.columns
         ),
         "",
@@ -2120,8 +2214,16 @@ def render_chemical_space(
         column
         for column in (
             "molecule_id",
+            "source_type",
+            "reference_name",
+            "reference_role",
+            "target",
+            "canonical_smiles",
             "best_reference_name",
             "tanimoto_similarity",
+            "nearest_reference_name",
+            "nearest_reference_similarity",
+            "nearest_reference_interpretation",
             "cluster_id",
             "druglikeness_category",
             "novelty_flag",
@@ -2133,11 +2235,13 @@ def render_chemical_space(
         x="x",
         y="y",
         color=color_column or None,
+        symbol="source_type",
+        symbol_map={"generated": "circle", "reference": "diamond"},
         hover_name="molecule_id",
         hover_data=hover,
         custom_data=["molecule_id"],
         labels=display_labels(plot_df.columns),
-        title="ChemBERTa / UMAP Chemical Space",
+        title="Generated and Reference Molecules in Chemical Space",
         color_discrete_map=(
             None
             if color_column == "cluster_id"
@@ -3465,6 +3569,7 @@ def run_public_demo_step(
             paths.chemberta_embeddings,
             None,
             paths.visualization_coordinates,
+            reference_path=paths.references,
         )
     elif step_number == 6:
         compound_context_csv(
@@ -3519,6 +3624,7 @@ def run_public_demo_step(
             paths.chemberta_embeddings,
             paths.prioritized,
             paths.visualization_coordinates,
+            reference_path=paths.references,
         )
     elif step_number == 9:
         loaded = load_output_directory(paths.prioritized.parent)

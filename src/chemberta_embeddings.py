@@ -9,6 +9,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Protocol, Sequence
 
+from rdkit import DataStructs
+
+from src.similarity import create_morgan_fingerprint
+
 
 DEFAULT_CHEMBERTA_MODEL = "DeepChem/ChemBERTa-77M-MLM"
 MAX_UMAP_MOLECULES = 30
@@ -25,6 +29,12 @@ EMBEDDING_COLUMNS = (
 )
 VISUALIZATION_COLUMNS = (
     "molecule_id",
+    "source_type",
+    "canonical_smiles",
+    "reference_id",
+    "reference_name",
+    "reference_role",
+    "target",
     "x",
     "y",
     "coordinate_method",
@@ -34,6 +44,10 @@ VISUALIZATION_COLUMNS = (
     "known_public_match",
     "best_reference_name",
     "tanimoto_similarity",
+    "nearest_reference_id",
+    "nearest_reference_name",
+    "nearest_reference_similarity",
+    "nearest_reference_interpretation",
     "cluster_id",
 )
 PRIORITIZED_CHEMBERTA_COLUMNS = (
@@ -232,6 +246,136 @@ def load_available_embeddings(
     return embeddings
 
 
+def fingerprint_vector(smiles: str) -> list[float] | None:
+    """Return a Morgan fingerprint as a numeric vector for projection."""
+    try:
+        fingerprint = create_morgan_fingerprint(smiles)
+    except (ValueError, RuntimeError):
+        return None
+    return [float(bit) for bit in fingerprint.ToBitString()]
+
+
+def reference_identifier(row: Mapping[str, str], index: int) -> str:
+    """Return a stable reference identifier from supported schemas."""
+    return (
+        row.get("molecule_id", "").strip()
+        or row.get("reference_id", "").strip()
+        or row.get("reference_name", "").strip()
+        or f"ref_{index:04d}"
+    )
+
+
+def reference_smiles(row: Mapping[str, str]) -> str:
+    """Return reference SMILES from supported schemas."""
+    return row.get("canonical_smiles", "").strip() or row.get("smiles", "").strip()
+
+
+def read_reference_rows(reference_path: Path | None) -> list[dict[str, str]]:
+    """Read optional reference rows without requiring one exact schema."""
+    if reference_path is None or not reference_path.exists():
+        return []
+    with reference_path.open("r", encoding="utf-8-sig", newline="") as input_file:
+        reader = csv.DictReader(input_file)
+        fieldnames = set(reader.fieldnames or [])
+        if not {"smiles", "canonical_smiles"} & fieldnames:
+            return []
+        return [dict(row) for row in reader]
+
+
+def nearest_reference_interpretation(score: float | None) -> str:
+    """Interpret generated-to-reference Morgan fingerprint similarity."""
+    if score is None:
+        return "not_available"
+    if score >= 0.70:
+        return "high_similarity"
+    if score >= 0.40:
+        return "moderate_similarity"
+    return "low_similarity"
+
+
+def reference_projection_rows(
+    generated_rows: Iterable[Mapping[str, str]],
+    reference_rows: Iterable[Mapping[str, str]],
+) -> tuple[list[dict[str, str]], list[list[float]]]:
+    """Build generated and reference projection rows from the same fingerprints."""
+    rows: list[dict[str, str]] = []
+    vectors: list[list[float]] = []
+    reference_fingerprints = []
+
+    for index, row in enumerate(reference_rows, start=1):
+        smiles = reference_smiles(row)
+        try:
+            fingerprint = create_morgan_fingerprint(smiles)
+        except (ValueError, RuntimeError):
+            continue
+        reference_id = reference_identifier(row, index)
+        reference_name = (
+            row.get("reference_name", "").strip()
+            or row.get("name", "").strip()
+            or reference_id
+        )
+        reference_fingerprints.append(
+            {
+                "reference_id": reference_id,
+                "reference_name": reference_name,
+                "smiles": smiles,
+                "fingerprint": fingerprint,
+            }
+        )
+        rows.append(
+            {
+                "molecule_id": reference_id,
+                "source_type": "reference",
+                "canonical_smiles": smiles,
+                "reference_id": reference_id,
+                "reference_name": reference_name,
+                "reference_role": row.get("reference_role", "").strip()
+                or row.get("reference_source", "").strip(),
+                "target": row.get("target", "").strip(),
+            }
+        )
+        vectors.append([float(bit) for bit in fingerprint.ToBitString()])
+
+    for row in generated_rows:
+        molecule_id = row.get("molecule_id", "").strip()
+        smiles = row.get("canonical_smiles", "").strip()
+        vector = fingerprint_vector(smiles)
+        if not molecule_id or vector is None:
+            continue
+        nearest = None
+        if reference_fingerprints:
+            fingerprint = create_morgan_fingerprint(smiles)
+            scores = [
+                DataStructs.TanimotoSimilarity(
+                    fingerprint, reference["fingerprint"]
+                )
+                for reference in reference_fingerprints
+            ]
+            best_index = max(range(len(scores)), key=scores.__getitem__)
+            nearest = {
+                **reference_fingerprints[best_index],
+                "score": scores[best_index],
+            }
+        nearest_score = nearest["score"] if nearest is not None else None
+        rows.append(
+            {
+                "molecule_id": molecule_id,
+                "source_type": "generated",
+                "canonical_smiles": smiles,
+                "nearest_reference_id": nearest["reference_id"] if nearest else "",
+                "nearest_reference_name": nearest["reference_name"] if nearest else "",
+                "nearest_reference_similarity": (
+                    f"{nearest_score:.3f}" if nearest_score is not None else ""
+                ),
+                "nearest_reference_interpretation": (
+                    nearest_reference_interpretation(nearest_score)
+                ),
+            }
+        )
+        vectors.append(vector)
+    return rows, vectors
+
+
 def pca_coordinates(vectors: list[list[float]]) -> list[tuple[float, float]]:
     """Compute deterministic 2D PCA coordinates with a small numpy dependency."""
     if not vectors:
@@ -293,6 +437,7 @@ def visualization_coordinates_csv(
     embeddings_path: Path,
     prioritized_path: Path | None,
     output_path: Path,
+    reference_path: Path | None = None,
 ) -> int:
     """Create 2D coordinates, optionally enriched with prioritization data."""
     embedding_rows = read_csv_with_columns(
@@ -317,45 +462,116 @@ def visualization_coordinates_csv(
             {"molecule_id": row.get("molecule_id", "")}
             for row in embedding_rows
         ]
-    embeddings = load_available_embeddings(embedding_rows)
-    ordered_ids = [
-        row["molecule_id"].strip()
-        for row in prioritized_rows
-        if row.get("molecule_id", "").strip() in embeddings
-    ]
+    priority_by_id = {
+        row.get("molecule_id", "").strip(): row for row in prioritized_rows
+    }
+    reference_rows = read_reference_rows(reference_path)
+    projection_rows: list[dict[str, str]] = []
+    vectors: list[list[float]] = []
+    if reference_rows:
+        generated_by_id = {
+            row.get("molecule_id", "").strip(): row for row in embedding_rows
+        }
+        generated_rows = [
+            generated_by_id[molecule_id]
+            for molecule_id in priority_by_id
+            if molecule_id in generated_by_id
+        ]
+        projection_rows, vectors = reference_projection_rows(
+            generated_rows,
+            reference_rows,
+        )
+    else:
+        embeddings = load_available_embeddings(embedding_rows)
+        ordered_ids = [
+            row["molecule_id"].strip()
+            for row in prioritized_rows
+            if row.get("molecule_id", "").strip() in embeddings
+        ]
+        projection_rows = [
+            {
+                "molecule_id": molecule_id,
+                "source_type": "generated",
+                "canonical_smiles": next(
+                    (
+                        row.get("canonical_smiles", "").strip()
+                        for row in embedding_rows
+                        if row.get("molecule_id", "").strip() == molecule_id
+                    ),
+                    "",
+                ),
+            }
+            for molecule_id in ordered_ids
+        ]
+        vectors = [embeddings[molecule_id] for molecule_id in ordered_ids]
+    projected_ids = {row["molecule_id"] for row in projection_rows}
+    embedding_by_id = {
+        row.get("molecule_id", "").strip(): row for row in embedding_rows
+    }
+    for row in prioritized_rows:
+        molecule_id = row.get("molecule_id", "").strip()
+        if molecule_id and molecule_id not in projected_ids:
+            projection_rows.append(
+                {
+                    "molecule_id": molecule_id,
+                    "source_type": "generated",
+                    "canonical_smiles": embedding_by_id.get(molecule_id, {}).get(
+                        "canonical_smiles", ""
+                    ),
+                }
+            )
     method = "not_available"
     coords_by_id: dict[str, tuple[float, float]] = {}
-    if ordered_ids:
-        method, coords = reduce_embeddings([embeddings[molecule_id] for molecule_id in ordered_ids])
-        coords_by_id = dict(zip(ordered_ids, coords))
+    if projection_rows:
+        method, coords = reduce_embeddings(vectors)
+        coords_by_id = {
+            row["molecule_id"]: coord for row, coord in zip(projection_rows, coords)
+        }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=VISUALIZATION_COLUMNS)
         writer.writeheader()
-        for row in prioritized_rows:
-            molecule_id = row.get("molecule_id", "").strip()
+        for row in projection_rows:
+            molecule_id = row["molecule_id"]
+            priority_row = priority_by_id.get(molecule_id, {})
             coords = coords_by_id.get(molecule_id)
             x = coords[0] if coords else None
             y = coords[1] if coords else None
             writer.writerow(
                 {
                     "molecule_id": molecule_id,
+                    "source_type": row.get("source_type", ""),
+                    "canonical_smiles": row.get("canonical_smiles", ""),
+                    "reference_id": row.get("reference_id", ""),
+                    "reference_name": row.get("reference_name", ""),
+                    "reference_role": row.get("reference_role", ""),
+                    "target": row.get("target", ""),
                     "x": f"{x:.6f}" if x is not None else "",
                     "y": f"{y:.6f}" if y is not None else "",
                     "coordinate_method": method if coords else "not_available",
-                    "prioritization_score_with_nlp": row.get(
+                    "prioritization_score_with_nlp": priority_row.get(
                         "prioritization_score_with_nlp", ""
                     ),
-                    "novelty_flag": row.get("novelty_flag", ""),
-                    "ip_potential_category": row.get("ip_potential_category", ""),
-                    "known_public_match": row.get("known_public_match", ""),
-                    "best_reference_name": row.get("best_reference_name", ""),
-                    "tanimoto_similarity": row.get("tanimoto_similarity", ""),
+                    "novelty_flag": priority_row.get("novelty_flag", ""),
+                    "ip_potential_category": priority_row.get(
+                        "ip_potential_category", ""
+                    ),
+                    "known_public_match": priority_row.get("known_public_match", ""),
+                    "best_reference_name": priority_row.get("best_reference_name", ""),
+                    "tanimoto_similarity": priority_row.get("tanimoto_similarity", ""),
+                    "nearest_reference_id": row.get("nearest_reference_id", ""),
+                    "nearest_reference_name": row.get("nearest_reference_name", ""),
+                    "nearest_reference_similarity": row.get(
+                        "nearest_reference_similarity", ""
+                    ),
+                    "nearest_reference_interpretation": row.get(
+                        "nearest_reference_interpretation", ""
+                    ),
                     "cluster_id": cluster_id(x, y),
                 }
             )
-    return len(prioritized_rows)
+    return len(projection_rows)
 
 
 def merge_chemberta_into_prioritized(

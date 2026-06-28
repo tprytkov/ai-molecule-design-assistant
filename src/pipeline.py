@@ -424,6 +424,7 @@ def run_pipeline(
             active_paths.chemberta_embeddings,
             None,
             active_paths.visualization_coordinates,
+            reference_path=active_paths.references,
         )
     else:
         print("ChemBERTa was not run for this workflow.")
@@ -502,6 +503,7 @@ def run_pipeline(
             active_paths.chemberta_embeddings,
             active_paths.prioritized,
             active_paths.visualization_coordinates,
+            reference_path=active_paths.references,
         )
 
     report_ids = select_report_molecule_ids(

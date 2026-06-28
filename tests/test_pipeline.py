@@ -786,6 +786,29 @@ def test_pipeline_creates_chemberta_outputs_when_requested(tmp_path: Path) -> No
     assert embedder.calls == 2
     assert paths.chemberta_embeddings.exists()
     assert paths.visualization_coordinates.exists()
+    with paths.visualization_coordinates.open(
+        "r", encoding="utf-8", newline=""
+    ) as visualization_file:
+        visualization_rows = list(csv.DictReader(visualization_file))
+    assert {row["source_type"] for row in visualization_rows} == {
+        "generated",
+        "reference",
+    }
+    assert len(visualization_rows) == 3
+    assert {
+        row["coordinate_method"]
+        for row in visualization_rows
+        if row["coordinate_method"] != "not_available"
+    }
+    generated_rows = [
+        row for row in visualization_rows if row["source_type"] == "generated"
+    ]
+    assert all(row["nearest_reference_id"] for row in generated_rows)
+    assert all(row["nearest_reference_name"] for row in generated_rows)
+    assert all(row["nearest_reference_similarity"] for row in generated_rows)
+    assert next(
+        row for row in generated_rows if row["molecule_id"] == "mol_a"
+    )["nearest_reference_interpretation"] == "high_similarity"
     with paths.prioritized.open(
         "r", encoding="utf-8", newline=""
     ) as prioritized_file:

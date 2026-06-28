@@ -62,8 +62,11 @@ estimate. Neither constitutes evidence of biological activity or safety.
 [ChemBERTa](https://arxiv.org/abs/2010.09885) uses transformer-based
 self-supervised learning on SMILES to construct molecular representations.
 Low-dimensional views may use [UMAP](https://arxiv.org/abs/1802.03426) to
-display clusters, outliers, and reference-like neighborhoods. These plots are
-exploratory representations rather than experimental validation.
+display clusters, outliers, and reference-like neighborhoods. Generated and
+reference molecules are fit into the same projection when reference molecules
+are available, with nearest-reference fingerprint similarity shown for visual
+triage. These plots are exploratory representations rather than experimental
+validation.
 
 ### 6. Biomedical evidence and biological context
 

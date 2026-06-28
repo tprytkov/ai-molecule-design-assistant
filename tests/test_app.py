@@ -1863,6 +1863,40 @@ def test_missing_visualization_coordinates_is_graceful(tmp_path: Path) -> None:
 def test_chemical_space_works_before_prioritization_exists() -> None:
     coordinates = pd.DataFrame(
         {
+            "molecule_id": ["demo_001", "ref_001", "demo_002"],
+            "source_type": ["generated", "reference", "generated"],
+            "x": ["0.1", "0.0", "0.2"],
+            "y": ["-0.3", "0.0", "0.4"],
+            "coordinate_method": ["pca", "pca", "pca"],
+            "reference_name": ["", "Reference A", ""],
+            "nearest_reference_name": ["Reference A", "", "Reference A"],
+            "nearest_reference_similarity": ["0.900", "", "0.200"],
+            "nearest_reference_interpretation": ["high_similarity", "", "low_similarity"],
+            "cluster_id": ["2", "0", "0"],
+        }
+    )
+
+    plot = app.chemical_space_dataframe(coordinates, pd.DataFrame())
+
+    assert plot["molecule_id"].tolist() == ["demo_001", "ref_001", "demo_002"]
+    assert plot["source_type"].tolist() == ["generated", "reference", "generated"]
+    assert plot["x"].tolist() == [0.1, 0.0, 0.2]
+    assert plot["y"].tolist() == [-0.3, 0.0, 0.4]
+    assert app.chemical_space_summary_values(plot) == {
+        "Generated plotted": 2,
+        "References plotted": 1,
+        "Median nearest-reference similarity": "0.550",
+        "Generated high similarity": 1,
+        "Generated far from references": 1,
+    }
+    nearest = app.nearest_reference_table(plot)
+    assert "Nearest reference" in nearest.columns
+    assert len(nearest) == 2
+
+
+def test_chemical_space_works_when_reference_molecules_missing() -> None:
+    coordinates = pd.DataFrame(
+        {
             "molecule_id": ["demo_001", "demo_002"],
             "x": ["0.1", "0.2"],
             "y": ["-0.3", "0.4"],
@@ -1873,9 +1907,8 @@ def test_chemical_space_works_before_prioritization_exists() -> None:
 
     plot = app.chemical_space_dataframe(coordinates, pd.DataFrame())
 
-    assert plot["molecule_id"].tolist() == ["demo_001", "demo_002"]
-    assert plot["x"].tolist() == [0.1, 0.2]
-    assert plot["y"].tolist() == [-0.3, 0.4]
+    assert "source_type" not in plot.columns
+    assert app.chemical_space_summary_values(plot)["References plotted"] == 0
 
 
 def test_status_counts_and_column_order() -> None:
