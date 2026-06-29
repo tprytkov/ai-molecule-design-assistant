@@ -169,6 +169,121 @@ def test_custom_analysis_plan_reports_missing_downstream_prerequisites(
     ]
 
 
+def test_run_selected_public_demo_steps_skips_existing_and_marks_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    paths.standardized.parent.mkdir(parents=True, exist_ok=True)
+    paths.standardized.write_text(
+        "molecule_id,canonical_smiles\nmol_a,CCO\n",
+        encoding="utf-8",
+    )
+    fake_streamlit = SimpleNamespace(session_state={})
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "run_public_demo_step",
+        lambda *args, **kwargs: pytest.fail("Existing output should be skipped"),
+    )
+
+    summary = app.run_selected_public_demo_steps(paths, ["Standardization"])
+
+    assert summary["executed"] == []
+    assert summary["skipped_existing"] == ["Standardization"]
+    assert fake_streamlit.session_state["completed_workflow_steps"] == [1]
+
+
+def test_run_selected_public_demo_steps_executes_in_workflow_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    calls = []
+    fake_streamlit = SimpleNamespace(session_state={})
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "run_public_demo_step",
+        lambda step_number, active_paths: calls.append(step_number),
+    )
+
+    summary = app.run_selected_public_demo_steps(paths, ["Reports"])
+
+    assert calls == [1, 2, 4, 8, 9]
+    assert summary["executed"] == [
+        "Standardization",
+        "Chemical identity",
+        "Descriptors",
+        "Prioritization",
+        "Reports",
+    ]
+    assert fake_streamlit.session_state["completed_workflow_steps"] == [
+        1,
+        2,
+        4,
+        8,
+        9,
+    ]
+
+
+def test_run_selected_public_demo_steps_treats_fallback_outputs_as_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    paths.biomedical_evidence.parent.mkdir(parents=True, exist_ok=True)
+    paths.biomedical_evidence.write_text(
+        "molecule_id,biomedical_model_status,biomedical_evidence_status\n"
+        "mol_a,model_unavailable,skipped\n",
+        encoding="utf-8",
+    )
+    paths.patent_evidence_embeddings.write_text(
+        "molecule_id,patent_model_status,patent_evidence_status\n"
+        "mol_a,model_unavailable,skipped\n",
+        encoding="utf-8",
+    )
+    fake_streamlit = SimpleNamespace(
+        session_state={"completed_workflow_steps": [1, 2, 3]}
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "run_public_demo_step",
+        lambda *args, **kwargs: pytest.fail("Fallback outputs should be skipped"),
+    )
+
+    summary = app.run_selected_public_demo_steps(
+        paths,
+        ["Biomedical evidence", "Patent/IP-context evidence"],
+    )
+
+    assert "Biomedical evidence" in summary["skipped_existing"]
+    assert "Patent/IP-context evidence" in summary["skipped_existing"]
+    assert fake_streamlit.session_state["completed_workflow_steps"] == [
+        1,
+        2,
+        3,
+        6,
+        7,
+    ]
+
+
 def test_step_navigation_statuses_use_outputs_and_prerequisites(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1016,9 +1131,13 @@ def test_custom_analysis_planner_renders_on_settings_page(
     for step in app.CUSTOM_ANALYSIS_STEPS:
         assert step in checkbox_labels
     assert not any(
-        button.label == "Run selected steps will be added in a later update."
+        button.label == "Run selected planned steps"
         for button in app_test.button
     )
+    assert (
+        "Run selected steps for uploaded analyses will be added in a later "
+        "update. For now, use the guided workflow or full run."
+    ) in [item.value for item in app_test.info]
 
 
 def test_custom_analysis_planner_warns_for_missing_prerequisites(
@@ -1049,8 +1168,79 @@ def test_custom_analysis_planner_warns_for_missing_prerequisites(
     assert "**Missing prerequisites**" in markdown_values
     assert "- Standardization" in markdown_values
     assert "**Recommended full execution plan**" in markdown_values
-    assert "Run selected steps will be added in a later update." in [
+    assert (
+        "Run selected steps for uploaded analyses will be added in a later "
+        "update. For now, use the guided workflow or full run."
+    ) in [
         item.value for item in app_test.info
+    ]
+
+
+def test_custom_analysis_planner_shows_run_button_for_public_demo(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    buttons = []
+    fake_streamlit = SimpleNamespace(
+        session_state={"workflow_mode": "public_demo"},
+        markdown=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        checkbox=lambda *args, **kwargs: False,
+        warning=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        button=lambda label, *args, **kwargs: buttons.append(
+            {"label": label, **kwargs}
+        )
+        or False,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_custom_analysis_planner(tmp_path)
+
+    assert any(
+        button["label"] == "Run selected planned steps"
+        for button in buttons
+    )
+
+
+def test_custom_analysis_planner_blocks_missing_prerequisites_without_auto_include(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    errors = []
+    warnings = []
+
+    def checkbox(label: str, *args, **kwargs) -> bool:
+        if label == "Include required prerequisite steps automatically":
+            return False
+        return label == "Reports"
+
+    fake_streamlit = SimpleNamespace(
+        session_state={"workflow_mode": "public_demo", "completed_workflow_steps": []},
+        markdown=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        checkbox=checkbox,
+        warning=lambda message, *args, **kwargs: warnings.append(message),
+        info=lambda *args, **kwargs: None,
+        error=lambda message, *args, **kwargs: errors.append(message),
+        button=lambda label, *args, **kwargs: True,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "run_selected_public_demo_steps",
+        lambda *args, **kwargs: pytest.fail("Missing prerequisites must block"),
+    )
+
+    app.render_custom_analysis_planner(tmp_path)
+
+    assert warnings == [
+        "This step requires earlier outputs. Include prerequisite steps or "
+        "load a previous run containing those outputs."
+    ]
+    assert errors == [
+        "Selected steps were not run because required prerequisite outputs "
+        "are missing."
     ]
 
 

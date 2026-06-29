@@ -5071,6 +5071,114 @@ def custom_analysis_plan(
     }
 
 
+def mark_workflow_step_completed(step_number: int) -> None:
+    """Mark one workflow step complete in session state."""
+    completed = completed_workflow_steps()
+    completed.add(step_number)
+    st.session_state["completed_workflow_steps"] = sorted(completed)
+
+
+def public_demo_step_output_paths(
+    paths: PipelinePaths,
+    step_number: int,
+) -> list[Path]:
+    """Return expected output artifacts for a public-demo step."""
+    identity_path = (
+        paths.chemical_identity
+        or paths.prioritized.parent / "chemical_identity.csv"
+    )
+    if step_number == 1:
+        return [paths.standardized]
+    if step_number == 2:
+        return [identity_path]
+    if step_number == 3:
+        return [paths.public_lookup, paths.surechembl_lookup]
+    if step_number == 4:
+        return [paths.descriptors, paths.similarity, paths.similarity_top_hits]
+    if step_number == 5:
+        return [paths.chemberta_embeddings, paths.visualization_coordinates]
+    if step_number == 6:
+        return [paths.biomedical_evidence]
+    if step_number == 7:
+        return [paths.patent_evidence_embeddings]
+    if step_number == 8:
+        return [paths.prioritized]
+    if step_number == 9:
+        reports_dir = paths.prioritized.parent / "reports"
+        return sorted(reports_dir.glob("compound_intelligence_report_*.md"))
+    return []
+
+
+def public_demo_step_outputs_exist(
+    paths: PipelinePaths,
+    step_number: int,
+) -> bool:
+    """Return whether expected public-demo step outputs already exist."""
+    if step_number == 9:
+        return bool(public_demo_step_output_paths(paths, step_number))
+    expected = public_demo_step_output_paths(paths, step_number)
+    return bool(expected) and all(path.exists() for path in expected)
+
+
+def run_selected_public_demo_steps(
+    paths: PipelinePaths,
+    selected_steps: Iterable[str],
+    include_existing: bool = True,
+) -> dict[str, list[str]]:
+    """Run selected public-demo steps in dependency order."""
+    selected = ordered_step_labels(selected_steps)
+    plan = ordered_step_labels([*required_prerequisite_steps(selected), *selected])
+    summary: dict[str, list[str]] = {
+        "executed": [],
+        "skipped_existing": [],
+        "blocked": [],
+        "failed": [],
+    }
+    available = completed_workflow_steps()
+
+    for step_label in plan:
+        step_number = STEP_NAVIGATION_TO_WORKFLOW_STEP[step_label]
+        missing = [
+            dependency
+            for dependency in CUSTOM_ANALYSIS_DEPENDENCIES.get(step_label, ())
+            if STEP_NAVIGATION_TO_WORKFLOW_STEP[dependency] not in available
+            and not public_demo_step_outputs_exist(
+                paths,
+                STEP_NAVIGATION_TO_WORKFLOW_STEP[dependency],
+            )
+        ]
+        if missing:
+            summary["blocked"].append(
+                f"{step_label}: missing prerequisite "
+                + ", ".join(missing)
+            )
+            continue
+
+        if step_number in available:
+            mark_workflow_step_completed(step_number)
+            summary["skipped_existing"].append(step_label)
+            continue
+
+        if include_existing and public_demo_step_outputs_exist(paths, step_number):
+            mark_workflow_step_completed(step_number)
+            available.add(step_number)
+            summary["skipped_existing"].append(step_label)
+            continue
+
+        try:
+            run_public_demo_step(step_number, paths)
+        except Exception as exc:
+            summary["failed"].append(
+                f"{step_label}: {type(exc).__name__}: {exc}"
+            )
+            break
+        mark_workflow_step_completed(step_number)
+        available.add(step_number)
+        summary["executed"].append(step_label)
+
+    return summary
+
+
 def render_step_list(label: str, steps: Iterable[str]) -> None:
     """Render a compact step list for the custom planner."""
     step_list = list(steps)
@@ -5079,6 +5187,20 @@ def render_step_list(label: str, steps: Iterable[str]) -> None:
         st.write("None")
         return
     st.markdown("\n".join(f"- {step}" for step in step_list))
+
+
+def render_selected_step_run_summary(summary: dict[str, list[str]]) -> None:
+    """Render the result of a public-demo selected-step run."""
+    st.success("Selected planned steps finished.")
+    render_step_list("Executed steps", summary.get("executed", []))
+    render_step_list("Skipped existing outputs", summary.get("skipped_existing", []))
+    render_step_list(
+        "Failed or blocked steps",
+        [
+            *summary.get("blocked", []),
+            *summary.get("failed", []),
+        ],
+    )
 
 
 def render_custom_analysis_planner(output_dir: Path) -> None:
@@ -5103,7 +5225,8 @@ def render_custom_analysis_planner(output_dir: Path) -> None:
         selected_steps,
         include_prerequisites=include_prerequisites,
     )
-    if plan["missing"]:
+    has_missing = bool(plan["missing"])
+    if has_missing:
         st.warning(
             "This step requires earlier outputs. Include prerequisite steps or "
             "load a previous run containing those outputs."
@@ -5112,7 +5235,29 @@ def render_custom_analysis_planner(output_dir: Path) -> None:
     render_step_list("Required prerequisite steps", plan["required"])
     render_step_list("Missing prerequisites", plan["missing"])
     render_step_list("Recommended full execution plan", plan["planned"])
-    st.info("Run selected steps will be added in a later update.")
+    workflow_mode = str(st.session_state.get("workflow_mode", ""))
+    if workflow_mode != "public_demo":
+        st.info(
+            "Run selected steps for uploaded analyses will be added in a later "
+            "update. For now, use the guided workflow or full run."
+        )
+        return
+    if st.button(
+        "Run selected planned steps",
+        type="primary",
+        disabled=not bool(plan["planned"]),
+    ):
+        if has_missing:
+            st.error(
+                "Selected steps were not run because required prerequisite outputs "
+                "are missing."
+            )
+            return
+        summary = run_selected_public_demo_steps(
+            demo_paths_from_output(output_dir),
+            plan["planned"],
+        )
+        render_selected_step_run_summary(summary)
 
 
 def render_step_navigation_sidebar(output_dir: Path) -> str:
