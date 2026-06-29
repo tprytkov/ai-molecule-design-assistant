@@ -596,6 +596,20 @@ class UploadedRunPaths:
 
 
 @dataclass(frozen=True)
+class ActiveRunPathStatus:
+    """Resolved active-run paths plus read-only path status details."""
+
+    run_type: str
+    workflow_mode: str
+    output_dir: Path
+    pipeline_paths: PipelinePaths
+    paths_resolved: bool
+    missing_inputs: tuple[str, ...]
+    existing_outputs: tuple[str, ...]
+    unresolved_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class OnlineLookupPreflight:
     """Result and process diagnostics for the PubChem connection check."""
 
@@ -3361,6 +3375,84 @@ def public_demo_input_paths() -> tuple[Path, Path, Path]:
     return DEMO_INPUT, DEMO_REFERENCES, DEMO_TEXT_EVIDENCE
 
 
+def input_paths_for_active_run(
+    output_dir: Path,
+    workflow_mode: str,
+) -> tuple[Path, Path, Path]:
+    """Return expected generated/reference/text input paths for an active run."""
+    if workflow_mode == "public_demo":
+        return public_demo_input_paths()
+    input_dir = output_dir.parent / "inputs"
+    return (
+        input_dir / "generated_smiles.csv",
+        input_dir / "references.csv",
+        input_dir / "text_evidence.csv",
+    )
+
+
+def existing_output_artifacts(output_dir: Path) -> tuple[str, ...]:
+    """Return known output artifact names already present in an output folder."""
+    existing = [
+        filename
+        for filename in OUTPUT_FILES.values()
+        if (output_dir / filename).exists()
+    ]
+    reports_dir = output_dir / "reports"
+    if reports_dir.exists() and any(
+        reports_dir.glob("compound_intelligence_report_*.md")
+    ):
+        existing.append("reports")
+    return tuple(sorted(existing))
+
+
+def resolve_active_run_paths(
+    output_dir: str | Path,
+    workflow_mode: str,
+) -> ActiveRunPathStatus:
+    """Resolve active-run paths without executing or creating outputs."""
+    root = Path(output_dir)
+    mode = str(workflow_mode or "").strip() or "unknown"
+    generated_path, references_path, text_evidence_path = input_paths_for_active_run(
+        root,
+        mode,
+    )
+    pipeline_paths = build_paths(
+        input_path=generated_path,
+        references_path=references_path,
+        text_evidence_path=text_evidence_path,
+        output_dir=root,
+    )
+    input_labels = {
+        "generated_smiles": generated_path,
+        "references": references_path,
+        "text_evidence": text_evidence_path,
+    }
+    missing_inputs = tuple(
+        label for label, path in input_labels.items() if not path.exists()
+    )
+    existing_outputs = existing_output_artifacts(root)
+    if mode == "public_demo":
+        run_type = "public_demo"
+    elif mode in {"completed_run", "uploaded", "custom"}:
+        run_type = "uploaded"
+    elif mode == "existing_results":
+        run_type = "loaded_previous"
+    else:
+        run_type = mode
+    unresolved_paths = missing_inputs
+    paths_resolved = not missing_inputs
+    return ActiveRunPathStatus(
+        run_type=run_type,
+        workflow_mode=mode,
+        output_dir=root,
+        pipeline_paths=pipeline_paths,
+        paths_resolved=paths_resolved,
+        missing_inputs=missing_inputs,
+        existing_outputs=existing_outputs,
+        unresolved_paths=unresolved_paths,
+    )
+
+
 def format_file_size(path: Path) -> str:
     """Return a compact human-readable file size."""
     size = path.stat().st_size
@@ -5422,6 +5514,22 @@ def render_active_run_downloads(output_dir: Path) -> None:
     render_output_artifacts(artifacts)
 
 
+def render_run_path_status(output_dir: Path) -> None:
+    """Show read-only active-run path resolution details."""
+    status = resolve_active_run_paths(
+        output_dir,
+        str(st.session_state.get("workflow_mode", "")),
+    )
+    st.markdown("### Run path status")
+    columns = st.columns(3)
+    columns[0].metric("Run type", status.run_type)
+    columns[1].metric("Paths resolved", "yes" if status.paths_resolved else "no")
+    columns[2].metric("Existing outputs", len(status.existing_outputs))
+    render_step_list("Missing inputs", status.missing_inputs)
+    render_step_list("Existing outputs", status.existing_outputs)
+    render_step_list("Unresolved paths", status.unresolved_paths)
+
+
 def render_active_run_settings(output_dir: Path) -> None:
     """Show passive configuration notes for the active run."""
     st.subheader("Settings")
@@ -5436,6 +5544,7 @@ def render_active_run_settings(output_dir: Path) -> None:
         "PaECTER/patent-BERT-style models.\n"
         "- Selecting a sidebar page does not run pipeline steps."
     )
+    render_run_path_status(output_dir)
     render_custom_analysis_planner(output_dir)
 
 

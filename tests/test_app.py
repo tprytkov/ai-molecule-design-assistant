@@ -169,6 +169,80 @@ def test_custom_analysis_plan_reports_missing_downstream_prerequisites(
     ]
 
 
+def test_resolve_active_run_paths_for_public_demo(tmp_path: Path) -> None:
+    status = app.resolve_active_run_paths(tmp_path / "outputs", "public_demo")
+
+    assert status.run_type == "public_demo"
+    assert status.workflow_mode == "public_demo"
+    assert status.paths_resolved is True
+    assert status.missing_inputs == ()
+    assert status.pipeline_paths.generated_smiles == app.DEMO_INPUT
+    assert status.pipeline_paths.references == app.DEMO_REFERENCES
+    assert status.pipeline_paths.text_evidence == app.DEMO_TEXT_EVIDENCE
+
+
+def test_resolve_active_run_paths_for_uploaded_partial_outputs(tmp_path: Path) -> None:
+    output_dir = tmp_path / "run" / "outputs"
+    input_dir = tmp_path / "run" / "inputs"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+    (input_dir / "generated_smiles.csv").write_text(
+        "molecule_id,smiles\nmol_a,CCO\n",
+        encoding="utf-8",
+    )
+    (output_dir / "standardized.csv").write_text(
+        "molecule_id,canonical_smiles\nmol_a,CCO\n",
+        encoding="utf-8",
+    )
+
+    status = app.resolve_active_run_paths(output_dir, "completed_run")
+
+    assert status.run_type == "uploaded"
+    assert status.paths_resolved is False
+    assert status.missing_inputs == ("references", "text_evidence")
+    assert "standardized.csv" in status.existing_outputs
+    assert not (output_dir / "descriptors.csv").exists()
+
+
+def test_resolve_active_run_paths_for_loaded_previous_outputs_only(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    (output_dir / "prioritization_results.csv").write_text(
+        "molecule_id,prioritization_score\nmol_a,0.9\n",
+        encoding="utf-8",
+    )
+
+    status = app.resolve_active_run_paths(output_dir, "existing_results")
+
+    assert status.run_type == "loaded_previous"
+    assert status.paths_resolved is False
+    assert status.missing_inputs == (
+        "generated_smiles",
+        "references",
+        "text_evidence",
+    )
+    assert status.unresolved_paths == status.missing_inputs
+    assert status.existing_outputs == ("prioritization_results.csv",)
+
+
+def test_resolve_active_run_paths_does_not_execute_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        app,
+        "run_pipeline",
+        lambda *args, **kwargs: pytest.fail("Resolver must not execute pipeline"),
+    )
+
+    status = app.resolve_active_run_paths(tmp_path / "outputs", "completed_run")
+
+    assert status.run_type == "uploaded"
+    assert not status.paths_resolved
+
+
 def test_run_selected_public_demo_steps_skips_existing_and_marks_complete(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1125,6 +1199,7 @@ def test_custom_analysis_planner_renders_on_settings_page(
     )
 
     markdown_values = [item.value for item in app_test.markdown]
+    assert "### Run path status" in markdown_values
     assert "### Custom analysis planner" in markdown_values
     checkbox_labels = [checkbox.label for checkbox in app_test.checkbox]
     assert "Include required prerequisite steps automatically" in checkbox_labels
