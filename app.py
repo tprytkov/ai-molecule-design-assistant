@@ -392,6 +392,35 @@ WORKFLOW_MODE_OPTIONS = (
     "Analyze my molecules",
     "Load previous run",
 )
+STEP_NAVIGATION_LABELS = (
+    "Overview",
+    "Input data",
+    "Standardization",
+    "Chemical identity",
+    "Public evidence",
+    "Descriptors",
+    "Chemical-space map",
+    "Biomedical evidence",
+    "Patent/IP-context evidence",
+    "Prioritization",
+    "Reports",
+    "Downloads",
+    "Settings",
+)
+STEP_NAVIGATION_TO_WORKFLOW_STEP = {
+    "Standardization": 1,
+    "Chemical identity": 2,
+    "Public evidence": 3,
+    "Descriptors": 4,
+    "Chemical-space map": 5,
+    "Biomedical evidence": 6,
+    "Patent/IP-context evidence": 7,
+    "Prioritization": 8,
+    "Reports": 9,
+}
+WORKFLOW_STEP_TO_NAVIGATION_LABEL = {
+    value: key for key, value in STEP_NAVIGATION_TO_WORKFLOW_STEP.items()
+}
 FINAL_RANKING_EXPLANATION = (
     "Final ranking combines evidence from chemical identity, public lookup, "
     "RDKit descriptors, ChemBERTa embeddings, text evidence, and evidence "
@@ -4832,6 +4861,134 @@ def render_start_workflow_mode() -> None:
     )
 
 
+def render_step_navigation_sidebar(output_dir: Path) -> str:
+    """Render active-run step navigation without running workflow steps."""
+    current = int(st.session_state.get("workflow_step", 1))
+    current = max(1, min(current, len(WORKFLOW_STEP_NAMES)))
+    default_label = WORKFLOW_STEP_TO_NAVIGATION_LABEL.get(current, "Overview")
+    default_index = STEP_NAVIGATION_LABELS.index(default_label)
+    with st.sidebar:
+        st.markdown("### Step navigation")
+        selected = st.radio(
+            "Step navigation",
+            STEP_NAVIGATION_LABELS,
+            index=default_index,
+            key="sidebar_step_navigation",
+        )
+        st.caption(f"Active run: {output_dir}")
+    mapped_step = STEP_NAVIGATION_TO_WORKFLOW_STEP.get(str(selected))
+    if mapped_step is not None:
+        st.session_state["workflow_step"] = mapped_step
+    return str(selected)
+
+
+def render_step_navigation_context(
+    selected_page: str,
+    output_dir: Path,
+) -> None:
+    """Render passive context panels for active-run sidebar pages."""
+    if selected_page in STEP_NAVIGATION_TO_WORKFLOW_STEP:
+        return
+    if selected_page == "Overview":
+        render_active_run_overview(output_dir)
+    elif selected_page == "Input data":
+        render_active_run_input_data(output_dir)
+    elif selected_page == "Downloads":
+        render_active_run_downloads(output_dir)
+    elif selected_page == "Settings":
+        render_active_run_settings()
+
+
+def render_active_run_overview(output_dir: Path) -> None:
+    """Show passive current-run status before the guided workflow body."""
+    completed = {
+        int(value)
+        for value in st.session_state.get("completed_workflow_steps", [])
+        if str(value).strip().isdigit()
+    }
+    current = int(st.session_state.get("workflow_step", 1))
+    current = max(1, min(current, len(WORKFLOW_STEP_NAMES)))
+    st.subheader("Overview")
+    st.caption(f"Current run folder: {output_dir}")
+    columns = st.columns(3)
+    columns[0].metric(
+        "Completed steps",
+        f"{len(completed)} of {len(WORKFLOW_STEP_NAMES)}",
+    )
+    columns[1].metric("Current guided step", current)
+    columns[2].metric("Available output files", count_existing_outputs(output_dir))
+    if completed:
+        st.write(
+            "Completed workflow steps: "
+            + ", ".join(str(step) for step in sorted(completed))
+        )
+    else:
+        st.info("No workflow steps have been marked complete for this active run yet.")
+
+
+def count_existing_outputs(output_dir: Path) -> int:
+    """Count known output artifacts that already exist for a run."""
+    count = sum(
+        1 for filename in OUTPUT_FILES.values() if (output_dir / filename).exists()
+    )
+    reports_dir = output_dir / "reports"
+    if reports_dir.exists() and any(
+        reports_dir.glob("compound_intelligence_report_*.md")
+    ):
+        count += 1
+    return count
+
+
+def render_active_run_input_data(output_dir: Path) -> None:
+    """Show passive input artifact context for the active run."""
+    st.subheader("Input data")
+    workflow_mode = str(st.session_state.get("workflow_mode", ""))
+    if workflow_mode == "public_demo":
+        st.write("This active run uses the bundled public-safe demo inputs.")
+        render_artifact_name_list(public_demo_input_paths())
+        return
+    run_dir = output_dir.parent
+    input_dir = run_dir / "inputs"
+    input_files = sorted(input_dir.glob("*.csv")) if input_dir.exists() else []
+    if input_files:
+        st.write("Input artifacts stored with this run:")
+        render_artifact_name_list(input_files)
+        return
+    st.info(
+        "Input files are not stored with this output folder. Step 1 and the output "
+        "artifact cards below show the available processed inputs."
+    )
+
+
+def render_active_run_downloads(output_dir: Path) -> None:
+    """Show known output artifacts for download without changing workflow state."""
+    st.subheader("Downloads")
+    loaded = load_output_directory(output_dir)
+    artifacts = [path for path in loaded.paths.values() if path.exists()]
+    if loaded.reports_dir.exists():
+        artifacts.append(loaded.reports_dir)
+    if not artifacts:
+        st.info("No downloadable workflow outputs were found yet.")
+        return
+    render_output_artifacts(artifacts)
+
+
+def render_active_run_settings() -> None:
+    """Show passive configuration notes for the active run."""
+    st.subheader("Settings")
+    st.write(
+        "This sidebar scaffold does not change execution settings, scoring, output "
+        "schemas, or cloud-safe model fallback behavior."
+    )
+    st.markdown(
+        "- Biomedical evidence can use a lightweight default sentence-transformer "
+        "baseline or optional local/cached BioBERT/PubMedBERT-style models.\n"
+        "- Patent/IP-context evidence can use optional local/cached "
+        "PaECTER/patent-BERT-style models.\n"
+        "- Selecting a sidebar page does not run pipeline steps."
+    )
+
+
 def run_app() -> None:
     """Run the guided Streamlit workflow without loading old results."""
     st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -4846,6 +5003,8 @@ def run_app() -> None:
     output_dir = active_output_directory()
     workflow_mode = render_workflow_mode_sidebar(output_dir)
     if output_dir is not None:
+        selected_step_page = render_step_navigation_sidebar(output_dir)
+        render_step_navigation_context(selected_step_page, output_dir)
         render_step_workflow(output_dir)
         return
 
@@ -4867,6 +5026,8 @@ def run_app() -> None:
 
     output_dir = demo_output or upload_output or existing_output or sidebar_existing_output
     if output_dir is not None:
+        selected_step_page = render_step_navigation_sidebar(output_dir)
+        render_step_navigation_context(selected_step_page, output_dir)
         render_step_workflow(output_dir)
 
 

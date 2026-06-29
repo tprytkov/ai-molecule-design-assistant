@@ -94,6 +94,25 @@ def test_sidebar_workflow_mode_options_are_visible() -> None:
     assert workflow_mode.value == "Start"
 
 
+def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
+    assert "Overview" in app.STEP_NAVIGATION_LABELS
+    assert "Input data" in app.STEP_NAVIGATION_LABELS
+    assert "Standardization" in app.STEP_NAVIGATION_LABELS
+    assert "Chemical-space map" in app.STEP_NAVIGATION_LABELS
+    assert "Biomedical evidence" in app.STEP_NAVIGATION_LABELS
+    assert "Patent/IP-context evidence" in app.STEP_NAVIGATION_LABELS
+    assert "Prioritization" in app.STEP_NAVIGATION_LABELS
+    assert "Reports" in app.STEP_NAVIGATION_LABELS
+    assert "Downloads" in app.STEP_NAVIGATION_LABELS
+    assert "Settings" in app.STEP_NAVIGATION_LABELS
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Standardization"] == 1
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Chemical-space map"] == 5
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Biomedical evidence"] == 6
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Patent/IP-context evidence"] == 7
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Prioritization"] == 8
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Reports"] == 9
+
+
 def test_about_workflow_and_start_guidance_exist() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
@@ -756,6 +775,69 @@ def test_existing_results_require_explicit_action(tmp_path: Path) -> None:
     assert f"Active output folder: {output_dir}" in [
         caption.value for caption in app_test.caption
     ]
+
+
+def test_sidebar_step_navigation_visible_for_active_run(tmp_path: Path) -> None:
+    app_test = AppTest.from_file("app.py").run(timeout=10)
+    workflow_mode = next(
+        item for item in app_test.selectbox if item.label == "Workflow mode"
+    )
+    app_test = workflow_mode.set_value("Load previous run").run(timeout=10)
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    (output_dir / "prioritization_results.csv").write_text(
+        "molecule_id,valid_smiles,prioritization_score,known_public_match\n"
+        "mol_a,True,0.8,False\n",
+        encoding="utf-8",
+    )
+    output_input = next(
+        item for item in app_test.text_input if item.label == "Output directory"
+    )
+    output_input.set_value(str(output_dir))
+    load_button = next(
+        button for button in app_test.button if button.label == "Load results"
+    )
+    app_test = load_button.click().run(timeout=10)
+
+    markdown_values = [item.value for item in app_test.markdown]
+    assert "### Step navigation" in markdown_values
+    navigation = next(
+        item for item in app_test.radio if item.label == "Step navigation"
+    )
+    assert "Standardization" in navigation.options
+    assert "Chemical-space map" in navigation.options
+    assert "Biomedical evidence" in navigation.options
+    assert "Patent/IP-context evidence" in navigation.options
+    assert "Prioritization" in navigation.options
+    assert "Reports" in navigation.options
+
+
+def test_sidebar_step_navigation_updates_workflow_step_without_running(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    markdown = []
+    captions = []
+    fake_streamlit = SimpleNamespace(
+        session_state={
+            "active_output_dir": str(tmp_path),
+            "workflow_step": 1,
+            "completed_workflow_steps": [],
+        },
+        sidebar=NullExpander(),
+        markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
+        radio=lambda label, options, *args, **kwargs: "Biomedical evidence",
+        caption=lambda value, *args, **kwargs: captions.append(str(value)),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    selected = app.render_step_navigation_sidebar(tmp_path)
+
+    assert selected == "Biomedical evidence"
+    assert fake_streamlit.session_state["workflow_step"] == 6
+    assert fake_streamlit.session_state["completed_workflow_steps"] == []
+    assert "### Step navigation" in markdown
+    assert f"Active run: {tmp_path}" in captions
 
 
 def test_public_demo_uses_bundled_inputs_and_new_output_folder(
