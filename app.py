@@ -421,6 +421,23 @@ STEP_NAVIGATION_TO_WORKFLOW_STEP = {
 WORKFLOW_STEP_TO_NAVIGATION_LABEL = {
     value: key for key, value in STEP_NAVIGATION_TO_WORKFLOW_STEP.items()
 }
+STEP_OUTPUT_KEYS = {
+    1: ("standardized",),
+    2: ("chemical_identity",),
+    3: ("public_lookup", "surechembl"),
+    4: ("descriptors",),
+    5: ("visualization",),
+    6: ("biomedical_evidence",),
+    7: ("patent_evidence_embeddings",),
+    8: ("prioritization",),
+    9: ("reports",),
+}
+STEP_STATUS_ICONS = {
+    "completed": "✓",
+    "not_run": "○",
+    "skipped": "⚠",
+    "missing_prerequisite": "✗",
+}
 FINAL_RANKING_EXPLANATION = (
     "Final ranking combines evidence from chemical identity, public lookup, "
     "RDKit descriptors, ChemBERTa embeddings, text evidence, and evidence "
@@ -4868,21 +4885,137 @@ def render_start_workflow_mode() -> None:
     )
 
 
+def completed_workflow_steps() -> set[int]:
+    """Return completed workflow steps from session state."""
+    completed = set()
+    for value in st.session_state.get("completed_workflow_steps", []):
+        text = str(value).strip()
+        if text.isdigit():
+            completed.add(int(text))
+    return completed
+
+
+def step_output_exists(output_dir: Path, step_number: int) -> bool:
+    """Return whether a known output artifact exists for a workflow step."""
+    keys = STEP_OUTPUT_KEYS.get(step_number, ())
+    if step_number == 9:
+        reports_dir = output_dir / "reports"
+        return reports_dir.exists() and any(
+            reports_dir.glob("compound_intelligence_report_*.md")
+        )
+    for key in keys:
+        filename = OUTPUT_FILES.get(key, "")
+        if filename and (output_dir / filename).exists():
+            return True
+    return False
+
+
+def step_has_missing_prerequisite(
+    output_dir: Path,
+    step_number: int,
+    completed: set[int],
+) -> bool:
+    """Return whether earlier required step outputs are absent."""
+    for previous_step in range(1, step_number):
+        if previous_step in completed or step_output_exists(output_dir, previous_step):
+            continue
+        return True
+    return False
+
+
+def output_csv_has_status(path: Path, status_columns: Iterable[str]) -> bool:
+    """Return whether a CSV contains skipped or unavailable model statuses."""
+    if not path.exists():
+        return False
+    try:
+        frame = pd.read_csv(path).fillna("")
+    except Exception:
+        return False
+    skipped_values = {"model_unavailable", "skipped"}
+    for column in status_columns:
+        if column not in frame.columns:
+            continue
+        values = frame[column].astype(str).str.strip().str.lower()
+        if values.isin(skipped_values).any():
+            return True
+    return False
+
+
+def optional_step_skipped(output_dir: Path, step_number: int) -> bool:
+    """Return whether an optional embedding step produced a skipped fallback."""
+    if step_number == 6:
+        return output_csv_has_status(
+            output_dir / OUTPUT_FILES["biomedical_evidence"],
+            ("biomedical_model_status", "biomedical_evidence_status"),
+        )
+    if step_number == 7:
+        return output_csv_has_status(
+            output_dir / OUTPUT_FILES["patent_evidence_embeddings"],
+            ("patent_model_status", "patent_evidence_status"),
+        )
+    return False
+
+
+def step_navigation_status(output_dir: Path, step_number: int) -> str:
+    """Return the sidebar status key for one workflow step."""
+    completed = completed_workflow_steps()
+    if optional_step_skipped(output_dir, step_number):
+        return "skipped"
+    if step_number in completed or step_output_exists(output_dir, step_number):
+        return "completed"
+    if step_has_missing_prerequisite(output_dir, step_number, completed):
+        return "missing_prerequisite"
+    return "not_run"
+
+
+def step_navigation_display_labels(output_dir: Path) -> dict[str, str]:
+    """Return display labels keyed by internal sidebar page label."""
+    labels: dict[str, str] = {}
+    for label in STEP_NAVIGATION_LABELS:
+        step_number = STEP_NAVIGATION_TO_WORKFLOW_STEP.get(label)
+        if step_number is None:
+            labels[label] = label
+            continue
+        status = step_navigation_status(output_dir, step_number)
+        labels[label] = f"{STEP_STATUS_ICONS[status]} {label}"
+    return labels
+
+
+def normalize_step_navigation_label(label: str, display_labels: dict[str, str]) -> str:
+    """Map a visible sidebar label back to the internal page label."""
+    for plain_label, display_label in display_labels.items():
+        if label == display_label or label == plain_label:
+            return plain_label
+    return label
+
+
 def render_step_navigation_sidebar(output_dir: Path) -> str:
     """Render active-run step navigation without running workflow steps."""
     current = int(st.session_state.get("workflow_step", 1))
     current = max(1, min(current, len(WORKFLOW_STEP_NAMES)))
-    default_label = WORKFLOW_STEP_TO_NAVIGATION_LABEL.get(current, "Overview")
+    page_value = str(st.session_state.get("active_run_page", "")).strip()
+    default_label = page_value or WORKFLOW_STEP_TO_NAVIGATION_LABEL.get(
+        current, "Overview"
+    )
+    if default_label not in STEP_NAVIGATION_LABELS:
+        default_label = WORKFLOW_STEP_TO_NAVIGATION_LABEL.get(current, "Overview")
+    display_labels = step_navigation_display_labels(output_dir)
+    options = [display_labels[label] for label in STEP_NAVIGATION_LABELS]
     default_index = STEP_NAVIGATION_LABELS.index(default_label)
     with st.sidebar:
         st.markdown("### Step navigation")
-        selected = st.radio(
+        selected_display = st.radio(
             "Step navigation",
-            STEP_NAVIGATION_LABELS,
+            options,
             index=default_index,
             key="sidebar_step_navigation",
         )
+        st.caption("✓ completed")
+        st.caption("○ not run")
+        st.caption("⚠ skipped/unavailable")
+        st.caption("✗ missing prerequisite")
         st.caption(f"Active run: {output_dir}")
+    selected = normalize_step_navigation_label(str(selected_display), display_labels)
     st.session_state["active_run_page"] = str(selected)
     mapped_step = STEP_NAVIGATION_TO_WORKFLOW_STEP.get(str(selected))
     if mapped_step is not None:

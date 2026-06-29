@@ -113,6 +113,51 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Reports"] == 9
 
 
+def test_step_navigation_statuses_use_outputs_and_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_streamlit = SimpleNamespace(session_state={})
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    labels = app.step_navigation_display_labels(tmp_path)
+    assert labels["Standardization"] == "○ Standardization"
+    assert labels["Chemical identity"] == "✗ Chemical identity"
+
+    (tmp_path / app.OUTPUT_FILES["standardized"]).write_text(
+        "molecule_id,canonical_smiles\nmol_a,CCO\n",
+        encoding="utf-8",
+    )
+    labels = app.step_navigation_display_labels(tmp_path)
+    assert labels["Standardization"] == "✓ Standardization"
+    assert labels["Chemical identity"] == "○ Chemical identity"
+
+
+def test_step_navigation_statuses_mark_optional_embedding_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_streamlit = SimpleNamespace(
+        session_state={"completed_workflow_steps": [1, 2, 3, 4, 5, 6]}
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    (tmp_path / app.OUTPUT_FILES["biomedical_evidence"]).write_text(
+        "molecule_id,biomedical_model_status,biomedical_evidence_status\n"
+        "mol_a,model_unavailable,skipped\n",
+        encoding="utf-8",
+    )
+    (tmp_path / app.OUTPUT_FILES["patent_evidence_embeddings"]).write_text(
+        "molecule_id,patent_model_status,patent_evidence_status\n"
+        "mol_a,model_unavailable,skipped\n",
+        encoding="utf-8",
+    )
+
+    labels = app.step_navigation_display_labels(tmp_path)
+
+    assert labels["Biomedical evidence"] == "⚠ Biomedical evidence"
+    assert labels["Patent/IP-context evidence"] == "⚠ Patent/IP-context evidence"
+
+
 def test_about_workflow_and_start_guidance_exist() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
@@ -759,6 +804,14 @@ def load_minimal_existing_run(app_test: AppTest, tmp_path: Path) -> AppTest:
     return load_button.click().run(timeout=10)
 
 
+def navigation_option_for(app_test: AppTest, label: str) -> str:
+    """Return the visible status-labeled sidebar navigation option."""
+    navigation = next(
+        item for item in app_test.radio if item.label == "Step navigation"
+    )
+    return next(option for option in navigation.options if option.endswith(label))
+
+
 def test_existing_results_require_explicit_action(tmp_path: Path) -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
     workflow_mode = next(
@@ -809,12 +862,20 @@ def test_sidebar_step_navigation_visible_for_active_run(tmp_path: Path) -> None:
     navigation = next(
         item for item in app_test.radio if item.label == "Step navigation"
     )
-    assert "Standardization" in navigation.options
-    assert "Chemical-space map" in navigation.options
-    assert "Biomedical evidence" in navigation.options
-    assert "Patent/IP-context evidence" in navigation.options
-    assert "Prioritization" in navigation.options
-    assert "Reports" in navigation.options
+    assert any(option.endswith("Standardization") for option in navigation.options)
+    assert any(option.endswith("Chemical-space map") for option in navigation.options)
+    assert any(option.endswith("Biomedical evidence") for option in navigation.options)
+    assert any(
+        option.endswith("Patent/IP-context evidence")
+        for option in navigation.options
+    )
+    assert any(option.endswith("Prioritization") for option in navigation.options)
+    assert any(option.endswith("Reports") for option in navigation.options)
+    caption_values = [caption.value for caption in app_test.caption]
+    assert "✓ completed" in caption_values
+    assert "○ not run" in caption_values
+    assert "⚠ skipped/unavailable" in caption_values
+    assert "✗ missing prerequisite" in caption_values
 
 
 def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> None:
@@ -829,7 +890,9 @@ def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> No
         for heading in app_test.header
     )
 
-    app_test = navigation.set_value("Chemical-space map").run(timeout=10)
+    app_test = navigation.set_value(
+        navigation_option_for(app_test, "Chemical-space map")
+    ).run(timeout=10)
     assert app_test.session_state["active_run_page"] == "Chemical-space map"
     assert app_test.session_state["workflow_step"] == 5
     assert any(
@@ -844,7 +907,9 @@ def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> No
     navigation = next(
         item for item in app_test.radio if item.label == "Step navigation"
     )
-    app_test = navigation.set_value("Biomedical evidence").run(timeout=10)
+    app_test = navigation.set_value(
+        navigation_option_for(app_test, "Biomedical evidence")
+    ).run(timeout=10)
     assert app_test.session_state["active_run_page"] == "Biomedical evidence"
     assert app_test.session_state["workflow_step"] == 6
     assert any(
@@ -863,7 +928,9 @@ def test_sidebar_special_pages_render_without_workflow_step_body(
         item for item in app_test.radio if item.label == "Step navigation"
     )
     for page in ("Overview", "Input data", "Downloads", "Settings"):
-        app_test = navigation.set_value(page).run(timeout=10)
+        app_test = navigation.set_value(navigation_option_for(app_test, page)).run(
+            timeout=10
+        )
         assert app_test.session_state["active_run_page"] == page
         assert any(subheader.value == page for subheader in app_test.subheader)
         assert not any(
