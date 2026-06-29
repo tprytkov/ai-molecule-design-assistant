@@ -386,6 +386,12 @@ WORKFLOW_STEP_GET = (
     "A ranked molecule table with component scores and evidence-stage statuses.",
     "Molecule-level Markdown reports with structures and evidence summaries.",
 )
+WORKFLOW_MODE_OPTIONS = (
+    "Start",
+    "Guided demo",
+    "Analyze my molecules",
+    "Load previous run",
+)
 FINAL_RANKING_EXPLANATION = (
     "Final ranking combines evidence from chemical identity, public lookup, "
     "RDKit descriptors, ChemBERTa embeddings, text evidence, and evidence "
@@ -4793,6 +4799,39 @@ def render_results_dashboard(output_dir: Path) -> None:
         st.success(f"Wrote {len(written)} report(s) to {loaded.reports_dir}")
 
 
+def render_workflow_mode_sidebar(output_dir: Path | None) -> str:
+    """Render the top-level sidebar workflow-mode scaffold."""
+    with st.sidebar:
+        st.markdown("### Workflow mode")
+        mode = st.selectbox(
+            "Workflow mode",
+            WORKFLOW_MODE_OPTIONS,
+            index=0,
+            key="sidebar_workflow_mode",
+        )
+        if output_dir is not None:
+            st.caption(f"Active run: {output_dir}")
+    return str(mode)
+
+
+def render_start_workflow_mode() -> None:
+    """Explain the available workflow modes without starting calculations."""
+    st.markdown("### Choose a workflow mode")
+    st.write(
+        "Use the sidebar Workflow mode selector to choose how you want to begin."
+    )
+    st.markdown(
+        "- **Guided demo:** start the bundled public-safe example workflow.\n"
+        "- **Analyze my molecules:** upload your own generated SMILES and optional "
+        "reference/text evidence files.\n"
+        "- **Load previous run:** open an existing output folder without rerunning "
+        "the pipeline."
+    )
+    st.info(
+        "No pipeline step runs until you click an explicit run or load button."
+    )
+
+
 def run_app() -> None:
     """Run the guided Streamlit workflow without loading old results."""
     st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -4805,24 +4844,28 @@ def run_app() -> None:
             st.markdown(explanation)
 
     output_dir = active_output_directory()
+    workflow_mode = render_workflow_mode_sidebar(output_dir)
     if output_dir is not None:
         render_step_workflow(output_dir)
         return
 
-    demo_tab, upload_tab = st.tabs(
-        ["Guided example workflow", "Upload my own SMILES"]
-    )
-    with demo_tab:
-        demo_output = render_public_demo_choice()
-    with upload_tab:
-        upload_output = render_new_analysis_form()
-
+    demo_output = None
+    upload_output = None
     existing_output = None
-    with st.sidebar:
-        with st.expander("Load existing results"):
-            existing_output = render_load_existing_choice()
+    sidebar_existing_output = None
+    if workflow_mode == "Start":
+        with st.sidebar:
+            with st.expander("Load existing results"):
+                sidebar_existing_output = render_load_existing_choice()
+        render_start_workflow_mode()
+    elif workflow_mode == "Guided demo":
+        demo_output = render_public_demo_choice()
+    elif workflow_mode == "Analyze my molecules":
+        upload_output = render_new_analysis_form()
+    elif workflow_mode == "Load previous run":
+        existing_output = render_load_existing_choice()
 
-    output_dir = demo_output or upload_output or existing_output
+    output_dir = demo_output or upload_output or existing_output or sidebar_existing_output
     if output_dir is not None:
         render_step_workflow(output_dir)
 

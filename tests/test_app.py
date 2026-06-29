@@ -82,13 +82,32 @@ def test_app_startup_does_not_auto_load_output_folder() -> None:
     assert "active_output_dir" not in app_test.session_state
 
 
+def test_sidebar_workflow_mode_options_are_visible() -> None:
+    app_test = AppTest.from_file("app.py").run(timeout=10)
+
+    markdown_values = [item.value for item in app_test.markdown]
+    assert "### Workflow mode" in markdown_values
+    workflow_mode = next(
+        item for item in app_test.selectbox if item.label == "Workflow mode"
+    )
+    assert list(workflow_mode.options) == list(app.WORKFLOW_MODE_OPTIONS)
+    assert workflow_mode.value == "Start"
+
+
 def test_about_workflow_and_start_guidance_exist() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
     assert app.START_GUIDANCE in [item.value for item in app_test.info]
-    button_labels = [button.label for button in app_test.button]
-    assert "Run guided example workflow" in button_labels
-    assert "Run analysis" in button_labels
+    workflow_mode = next(
+        item for item in app_test.selectbox if item.label == "Workflow mode"
+    )
+    assert list(workflow_mode.options) == list(app.WORKFLOW_MODE_OPTIONS)
+    assert workflow_mode.value == "Start"
+    markdown_values = [item.value for item in app_test.markdown]
+    assert "### Choose a workflow mode" in markdown_values
+    assert any("Guided demo" in value for value in markdown_values)
+    assert any("Analyze my molecules" in value for value in markdown_values)
+    assert any("Load previous run" in value for value in markdown_values)
     assert len(app.ABOUT_WORKFLOW_SECTIONS) == 8
     about_text = " ".join(
         f"{heading} {explanation}"
@@ -395,10 +414,31 @@ def test_workflow_step_names_exist() -> None:
 
 def test_demo_results_require_explicit_action() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
+    workflow_mode = next(
+        item for item in app_test.selectbox if item.label == "Workflow mode"
+    )
+    app_test = workflow_mode.set_value("Guided demo").run(timeout=10)
 
     assert any(
         button.label == "Run guided example workflow"
         for button in app_test.button
+    )
+    assert not any(
+        heading.value in app.WORKFLOW_STEP_NAMES for heading in app_test.header
+    )
+
+
+def test_analyze_my_molecules_mode_shows_upload_workflow() -> None:
+    app_test = AppTest.from_file("app.py").run(timeout=10)
+    workflow_mode = next(
+        item for item in app_test.selectbox if item.label == "Workflow mode"
+    )
+    app_test = workflow_mode.set_value("Analyze my molecules").run(timeout=10)
+
+    assert any(button.label == "Run analysis" for button in app_test.button)
+    assert any(
+        uploader.label == "Generated SMILES CSV (required: molecule_id, smiles)"
+        for uploader in app_test.file_uploader
     )
     assert not any(
         heading.value in app.WORKFLOW_STEP_NAMES for heading in app_test.header
@@ -679,6 +719,10 @@ def test_connection_button_shows_success(
 
 def test_existing_results_require_explicit_action(tmp_path: Path) -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
+    workflow_mode = next(
+        item for item in app_test.selectbox if item.label == "Workflow mode"
+    )
+    app_test = workflow_mode.set_value("Load previous run").run(timeout=10)
 
     assert any(
         text_input.label == "Output directory"
@@ -1066,6 +1110,10 @@ def test_public_demo_opens_step_one_before_running_calculation() -> None:
     )
     try:
         app_test = AppTest.from_file("app.py").run(timeout=10)
+        workflow_mode = next(
+            item for item in app_test.selectbox if item.label == "Workflow mode"
+        )
+        app_test = workflow_mode.set_value("Guided demo").run(timeout=10)
         demo_button = next(
             button
             for button in app_test.button
