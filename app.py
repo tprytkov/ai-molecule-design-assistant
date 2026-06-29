@@ -4796,10 +4796,6 @@ def render_step_workflow(output_dir: Path) -> None:
         if workflow_mode != "public_demo":
             st.warning("This workflow step has not been run for the selected output.")
             return
-        st.info(
-            "No calculation has run for this step yet. Review the explanation "
-            "above, then run the public example when you are ready."
-        )
         paths = demo_paths_from_output(output_dir)
         if current == 3 and step3_outputs_exist(paths):
             if st.button(
@@ -4820,6 +4816,9 @@ def render_step_workflow(output_dir: Path) -> None:
             key=f"run_demo_step_{current}",
         )
         if run_clicked:
+            st.info(
+                "This step is currently running. Output will appear after completion."
+            )
             button_slot.button(
                 run_label,
                 type="primary",
@@ -4862,6 +4861,11 @@ def render_step_workflow(output_dir: Path) -> None:
             completed.add(current)
             st.session_state["completed_workflow_steps"] = sorted(completed)
             st.rerun()
+        else:
+            st.info(
+                "No calculation has run for this step yet. Review the explanation "
+                "above, then run the public example when you are ready."
+            )
         return
 
     if current < len(WORKFLOW_STEP_NAMES):
@@ -4971,8 +4975,20 @@ def render_workflow_mode_sidebar(output_dir: Path | None) -> str:
             key="sidebar_workflow_mode",
         )
         if output_dir is not None:
-            st.caption(f"Active run: {output_dir}")
+            render_active_run_sidebar_status(output_dir)
     return str(mode)
+
+
+def active_run_folder_name(output_dir: Path) -> str:
+    """Return a compact run-folder name for sidebar display."""
+    return output_dir.parent.name if output_dir.name == "outputs" else output_dir.name
+
+
+def render_active_run_sidebar_status(output_dir: Path) -> None:
+    """Show compact active-run location details in the sidebar."""
+    st.caption(f"Active run: {active_run_folder_name(output_dir)}")
+    with st.expander("Full run path", expanded=False):
+        st.caption(str(output_dir))
 
 
 def render_start_workflow_mode() -> None:
@@ -5163,6 +5179,42 @@ def custom_analysis_plan(
     }
 
 
+def required_input_labels_for_plan(planned_steps: Iterable[str]) -> tuple[str, ...]:
+    """Return active-run input labels needed for a planned step list."""
+    required = {"generated_smiles"}
+    steps = set(planned_steps)
+    if steps.intersection(
+        {
+            "Descriptors",
+            "Chemical-space map",
+            "Biomedical evidence",
+            "Prioritization",
+            "Reports",
+        }
+    ):
+        required.add("references")
+    if "Biomedical evidence" in steps:
+        required.add("text_evidence")
+    return tuple(
+        label
+        for label in ("generated_smiles", "references", "text_evidence")
+        if label in required
+    )
+
+
+def missing_required_inputs_for_plan(
+    status: ActiveRunPathStatus,
+    planned_steps: Iterable[str],
+) -> tuple[str, ...]:
+    """Return required input labels missing for the selected plan."""
+    missing = set(status.missing_inputs)
+    return tuple(
+        label
+        for label in required_input_labels_for_plan(planned_steps)
+        if label in missing
+    )
+
+
 def mark_workflow_step_completed(step_number: int) -> None:
     """Mark one workflow step complete in session state."""
     completed = completed_workflow_steps()
@@ -5170,11 +5222,11 @@ def mark_workflow_step_completed(step_number: int) -> None:
     st.session_state["completed_workflow_steps"] = sorted(completed)
 
 
-def public_demo_step_output_paths(
+def active_run_step_output_paths(
     paths: PipelinePaths,
     step_number: int,
 ) -> list[Path]:
-    """Return expected output artifacts for a public-demo step."""
+    """Return expected output artifacts for an active-run step."""
     identity_path = (
         paths.chemical_identity
         or paths.prioritized.parent / "chemical_identity.csv"
@@ -5201,23 +5253,62 @@ def public_demo_step_output_paths(
     return []
 
 
+def active_run_step_outputs_exist(
+    paths: PipelinePaths,
+    step_number: int,
+) -> bool:
+    """Return whether expected active-run step outputs already exist."""
+    if step_number == 9:
+        return bool(active_run_step_output_paths(paths, step_number))
+    expected = active_run_step_output_paths(paths, step_number)
+    return bool(expected) and all(path.exists() for path in expected)
+
+
+def public_demo_step_output_paths(
+    paths: PipelinePaths,
+    step_number: int,
+) -> list[Path]:
+    """Return expected output artifacts for a public-demo step."""
+    return active_run_step_output_paths(paths, step_number)
+
+
 def public_demo_step_outputs_exist(
     paths: PipelinePaths,
     step_number: int,
 ) -> bool:
     """Return whether expected public-demo step outputs already exist."""
-    if step_number == 9:
-        return bool(public_demo_step_output_paths(paths, step_number))
-    expected = public_demo_step_output_paths(paths, step_number)
-    return bool(expected) and all(path.exists() for path in expected)
+    return active_run_step_outputs_exist(paths, step_number)
 
 
-def run_selected_public_demo_steps(
+def run_active_run_step(
+    step_number: int,
+    paths: PipelinePaths,
+    *,
+    step3_progress_callback: object | None = None,
+) -> None:
+    """Run one active-run workflow step using existing step execution logic."""
+    if step_number == 3 and step3_progress_callback is not None:
+        run_public_demo_step3(paths, progress_callback=step3_progress_callback)
+        return
+    run_public_demo_step(step_number, paths)
+
+
+def run_selected_active_run_steps(
     paths: PipelinePaths,
     selected_steps: Iterable[str],
+    workflow_mode: str,
     include_existing: bool = True,
+    *,
+    step3_progress_callback: object | None = None,
 ) -> dict[str, list[str]]:
-    """Run selected public-demo steps in dependency order."""
+    """Run selected active-run steps in dependency order."""
+    if workflow_mode == "existing_results":
+        return {
+            "executed": [],
+            "skipped_existing": [],
+            "blocked": ["Loaded previous runs are view-only."],
+            "failed": [],
+        }
     selected = ordered_step_labels(selected_steps)
     plan = ordered_step_labels([*required_prerequisite_steps(selected), *selected])
     summary: dict[str, list[str]] = {
@@ -5234,7 +5325,7 @@ def run_selected_public_demo_steps(
             dependency
             for dependency in CUSTOM_ANALYSIS_DEPENDENCIES.get(step_label, ())
             if STEP_NAVIGATION_TO_WORKFLOW_STEP[dependency] not in available
-            and not public_demo_step_outputs_exist(
+            and not active_run_step_outputs_exist(
                 paths,
                 STEP_NAVIGATION_TO_WORKFLOW_STEP[dependency],
             )
@@ -5251,14 +5342,18 @@ def run_selected_public_demo_steps(
             summary["skipped_existing"].append(step_label)
             continue
 
-        if include_existing and public_demo_step_outputs_exist(paths, step_number):
+        if include_existing and active_run_step_outputs_exist(paths, step_number):
             mark_workflow_step_completed(step_number)
             available.add(step_number)
             summary["skipped_existing"].append(step_label)
             continue
 
         try:
-            run_public_demo_step(step_number, paths)
+            run_active_run_step(
+                step_number,
+                paths,
+                step3_progress_callback=step3_progress_callback,
+            )
         except Exception as exc:
             summary["failed"].append(
                 f"{step_label}: {type(exc).__name__}: {exc}"
@@ -5269,6 +5364,20 @@ def run_selected_public_demo_steps(
         summary["executed"].append(step_label)
 
     return summary
+
+
+def run_selected_public_demo_steps(
+    paths: PipelinePaths,
+    selected_steps: Iterable[str],
+    include_existing: bool = True,
+) -> dict[str, list[str]]:
+    """Run selected public-demo steps in dependency order."""
+    return run_selected_active_run_steps(
+        paths,
+        selected_steps,
+        "public_demo",
+        include_existing=include_existing,
+    )
 
 
 def render_step_list(label: str, steps: Iterable[str]) -> None:
@@ -5328,7 +5437,25 @@ def render_custom_analysis_planner(output_dir: Path) -> None:
     render_step_list("Missing prerequisites", plan["missing"])
     render_step_list("Recommended full execution plan", plan["planned"])
     workflow_mode = str(st.session_state.get("workflow_mode", ""))
-    if workflow_mode != "public_demo":
+    path_status = resolve_active_run_paths(output_dir, workflow_mode)
+    missing_inputs = missing_required_inputs_for_plan(path_status, plan["planned"])
+    if workflow_mode == "existing_results":
+        st.info(
+            "Loaded previous runs are view-only for selected-step execution. "
+            "Start a new analysis to run selected steps."
+        )
+        return
+    can_run_selected = workflow_mode == "public_demo" or (
+        path_status.run_type == "uploaded" and path_status.paths_resolved
+    )
+    if missing_inputs:
+        st.warning(
+            "Selected-step execution needs these stored input files: "
+            + ", ".join(missing_inputs)
+            + "."
+        )
+        can_run_selected = False
+    if not can_run_selected:
         st.info(
             "Run selected steps for uploaded analyses will be added in a later "
             "update. For now, use the guided workflow or full run."
@@ -5337,7 +5464,7 @@ def render_custom_analysis_planner(output_dir: Path) -> None:
     if st.button(
         "Run selected planned steps",
         type="primary",
-        disabled=not bool(plan["planned"]),
+        disabled=not bool(plan["planned"]) or bool(missing_inputs),
     ):
         if has_missing:
             st.error(
@@ -5345,9 +5472,33 @@ def render_custom_analysis_planner(output_dir: Path) -> None:
                 "are missing."
             )
             return
-        summary = run_selected_public_demo_steps(
-            demo_paths_from_output(output_dir),
+        if "Public evidence" in plan["planned"]:
+            preflight = pubchem_preflight()
+            if not preflight.available:
+                render_pubchem_preflight_result(preflight)
+                return
+        progress_bar = None
+        progress_status = None
+        if "Public evidence" in plan["planned"]:
+            progress_bar = st.progress(
+                0.0, text="Preparing public database lookup..."
+            )
+            progress_status = st.empty()
+        summary = run_selected_active_run_steps(
+            path_status.pipeline_paths,
             plan["planned"],
+            workflow_mode,
+            step3_progress_callback=(
+                (
+                    lambda progress: render_step3_progress(
+                        progress,
+                        progress_bar,
+                        progress_status,
+                    )
+                )
+                if progress_bar is not None and progress_status is not None
+                else None
+            ),
         )
         render_selected_step_run_summary(summary)
 
@@ -5372,12 +5523,12 @@ def render_step_navigation_sidebar(output_dir: Path) -> str:
             options,
             index=default_index,
             key="sidebar_step_navigation",
+            label_visibility="collapsed",
         )
         st.caption("✓ completed")
         st.caption("○ not run")
         st.caption("⚠ skipped/unavailable")
         st.caption("✗ missing prerequisite")
-        st.caption(f"Active run: {output_dir}")
     selected = normalize_step_navigation_label(str(selected_display), display_labels)
     st.session_state["active_run_page"] = str(selected)
     mapped_step = STEP_NAVIGATION_TO_WORKFLOW_STEP.get(str(selected))

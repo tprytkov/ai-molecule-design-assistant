@@ -311,6 +311,73 @@ def test_run_selected_public_demo_steps_executes_in_workflow_order(
     ]
 
 
+def test_run_selected_active_run_steps_supports_uploaded_workflow_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = app.build_paths(
+        input_path=tmp_path / "inputs" / "generated_smiles.csv",
+        references_path=tmp_path / "inputs" / "references.csv",
+        text_evidence_path=tmp_path / "inputs" / "text_evidence.csv",
+        output_dir=tmp_path / "outputs",
+    )
+    calls = []
+    fake_streamlit = SimpleNamespace(session_state={})
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "run_public_demo_step",
+        lambda step_number, active_paths: calls.append((step_number, active_paths)),
+    )
+
+    summary = app.run_selected_active_run_steps(
+        paths,
+        ["Prioritization"],
+        "completed_run",
+    )
+
+    assert [step for step, _ in calls] == [1, 2, 4, 8]
+    assert all(active_paths == paths for _, active_paths in calls)
+    assert summary["executed"] == [
+        "Standardization",
+        "Chemical identity",
+        "Descriptors",
+        "Prioritization",
+    ]
+
+
+def test_run_selected_active_run_steps_uses_existing_step_three_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    calls = []
+    fake_streamlit = SimpleNamespace(
+        session_state={"completed_workflow_steps": [1, 2]}
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "run_public_demo_step3",
+        lambda active_paths: calls.append(active_paths),
+    )
+
+    summary = app.run_selected_active_run_steps(
+        paths,
+        ["Public evidence"],
+        "completed_run",
+    )
+
+    assert calls == [paths]
+    assert summary["executed"] == ["Public evidence"]
+    assert fake_streamlit.session_state["completed_workflow_steps"] == [1, 2, 3]
+
+
 def test_run_selected_public_demo_steps_treats_fallback_outputs_as_complete(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1104,6 +1171,7 @@ def test_sidebar_step_navigation_visible_for_active_run(tmp_path: Path) -> None:
 
     markdown_values = [item.value for item in app_test.markdown]
     assert "### Step navigation" in markdown_values
+    assert markdown_values.count("### Step navigation") == 1
     navigation = next(
         item for item in app_test.radio if item.label == "Step navigation"
     )
@@ -1121,6 +1189,31 @@ def test_sidebar_step_navigation_visible_for_active_run(tmp_path: Path) -> None:
     assert "○ not run" in caption_values
     assert "⚠ skipped/unavailable" in caption_values
     assert "✗ missing prerequisite" in caption_values
+
+
+def test_active_run_sidebar_status_uses_compact_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captions = []
+    expanders = []
+    output_dir = tmp_path / "public_demo_20260628_205616" / "outputs"
+    fake_streamlit = SimpleNamespace(
+        sidebar=NullExpander(),
+        markdown=lambda *args, **kwargs: None,
+        selectbox=lambda *args, **kwargs: "Start",
+        caption=lambda value, *args, **kwargs: captions.append(str(value)),
+        expander=lambda label, *args, **kwargs: (
+            expanders.append({"label": label, **kwargs}) or NullExpander()
+        ),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_workflow_mode_sidebar(output_dir)
+
+    assert "Active run: public_demo_20260628_205616" in captions
+    assert str(output_dir) in captions
+    assert expanders == [{"label": "Full run path", "expanded": False}]
 
 
 def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> None:
@@ -1210,8 +1303,8 @@ def test_custom_analysis_planner_renders_on_settings_page(
         for button in app_test.button
     )
     assert (
-        "Run selected steps for uploaded analyses will be added in a later "
-        "update. For now, use the guided workflow or full run."
+        "Loaded previous runs are view-only for selected-step execution. "
+        "Start a new analysis to run selected steps."
     ) in [item.value for item in app_test.info]
 
 
@@ -1244,8 +1337,8 @@ def test_custom_analysis_planner_warns_for_missing_prerequisites(
     assert "- Standardization" in markdown_values
     assert "**Recommended full execution plan**" in markdown_values
     assert (
-        "Run selected steps for uploaded analyses will be added in a later "
-        "update. For now, use the guided workflow or full run."
+        "Loaded previous runs are view-only for selected-step execution. "
+        "Start a new analysis to run selected steps."
     ) in [
         item.value for item in app_test.info
     ]
@@ -1276,6 +1369,92 @@ def test_custom_analysis_planner_shows_run_button_for_public_demo(
         button["label"] == "Run selected planned steps"
         for button in buttons
     )
+
+
+def test_custom_analysis_planner_shows_run_button_for_resolved_uploaded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "run" / "inputs"
+    output_dir = tmp_path / "run" / "outputs"
+    input_dir.mkdir(parents=True)
+    output_dir.mkdir()
+    for filename in ("generated_smiles.csv", "references.csv", "text_evidence.csv"):
+        (input_dir / filename).write_text("id\n", encoding="utf-8")
+    buttons = []
+    fake_streamlit = SimpleNamespace(
+        session_state={"workflow_mode": "completed_run"},
+        markdown=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        checkbox=lambda *args, **kwargs: False,
+        warning=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        button=lambda label, *args, **kwargs: buttons.append(
+            {"label": label, **kwargs}
+        )
+        or False,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_custom_analysis_planner(output_dir)
+
+    assert any(
+        button["label"] == "Run selected planned steps"
+        for button in buttons
+    )
+
+
+def test_custom_analysis_planner_hides_run_button_when_uploaded_inputs_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warnings = []
+
+    def checkbox(label: str, *args, **kwargs) -> bool:
+        if label == "Include required prerequisite steps automatically":
+            return True
+        return label == "Standardization"
+
+    fake_streamlit = SimpleNamespace(
+        session_state={"workflow_mode": "completed_run"},
+        markdown=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        checkbox=checkbox,
+        warning=lambda message, *args, **kwargs: warnings.append(message),
+        info=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: pytest.fail("Run button should be hidden"),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_custom_analysis_planner(tmp_path / "outputs")
+
+    assert warnings == [
+        "Selected-step execution needs these stored input files: generated_smiles."
+    ]
+
+
+def test_custom_analysis_planner_loaded_previous_is_view_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    information = []
+    fake_streamlit = SimpleNamespace(
+        session_state={"workflow_mode": "existing_results"},
+        markdown=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        checkbox=lambda *args, **kwargs: False,
+        warning=lambda *args, **kwargs: None,
+        info=lambda message, *args, **kwargs: information.append(message),
+        button=lambda *args, **kwargs: pytest.fail("Loaded runs are view-only"),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_custom_analysis_planner(tmp_path / "outputs")
+
+    assert information == [
+        "Loaded previous runs are view-only for selected-step execution. "
+        "Start a new analysis to run selected steps."
+    ]
 
 
 def test_custom_analysis_planner_blocks_missing_prerequisites_without_auto_include(
@@ -1344,7 +1523,12 @@ def test_sidebar_step_navigation_updates_workflow_step_without_running(
     assert fake_streamlit.session_state["workflow_step"] == 6
     assert fake_streamlit.session_state["completed_workflow_steps"] == []
     assert "### Step navigation" in markdown
-    assert f"Active run: {tmp_path}" in captions
+    assert captions == [
+        "✓ completed",
+        "○ not run",
+        "⚠ skipped/unavailable",
+        "✗ missing prerequisite",
+    ]
 
 
 def test_step_workflow_blocks_later_demo_step_until_prerequisites_run(
@@ -1384,6 +1568,65 @@ def test_step_workflow_blocks_later_demo_step_until_prerequisites_run(
     assert rendered == [(3, False)]
     assert warnings == ["Run required previous step first: Step 2."]
     assert fake_streamlit.session_state["completed_workflow_steps"] == [1]
+
+
+def test_step_workflow_running_message_replaces_not_run_message(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    infos = []
+    calls = []
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+
+    class ButtonSlot:
+        def button(self, label: str, *args, **kwargs) -> bool:
+            return kwargs.get("key") == "run_demo_step_1"
+
+    fake_streamlit = SimpleNamespace(
+        session_state={
+            "workflow_mode": "public_demo",
+            "workflow_step": 1,
+            "completed_workflow_steps": [],
+        },
+        caption=lambda *args, **kwargs: None,
+        progress=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        info=lambda message, *args, **kwargs: infos.append(message),
+        error=lambda *args, **kwargs: None,
+        empty=lambda: ButtonSlot(),
+        spinner=lambda *args, **kwargs: NullExpander(),
+        rerun=lambda: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "load_output_directory",
+        lambda output_dir: SimpleNamespace(output_dir=output_dir),
+    )
+    monkeypatch.setattr(
+        app,
+        "render_workflow_step",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "demo_paths_from_output", lambda output_dir: paths)
+    monkeypatch.setattr(
+        app,
+        "run_public_demo_step",
+        lambda step_number, active_paths: calls.append((step_number, active_paths)),
+    )
+
+    app.render_step_workflow(tmp_path)
+
+    assert calls == [(1, paths)]
+    assert (
+        "This step is currently running. Output will appear after completion."
+    ) in infos
+    assert not any("No calculation has run" in value for value in infos)
 
 
 def test_public_demo_uses_bundled_inputs_and_new_output_folder(
