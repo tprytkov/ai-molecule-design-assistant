@@ -736,6 +736,29 @@ def test_connection_button_shows_success(
     assert "active_output_dir" not in fake_streamlit.session_state
 
 
+def load_minimal_existing_run(app_test: AppTest, tmp_path: Path) -> AppTest:
+    """Load a tiny existing output folder through the UI."""
+    workflow_mode = next(
+        item for item in app_test.selectbox if item.label == "Workflow mode"
+    )
+    app_test = workflow_mode.set_value("Load previous run").run(timeout=10)
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    (output_dir / "prioritization_results.csv").write_text(
+        "molecule_id,valid_smiles,prioritization_score,known_public_match\n"
+        "mol_a,True,0.8,False\n",
+        encoding="utf-8",
+    )
+    output_input = next(
+        item for item in app_test.text_input if item.label == "Output directory"
+    )
+    output_input.set_value(str(output_dir))
+    load_button = next(
+        button for button in app_test.button if button.label == "Load results"
+    )
+    return load_button.click().run(timeout=10)
+
+
 def test_existing_results_require_explicit_action(tmp_path: Path) -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
     workflow_mode = next(
@@ -779,25 +802,7 @@ def test_existing_results_require_explicit_action(tmp_path: Path) -> None:
 
 def test_sidebar_step_navigation_visible_for_active_run(tmp_path: Path) -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
-    workflow_mode = next(
-        item for item in app_test.selectbox if item.label == "Workflow mode"
-    )
-    app_test = workflow_mode.set_value("Load previous run").run(timeout=10)
-    output_dir = tmp_path / "outputs"
-    output_dir.mkdir()
-    (output_dir / "prioritization_results.csv").write_text(
-        "molecule_id,valid_smiles,prioritization_score,known_public_match\n"
-        "mol_a,True,0.8,False\n",
-        encoding="utf-8",
-    )
-    output_input = next(
-        item for item in app_test.text_input if item.label == "Output directory"
-    )
-    output_input.set_value(str(output_dir))
-    load_button = next(
-        button for button in app_test.button if button.label == "Load results"
-    )
-    app_test = load_button.click().run(timeout=10)
+    app_test = load_minimal_existing_run(app_test, tmp_path)
 
     markdown_values = [item.value for item in app_test.markdown]
     assert "### Step navigation" in markdown_values
@@ -810,6 +815,63 @@ def test_sidebar_step_navigation_visible_for_active_run(tmp_path: Path) -> None:
     assert "Patent/IP-context evidence" in navigation.options
     assert "Prioritization" in navigation.options
     assert "Reports" in navigation.options
+
+
+def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> None:
+    app_test = AppTest.from_file("app.py").run(timeout=10)
+    app_test = load_minimal_existing_run(app_test, tmp_path)
+
+    navigation = next(
+        item for item in app_test.radio if item.label == "Step navigation"
+    )
+    assert any(
+        heading.value == "Step 1: Load and validate SMILES"
+        for heading in app_test.header
+    )
+
+    app_test = navigation.set_value("Chemical-space map").run(timeout=10)
+    assert app_test.session_state["active_run_page"] == "Chemical-space map"
+    assert app_test.session_state["workflow_step"] == 5
+    assert any(
+        heading.value == "Step 5: ChemBERTa chemical space"
+        for heading in app_test.header
+    )
+    assert not any(
+        heading.value == "Step 1: Load and validate SMILES"
+        for heading in app_test.header
+    )
+
+    navigation = next(
+        item for item in app_test.radio if item.label == "Step navigation"
+    )
+    app_test = navigation.set_value("Biomedical evidence").run(timeout=10)
+    assert app_test.session_state["active_run_page"] == "Biomedical evidence"
+    assert app_test.session_state["workflow_step"] == 6
+    assert any(
+        heading.value == "Step 6: Biomedical evidence and biological context"
+        for heading in app_test.header
+    )
+
+
+def test_sidebar_special_pages_render_without_workflow_step_body(
+    tmp_path: Path,
+) -> None:
+    app_test = AppTest.from_file("app.py").run(timeout=10)
+    app_test = load_minimal_existing_run(app_test, tmp_path)
+
+    navigation = next(
+        item for item in app_test.radio if item.label == "Step navigation"
+    )
+    for page in ("Overview", "Input data", "Downloads", "Settings"):
+        app_test = navigation.set_value(page).run(timeout=10)
+        assert app_test.session_state["active_run_page"] == page
+        assert any(subheader.value == page for subheader in app_test.subheader)
+        assert not any(
+            heading.value in app.WORKFLOW_STEP_NAMES for heading in app_test.header
+        )
+        navigation = next(
+            item for item in app_test.radio if item.label == "Step navigation"
+        )
 
 
 def test_sidebar_step_navigation_updates_workflow_step_without_running(
@@ -838,6 +900,45 @@ def test_sidebar_step_navigation_updates_workflow_step_without_running(
     assert fake_streamlit.session_state["completed_workflow_steps"] == []
     assert "### Step navigation" in markdown
     assert f"Active run: {tmp_path}" in captions
+
+
+def test_step_workflow_blocks_later_demo_step_until_prerequisites_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warnings = []
+    rendered = []
+    fake_streamlit = SimpleNamespace(
+        session_state={
+            "workflow_mode": "public_demo",
+            "workflow_step": 3,
+            "completed_workflow_steps": [1],
+        },
+        caption=lambda *args, **kwargs: None,
+        progress=lambda *args, **kwargs: None,
+        warning=lambda message, *args, **kwargs: warnings.append(message),
+        info=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: pytest.fail("Run button should be gated"),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "load_output_directory",
+        lambda output_dir: SimpleNamespace(output_dir=output_dir),
+    )
+    monkeypatch.setattr(
+        app,
+        "render_workflow_step",
+        lambda loaded, step_number, **kwargs: rendered.append(
+            (step_number, kwargs["results_available"])
+        ),
+    )
+
+    app.render_step_workflow(tmp_path)
+
+    assert rendered == [(3, False)]
+    assert warnings == ["Run required previous step first: Step 2."]
+    assert fake_streamlit.session_state["completed_workflow_steps"] == [1]
 
 
 def test_public_demo_uses_bundled_inputs_and_new_output_folder(

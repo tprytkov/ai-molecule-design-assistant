@@ -4661,6 +4661,13 @@ def render_step_workflow(output_dir: Path) -> None:
     )
 
     if not results_available:
+        missing_previous = [
+            step for step in range(1, current) if step not in completed
+        ]
+        if missing_previous:
+            required = ", ".join(f"Step {step}" for step in missing_previous)
+            st.warning(f"Run required previous step first: {required}.")
+            return
         if workflow_mode != "public_demo":
             st.warning("This workflow step has not been run for the selected output.")
             return
@@ -4739,13 +4746,13 @@ def render_step_workflow(output_dir: Path) -> None:
             key=f"continue_step_{current}",
         ):
             st.session_state["workflow_step"] = current + 1
+            next_page = WORKFLOW_STEP_TO_NAVIGATION_LABEL[current + 1]
+            st.session_state["active_run_page"] = next_page
+            st.session_state["sidebar_step_navigation"] = next_page
             st.rerun()
     else:
         if st.button("Start over", key="start_over"):
-            st.session_state.pop("active_output_dir", None)
-            st.session_state.pop("workflow_step", None)
-            st.session_state.pop("completed_workflow_steps", None)
-            st.session_state.pop("workflow_mode", None)
+            clear_active_run_state()
             st.rerun()
 
 
@@ -4876,10 +4883,23 @@ def render_step_navigation_sidebar(output_dir: Path) -> str:
             key="sidebar_step_navigation",
         )
         st.caption(f"Active run: {output_dir}")
+    st.session_state["active_run_page"] = str(selected)
     mapped_step = STEP_NAVIGATION_TO_WORKFLOW_STEP.get(str(selected))
     if mapped_step is not None:
         st.session_state["workflow_step"] = mapped_step
     return str(selected)
+
+
+def render_active_run_page(
+    selected_page: str,
+    output_dir: Path,
+) -> None:
+    """Render the selected active-run sidebar page."""
+    if selected_page in STEP_NAVIGATION_TO_WORKFLOW_STEP:
+        render_step_workflow(output_dir)
+        return
+    render_step_navigation_context(selected_page, output_dir)
+    render_active_run_reset_button(key=f"start_over_{slugify_key(selected_page)}")
 
 
 def render_step_navigation_context(
@@ -4897,6 +4917,31 @@ def render_step_navigation_context(
         render_active_run_downloads(output_dir)
     elif selected_page == "Settings":
         render_active_run_settings()
+
+
+def slugify_key(value: str) -> str:
+    """Return a stable lowercase key fragment for Streamlit widget keys."""
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def clear_active_run_state() -> None:
+    """Clear active-run state while leaving unrelated session state intact."""
+    for key in (
+        "active_output_dir",
+        "workflow_step",
+        "completed_workflow_steps",
+        "workflow_mode",
+        "active_run_page",
+        "sidebar_step_navigation",
+    ):
+        st.session_state.pop(key, None)
+
+
+def render_active_run_reset_button(*, key: str) -> None:
+    """Show the active-run reset action on routed sidebar pages."""
+    if st.button("Start over", key=key):
+        clear_active_run_state()
+        st.rerun()
 
 
 def render_active_run_overview(output_dir: Path) -> None:
@@ -5004,8 +5049,7 @@ def run_app() -> None:
     workflow_mode = render_workflow_mode_sidebar(output_dir)
     if output_dir is not None:
         selected_step_page = render_step_navigation_sidebar(output_dir)
-        render_step_navigation_context(selected_step_page, output_dir)
-        render_step_workflow(output_dir)
+        render_active_run_page(selected_step_page, output_dir)
         return
 
     demo_output = None
@@ -5027,8 +5071,7 @@ def run_app() -> None:
     output_dir = demo_output or upload_output or existing_output or sidebar_existing_output
     if output_dir is not None:
         selected_step_page = render_step_navigation_sidebar(output_dir)
-        render_step_navigation_context(selected_step_page, output_dir)
-        render_step_workflow(output_dir)
+        render_active_run_page(selected_step_page, output_dir)
 
 
 if __name__ == "__main__":
