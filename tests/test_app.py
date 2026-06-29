@@ -113,6 +113,62 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Reports"] == 9
 
 
+def test_custom_analysis_dependency_map_contains_expected_dependencies() -> None:
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Standardization"] == ()
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Chemical identity"] == (
+        "Standardization",
+    )
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Public evidence"] == (
+        "Standardization",
+        "Chemical identity",
+    )
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Patent/IP-context evidence"] == (
+        "Standardization",
+        "Public evidence",
+    )
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Prioritization"] == (
+        "Standardization",
+        "Descriptors",
+        "Chemical identity",
+    )
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Reports"] == ("Prioritization",)
+
+
+def test_custom_analysis_plan_reports_missing_downstream_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_streamlit = SimpleNamespace(session_state={})
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    plan = app.custom_analysis_plan(
+        tmp_path,
+        ["Reports"],
+        include_prerequisites=True,
+    )
+
+    assert plan["selected"] == ["Reports"]
+    assert plan["required"] == [
+        "Standardization",
+        "Chemical identity",
+        "Descriptors",
+        "Prioritization",
+    ]
+    assert plan["missing"] == [
+        "Standardization",
+        "Chemical identity",
+        "Descriptors",
+        "Prioritization",
+    ]
+    assert plan["planned"] == [
+        "Standardization",
+        "Chemical identity",
+        "Descriptors",
+        "Prioritization",
+        "Reports",
+    ]
+
+
 def test_step_navigation_statuses_use_outputs_and_prerequisites(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -939,6 +995,63 @@ def test_sidebar_special_pages_render_without_workflow_step_body(
         navigation = next(
             item for item in app_test.radio if item.label == "Step navigation"
         )
+
+
+def test_custom_analysis_planner_renders_on_settings_page(
+    tmp_path: Path,
+) -> None:
+    app_test = AppTest.from_file("app.py").run(timeout=10)
+    app_test = load_minimal_existing_run(app_test, tmp_path)
+    navigation = next(
+        item for item in app_test.radio if item.label == "Step navigation"
+    )
+    app_test = navigation.set_value(navigation_option_for(app_test, "Settings")).run(
+        timeout=10
+    )
+
+    markdown_values = [item.value for item in app_test.markdown]
+    assert "### Custom analysis planner" in markdown_values
+    checkbox_labels = [checkbox.label for checkbox in app_test.checkbox]
+    assert "Include required prerequisite steps automatically" in checkbox_labels
+    for step in app.CUSTOM_ANALYSIS_STEPS:
+        assert step in checkbox_labels
+    assert not any(
+        button.label == "Run selected steps will be added in a later update."
+        for button in app_test.button
+    )
+
+
+def test_custom_analysis_planner_warns_for_missing_prerequisites(
+    tmp_path: Path,
+) -> None:
+    app_test = AppTest.from_file("app.py").run(timeout=10)
+    app_test = load_minimal_existing_run(app_test, tmp_path)
+    app_test.session_state["completed_workflow_steps"] = []
+    navigation = next(
+        item for item in app_test.radio if item.label == "Step navigation"
+    )
+    app_test = navigation.set_value(navigation_option_for(app_test, "Settings")).run(
+        timeout=10
+    )
+    reports_checkbox = next(
+        checkbox for checkbox in app_test.checkbox if checkbox.label == "Reports"
+    )
+    app_test = reports_checkbox.set_value(True).run(timeout=10)
+
+    warning_values = [warning.value for warning in app_test.warning]
+    assert (
+        "This step requires earlier outputs. Include prerequisite steps or load "
+        "a previous run containing those outputs."
+    ) in warning_values
+    markdown_values = "\n".join(item.value for item in app_test.markdown)
+    assert "**Selected steps**" in markdown_values
+    assert "- Reports" in markdown_values
+    assert "**Missing prerequisites**" in markdown_values
+    assert "- Standardization" in markdown_values
+    assert "**Recommended full execution plan**" in markdown_values
+    assert "Run selected steps will be added in a later update." in [
+        item.value for item in app_test.info
+    ]
 
 
 def test_sidebar_step_navigation_updates_workflow_step_without_running(

@@ -438,6 +438,22 @@ STEP_STATUS_ICONS = {
     "skipped": "⚠",
     "missing_prerequisite": "✗",
 }
+CUSTOM_ANALYSIS_STEPS = tuple(STEP_NAVIGATION_TO_WORKFLOW_STEP)
+CUSTOM_ANALYSIS_DEPENDENCIES = {
+    "Standardization": (),
+    "Chemical identity": ("Standardization",),
+    "Public evidence": ("Standardization", "Chemical identity"),
+    "Descriptors": ("Standardization",),
+    "Chemical-space map": ("Standardization",),
+    "Biomedical evidence": ("Standardization",),
+    "Patent/IP-context evidence": ("Standardization", "Public evidence"),
+    "Prioritization": (
+        "Standardization",
+        "Descriptors",
+        "Chemical identity",
+    ),
+    "Reports": ("Prioritization",),
+}
 FINAL_RANKING_EXPLANATION = (
     "Final ranking combines evidence from chemical identity, public lookup, "
     "RDKit descriptors, ChemBERTa embeddings, text evidence, and evidence "
@@ -4989,6 +5005,116 @@ def normalize_step_navigation_label(label: str, display_labels: dict[str, str]) 
     return label
 
 
+def ordered_step_labels(labels: Iterable[str]) -> list[str]:
+    """Return labels in custom analysis step order."""
+    selected = set(labels)
+    return [label for label in CUSTOM_ANALYSIS_STEPS if label in selected]
+
+
+def required_prerequisite_steps(selected_steps: Iterable[str]) -> list[str]:
+    """Return transitive prerequisites for selected analysis steps."""
+    required: set[str] = set()
+
+    def visit(step: str) -> None:
+        for dependency in CUSTOM_ANALYSIS_DEPENDENCIES.get(step, ()):
+            if dependency in required:
+                continue
+            required.add(dependency)
+            visit(dependency)
+
+    for step in selected_steps:
+        visit(step)
+    return ordered_step_labels(required)
+
+
+def analysis_step_satisfied(output_dir: Path, step_label: str) -> bool:
+    """Return whether a step appears complete in session state or outputs."""
+    step_number = STEP_NAVIGATION_TO_WORKFLOW_STEP[step_label]
+    return step_number in completed_workflow_steps() or step_output_exists(
+        output_dir, step_number
+    )
+
+
+def missing_planner_prerequisites(
+    output_dir: Path,
+    selected_steps: Iterable[str],
+) -> list[str]:
+    """Return required steps not selected and not already present in the run."""
+    selected = set(selected_steps)
+    missing = []
+    for dependency in required_prerequisite_steps(selected):
+        if dependency in selected or analysis_step_satisfied(output_dir, dependency):
+            continue
+        missing.append(dependency)
+    return missing
+
+
+def custom_analysis_plan(
+    output_dir: Path,
+    selected_steps: Iterable[str],
+    *,
+    include_prerequisites: bool,
+) -> dict[str, list[str]]:
+    """Build a passive selected-step plan without executing anything."""
+    selected = ordered_step_labels(selected_steps)
+    required = required_prerequisite_steps(selected)
+    missing = missing_planner_prerequisites(output_dir, selected)
+    if include_prerequisites:
+        planned = ordered_step_labels([*required, *selected])
+    else:
+        planned = selected
+    return {
+        "selected": selected,
+        "required": required,
+        "missing": missing,
+        "planned": planned,
+    }
+
+
+def render_step_list(label: str, steps: Iterable[str]) -> None:
+    """Render a compact step list for the custom planner."""
+    step_list = list(steps)
+    st.markdown(f"**{label}**")
+    if not step_list:
+        st.write("None")
+        return
+    st.markdown("\n".join(f"- {step}" for step in step_list))
+
+
+def render_custom_analysis_planner(output_dir: Path) -> None:
+    """Render a passive step-selection planner for future custom execution."""
+    st.markdown("### Custom analysis planner")
+    st.write(
+        "Choose analysis steps to preview dependencies and a recommended execution "
+        "plan. This planner does not run pipeline steps yet."
+    )
+    include_prerequisites = st.checkbox(
+        "Include required prerequisite steps automatically",
+        value=True,
+        key="custom_planner_include_prerequisites",
+    )
+    selected_steps = []
+    for step in CUSTOM_ANALYSIS_STEPS:
+        if st.checkbox(step, key=f"custom_planner_step_{slugify_key(step)}"):
+            selected_steps.append(step)
+
+    plan = custom_analysis_plan(
+        output_dir,
+        selected_steps,
+        include_prerequisites=include_prerequisites,
+    )
+    if plan["missing"]:
+        st.warning(
+            "This step requires earlier outputs. Include prerequisite steps or "
+            "load a previous run containing those outputs."
+        )
+    render_step_list("Selected steps", plan["selected"])
+    render_step_list("Required prerequisite steps", plan["required"])
+    render_step_list("Missing prerequisites", plan["missing"])
+    render_step_list("Recommended full execution plan", plan["planned"])
+    st.info("Run selected steps will be added in a later update.")
+
+
 def render_step_navigation_sidebar(output_dir: Path) -> str:
     """Render active-run step navigation without running workflow steps."""
     current = int(st.session_state.get("workflow_step", 1))
@@ -5049,7 +5175,7 @@ def render_step_navigation_context(
     elif selected_page == "Downloads":
         render_active_run_downloads(output_dir)
     elif selected_page == "Settings":
-        render_active_run_settings()
+        render_active_run_settings(output_dir)
 
 
 def slugify_key(value: str) -> str:
@@ -5151,7 +5277,7 @@ def render_active_run_downloads(output_dir: Path) -> None:
     render_output_artifacts(artifacts)
 
 
-def render_active_run_settings() -> None:
+def render_active_run_settings(output_dir: Path) -> None:
     """Show passive configuration notes for the active run."""
     st.subheader("Settings")
     st.write(
@@ -5165,6 +5291,7 @@ def render_active_run_settings() -> None:
         "PaECTER/patent-BERT-style models.\n"
         "- Selecting a sidebar page does not run pipeline steps."
     )
+    render_custom_analysis_planner(output_dir)
 
 
 def run_app() -> None:
