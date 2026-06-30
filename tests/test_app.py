@@ -110,6 +110,7 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert "Downloads" in app.STEP_NAVIGATION_LABELS
     assert "Settings" in app.STEP_NAVIGATION_LABELS
     assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY == "_sidebar_step_navigation_widget"
+    assert app.PENDING_ACTIVE_RUN_PAGE_KEY == "pending_active_run_page"
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Standardization"] == 1
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Chemical identity"] == 2
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Public evidence"] == 3
@@ -151,6 +152,44 @@ def test_sidebar_step_navigation_legacy_widget_key_is_not_assigned() -> None:
 
     assert assignments == []
 
+
+def test_sidebar_widget_key_assignment_happens_before_widget_creation() -> None:
+    tree = ast.parse(Path("app.py").read_text(encoding="utf-8"))
+    sidebar_function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "render_step_navigation_sidebar"
+    )
+    radio_lines = [
+        node.lineno
+        for node in ast.walk(sidebar_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "radio"
+    ]
+    widget_assignment_lines = []
+    for node in ast.walk(sidebar_function):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            if not (
+                isinstance(target.value, ast.Attribute)
+                and target.value.attr == "session_state"
+            ):
+                continue
+            if isinstance(target.slice, ast.Name):
+                if target.slice.id == "SIDEBAR_STEP_NAVIGATION_WIDGET_KEY":
+                    widget_assignment_lines.append(target.lineno)
+            elif isinstance(target.slice, ast.Constant):
+                if target.slice.value == app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY:
+                    widget_assignment_lines.append(target.lineno)
+
+    assert radio_lines
+    assert widget_assignment_lines
+    assert max(widget_assignment_lines) < min(radio_lines)
 
 def test_custom_analysis_dependency_map_contains_expected_dependencies() -> None:
     assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Standardization"] == ()
@@ -1593,7 +1632,7 @@ def test_sidebar_step_navigation_updates_workflow_step_without_running(
     ]
 
 
-def test_step_workflow_continue_updates_active_page_without_widget_key(
+def test_step_workflow_continue_to_step_4_sets_pending_page(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1601,13 +1640,14 @@ def test_step_workflow_continue_updates_active_page_without_widget_key(
     rendered = []
 
     def button(label: str, *args, **kwargs) -> bool:
-        return kwargs.get("key") == "continue_step_1"
+        return kwargs.get("key") == "continue_step_3"
 
     fake_streamlit = SimpleNamespace(
         session_state={
             "workflow_mode": "public_demo",
-            "workflow_step": 1,
-            "completed_workflow_steps": [1],
+            "workflow_step": 3,
+            "completed_workflow_steps": [1, 2, 3],
+            "active_run_page": "Public evidence",
         },
         caption=lambda *args, **kwargs: None,
         progress=lambda *args, **kwargs: None,
@@ -1630,12 +1670,59 @@ def test_step_workflow_continue_updates_active_page_without_widget_key(
 
     app.render_step_workflow(tmp_path)
 
-    assert rendered == [(1, True)]
-    assert fake_streamlit.session_state["workflow_step"] == 2
-    assert fake_streamlit.session_state["active_run_page"] == "Chemical identity"
+    assert rendered == [(3, True)]
+    assert fake_streamlit.session_state["workflow_step"] == 4
+    assert fake_streamlit.session_state["active_run_page"] == "Public evidence"
+    assert (
+        fake_streamlit.session_state[app.PENDING_ACTIVE_RUN_PAGE_KEY]
+        == "Descriptors"
+    )
     assert "sidebar_step_navigation" not in fake_streamlit.session_state
     assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY not in fake_streamlit.session_state
     assert reruns == [True]
+
+
+def test_pending_active_page_prevents_stale_sidebar_widget_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    radio_calls = []
+
+    def radio(label, options, *args, **kwargs):
+        radio_calls.append({"label": label, "options": options, **kwargs})
+        return fake_streamlit.session_state[app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY]
+
+    fake_streamlit = SimpleNamespace(
+        session_state={
+            "workflow_step": 4,
+            "completed_workflow_steps": [1, 2, 3],
+            "active_run_page": "Public evidence",
+            app.PENDING_ACTIVE_RUN_PAGE_KEY: "Descriptors",
+            app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY: (
+                f"{app.STEP_STATUS_ICONS['completed']} Public evidence"
+            ),
+        },
+        sidebar=NullExpander(),
+        markdown=lambda *args, **kwargs: None,
+        radio=radio,
+        caption=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    selected = app.render_step_navigation_sidebar(tmp_path)
+
+    assert selected == "Descriptors"
+    assert fake_streamlit.session_state["active_run_page"] == "Descriptors"
+    assert fake_streamlit.session_state["workflow_step"] == 4
+    assert app.PENDING_ACTIVE_RUN_PAGE_KEY not in fake_streamlit.session_state
+    assert fake_streamlit.session_state[app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY].endswith(
+        "Descriptors"
+    )
+    assert any(
+        option.endswith("Descriptors")
+        and option.startswith(app.STEP_STATUS_ICONS["not_run"])
+        for option in radio_calls[0]["options"]
+    )
 
 def test_step_workflow_blocks_later_demo_step_until_prerequisites_run(
     monkeypatch: pytest.MonkeyPatch,

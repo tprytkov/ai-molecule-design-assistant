@@ -422,6 +422,7 @@ WORKFLOW_STEP_TO_NAVIGATION_LABEL = {
     value: key for key, value in STEP_NAVIGATION_TO_WORKFLOW_STEP.items()
 }
 SIDEBAR_STEP_NAVIGATION_WIDGET_KEY = "_sidebar_step_navigation_widget"
+PENDING_ACTIVE_RUN_PAGE_KEY = "pending_active_run_page"
 STEP_OUTPUT_KEYS = {
     1: ("standardized",),
     2: ("chemical_identity",),
@@ -4877,7 +4878,7 @@ def render_step_workflow(output_dir: Path) -> None:
         ):
             st.session_state["workflow_step"] = current + 1
             next_page = WORKFLOW_STEP_TO_NAVIGATION_LABEL[current + 1]
-            st.session_state["active_run_page"] = next_page
+            st.session_state[PENDING_ACTIVE_RUN_PAGE_KEY] = next_page
             st.rerun()
     else:
         if st.button("Start over", key="start_over"):
@@ -5110,6 +5111,10 @@ def normalize_step_navigation_label(label: str, display_labels: dict[str, str]) 
     for plain_label, display_label in display_labels.items():
         if label == display_label or label == plain_label:
             return plain_label
+    for icon in STEP_STATUS_ICONS.values():
+        prefix = f"{icon} "
+        if label.startswith(prefix):
+            return label[len(prefix) :]
     return label
 
 
@@ -5507,13 +5512,21 @@ def render_step_navigation_sidebar(output_dir: Path) -> str:
     """Render active-run step navigation without running workflow steps."""
     current = int(st.session_state.get("workflow_step", 1))
     current = max(1, min(current, len(WORKFLOW_STEP_NAMES)))
+    display_labels = step_navigation_display_labels(output_dir)
+    pending_page = str(st.session_state.pop(PENDING_ACTIVE_RUN_PAGE_KEY, "")).strip()
+    if pending_page:
+        pending_page = normalize_step_navigation_label(pending_page, display_labels)
+        if pending_page in STEP_NAVIGATION_LABELS:
+            st.session_state["active_run_page"] = pending_page
+            st.session_state[SIDEBAR_STEP_NAVIGATION_WIDGET_KEY] = display_labels[
+                pending_page
+            ]
     page_value = str(st.session_state.get("active_run_page", "")).strip()
     default_label = page_value or WORKFLOW_STEP_TO_NAVIGATION_LABEL.get(
         current, "Overview"
     )
     if default_label not in STEP_NAVIGATION_LABELS:
         default_label = WORKFLOW_STEP_TO_NAVIGATION_LABEL.get(current, "Overview")
-    display_labels = step_navigation_display_labels(output_dir)
     options = [display_labels[label] for label in STEP_NAVIGATION_LABELS]
     default_index = STEP_NAVIGATION_LABELS.index(default_label)
     with st.sidebar:
@@ -5579,6 +5592,7 @@ def clear_active_run_state() -> None:
         "completed_workflow_steps",
         "workflow_mode",
         "active_run_page",
+        PENDING_ACTIVE_RUN_PAGE_KEY,
         "sidebar_step_navigation",
         SIDEBAR_STEP_NAVIGATION_WIDGET_KEY,
     ):
