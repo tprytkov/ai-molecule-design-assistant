@@ -421,6 +421,7 @@ STEP_NAVIGATION_TO_WORKFLOW_STEP = {
 WORKFLOW_STEP_TO_NAVIGATION_LABEL = {
     value: key for key, value in STEP_NAVIGATION_TO_WORKFLOW_STEP.items()
 }
+SIDEBAR_STEP_NAVIGATION_WIDGET_KEY = "_sidebar_step_navigation_widget"
 STEP_OUTPUT_KEYS = {
     1: ("standardized",),
     2: ("chemical_identity",),
@@ -4877,7 +4878,6 @@ def render_step_workflow(output_dir: Path) -> None:
             st.session_state["workflow_step"] = current + 1
             next_page = WORKFLOW_STEP_TO_NAVIGATION_LABEL[current + 1]
             st.session_state["active_run_page"] = next_page
-            st.session_state["sidebar_step_navigation"] = next_page
             st.rerun()
     else:
         if st.button("Start over", key="start_over"):
@@ -5522,7 +5522,7 @@ def render_step_navigation_sidebar(output_dir: Path) -> str:
             "Step navigation",
             options,
             index=default_index,
-            key="sidebar_step_navigation",
+            key=SIDEBAR_STEP_NAVIGATION_WIDGET_KEY,
             label_visibility="collapsed",
         )
         st.caption("✓ completed")
@@ -5580,6 +5580,7 @@ def clear_active_run_state() -> None:
         "workflow_mode",
         "active_run_page",
         "sidebar_step_navigation",
+        SIDEBAR_STEP_NAVIGATION_WIDGET_KEY,
     ):
         st.session_state.pop(key, None)
 

@@ -1,3 +1,4 @@
+import ast
 import builtins
 from pathlib import Path
 from datetime import datetime
@@ -98,6 +99,9 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert "Overview" in app.STEP_NAVIGATION_LABELS
     assert "Input data" in app.STEP_NAVIGATION_LABELS
     assert "Standardization" in app.STEP_NAVIGATION_LABELS
+    assert "Chemical identity" in app.STEP_NAVIGATION_LABELS
+    assert "Public evidence" in app.STEP_NAVIGATION_LABELS
+    assert "Descriptors" in app.STEP_NAVIGATION_LABELS
     assert "Chemical-space map" in app.STEP_NAVIGATION_LABELS
     assert "Biomedical evidence" in app.STEP_NAVIGATION_LABELS
     assert "Patent/IP-context evidence" in app.STEP_NAVIGATION_LABELS
@@ -105,12 +109,47 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert "Reports" in app.STEP_NAVIGATION_LABELS
     assert "Downloads" in app.STEP_NAVIGATION_LABELS
     assert "Settings" in app.STEP_NAVIGATION_LABELS
+    assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY == "_sidebar_step_navigation_widget"
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Standardization"] == 1
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Chemical identity"] == 2
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Public evidence"] == 3
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Descriptors"] == 4
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Chemical-space map"] == 5
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Biomedical evidence"] == 6
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Patent/IP-context evidence"] == 7
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Prioritization"] == 8
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Reports"] == 9
+
+
+def test_sidebar_step_navigation_legacy_widget_key_is_not_assigned() -> None:
+    tree = ast.parse(Path("app.py").read_text(encoding="utf-8"))
+    assignments = []
+
+    def targets(node: ast.AST) -> list[ast.AST]:
+        if isinstance(node, ast.Assign):
+            return list(node.targets)
+        if isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            return [node.target]
+        return []
+
+    for node in ast.walk(tree):
+        for target in targets(node):
+            if not isinstance(target, ast.Subscript):
+                continue
+            if not isinstance(target.slice, ast.Constant):
+                continue
+            if target.slice.value != "sidebar_step_navigation":
+                continue
+            value = target.value
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr == "session_state"
+                and isinstance(value.value, ast.Name)
+                and value.value.id == "st"
+            ):
+                assignments.append(target.lineno)
+
+    assert assignments == []
 
 
 def test_custom_analysis_dependency_map_contains_expected_dependencies() -> None:
@@ -1504,15 +1543,22 @@ def test_sidebar_step_navigation_updates_workflow_step_without_running(
 ) -> None:
     markdown = []
     captions = []
+    radio_calls = []
+
+    def radio(label, options, *args, **kwargs):
+        radio_calls.append({"label": label, "options": options, **kwargs})
+        return next(option for option in options if option.endswith("Biomedical evidence"))
+
     fake_streamlit = SimpleNamespace(
         session_state={
             "active_output_dir": str(tmp_path),
             "workflow_step": 1,
             "completed_workflow_steps": [],
+            "active_run_page": "Chemical-space map",
         },
         sidebar=NullExpander(),
         markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
-        radio=lambda label, options, *args, **kwargs: "Biomedical evidence",
+        radio=radio,
         caption=lambda value, *args, **kwargs: captions.append(str(value)),
     )
     monkeypatch.setattr(app, "st", fake_streamlit)
@@ -1520,16 +1566,76 @@ def test_sidebar_step_navigation_updates_workflow_step_without_running(
     selected = app.render_step_navigation_sidebar(tmp_path)
 
     assert selected == "Biomedical evidence"
+    assert fake_streamlit.session_state["active_run_page"] == "Biomedical evidence"
     assert fake_streamlit.session_state["workflow_step"] == 6
     assert fake_streamlit.session_state["completed_workflow_steps"] == []
+    assert "sidebar_step_navigation" not in fake_streamlit.session_state
+    assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY not in fake_streamlit.session_state
     assert "### Step navigation" in markdown
+    assert len(radio_calls) == 1
+    assert radio_calls[0]["key"] == app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY
+    assert radio_calls[0]["options"][radio_calls[0]["index"]].endswith(
+        "Chemical-space map"
+    )
+    assert any(
+        option.startswith(app.STEP_STATUS_ICONS["not_run"])
+        and option.endswith("Standardization")
+        for option in radio_calls[0]["options"]
+    )
+    assert any(
+        option.endswith("Biomedical evidence") for option in radio_calls[0]["options"]
+    )
     assert captions == [
-        "✓ completed",
-        "○ not run",
-        "⚠ skipped/unavailable",
-        "✗ missing prerequisite",
+        f"{app.STEP_STATUS_ICONS['completed']} completed",
+        f"{app.STEP_STATUS_ICONS['not_run']} not run",
+        f"{app.STEP_STATUS_ICONS['skipped']} skipped/unavailable",
+        f"{app.STEP_STATUS_ICONS['missing_prerequisite']} missing prerequisite",
     ]
 
+
+def test_step_workflow_continue_updates_active_page_without_widget_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reruns = []
+    rendered = []
+
+    def button(label: str, *args, **kwargs) -> bool:
+        return kwargs.get("key") == "continue_step_1"
+
+    fake_streamlit = SimpleNamespace(
+        session_state={
+            "workflow_mode": "public_demo",
+            "workflow_step": 1,
+            "completed_workflow_steps": [1],
+        },
+        caption=lambda *args, **kwargs: None,
+        progress=lambda *args, **kwargs: None,
+        button=button,
+        rerun=lambda: reruns.append(True),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "load_output_directory",
+        lambda output_dir: SimpleNamespace(output_dir=output_dir),
+    )
+    monkeypatch.setattr(
+        app,
+        "render_workflow_step",
+        lambda loaded, step_number, **kwargs: rendered.append(
+            (step_number, kwargs["results_available"])
+        ),
+    )
+
+    app.render_step_workflow(tmp_path)
+
+    assert rendered == [(1, True)]
+    assert fake_streamlit.session_state["workflow_step"] == 2
+    assert fake_streamlit.session_state["active_run_page"] == "Chemical identity"
+    assert "sidebar_step_navigation" not in fake_streamlit.session_state
+    assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY not in fake_streamlit.session_state
+    assert reruns == [True]
 
 def test_step_workflow_blocks_later_demo_step_until_prerequisites_run(
     monkeypatch: pytest.MonkeyPatch,
