@@ -858,12 +858,64 @@ def test_workflow_step_names_exist() -> None:
         "availability. Biomedical and patent embedding outputs remain separate "
         "review evidence in this version."
     )
-    assert "lightweight general embedding baseline" in app.WORKFLOW_STEP_WHY[5]
-    assert "BioBERT/PubMedBERT-style local cached models" in app.WORKFLOW_STEP_WHY[5]
-    assert "skipped cloud model is not an error" in app.WORKFLOW_STEP_WHY[5]
-    assert "SureChEMBL structure evidence separate" in app.WORKFLOW_STEP_WHY[6]
-    assert "PaECTER/patent-BERT-style patent-text embeddings" in app.WORKFLOW_STEP_WHY[6]
-    assert "not a legal conclusion" in app.WORKFLOW_STEP_WHY[6]
+
+
+def test_workflow_step_explanations_use_compact_scientific_paragraphs() -> None:
+    assert len(app.WORKFLOW_STEP_PARAGRAPHS) == len(app.WORKFLOW_STEP_NAMES)
+    assert len(app.WORKFLOW_STEP_REFERENCES) == len(app.WORKFLOW_STEP_NAMES)
+    forbidden_headings = (
+        "What this step calculates",
+        "Why we run it",
+        "What you will get",
+        "Purpose",
+        "Method",
+        "Expected output",
+        "Interpretation",
+    )
+    for paragraph in app.WORKFLOW_STEP_PARAGRAPHS:
+        assert paragraph.startswith("This step")
+        assert "expected output" in paragraph.lower() or "expected outputs" in paragraph.lower()
+        assert "\n" not in paragraph
+        assert not any(heading in paragraph for heading in forbidden_headings)
+
+    step3 = app.WORKFLOW_STEP_PARAGRAPHS[2]
+    assert "[PubChem](https://pubchem.ncbi.nlm.nih.gov/)" in step3
+    assert "[ChEMBL](https://www.ebi.ac.uk/chembl/)" in step3
+    assert "[SureChEMBL](https://www.surechembl.org/)" in step3
+
+    cautious_steps = {
+        3: "does not prove novelty, patentability, or freedom to operate",
+        6: "not evidence of biological activity, mechanism, efficacy, or safety",
+        7: "do not determine novelty, patentability, freedom to operate",
+        8: "not predictions of activity, safety, synthesizability, patentability, or clinical value",
+        9: "should be checked by domain experts",
+    }
+    for step_number, phrase in cautious_steps.items():
+        assert phrase in app.WORKFLOW_STEP_PARAGRAPHS[step_number - 1]
+
+
+def test_workflow_step_references_render_collapsed_expanders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expanders = []
+    markdown = []
+    fake_streamlit = SimpleNamespace(
+        expander=lambda label, *args, **kwargs: (
+            expanders.append({"label": label, **kwargs}) or NullExpander()
+        ),
+        markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    for step_number in range(1, len(app.WORKFLOW_STEP_NAMES) + 1):
+        app.render_step_references(step_number)
+
+    assert [item["label"] for item in expanders] == [
+        "References and documentation"
+    ] * len(app.WORKFLOW_STEP_NAMES)
+    assert all(item.get("expanded") is None for item in expanders)
+    assert any("[PubChem](https://pubchem.ncbi.nlm.nih.gov/)" in value for value in markdown)
+    assert any("[SureChEMBL](https://www.surechembl.org/)" in value for value in markdown)
 
 
 def test_demo_results_require_explicit_action() -> None:
@@ -2194,9 +2246,14 @@ def test_public_demo_opens_step_one_before_running_calculation() -> None:
             for button in app_test.button
         )
         markdown_values = [item.value for item in app_test.markdown]
-        assert "#### What this step calculates" in markdown_values
-        assert "#### Why we run it" in markdown_values
-        assert "#### What you will get" in markdown_values
+        assert "#### What this step calculates" not in markdown_values
+        assert "#### Why we run it" not in markdown_values
+        assert "#### What you will get" not in markdown_values
+        assert app.WORKFLOW_STEP_PARAGRAPHS[0] in markdown_values
+        assert any(
+            "References and documentation" == expander.label
+            for expander in app_test.expander
+        )
         assert not any(
             heading.value == "Output files" for heading in app_test.header
         )

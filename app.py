@@ -353,38 +353,138 @@ WORKFLOW_STEP_NAMES = (
     "Step 8: Final prioritization",
     "Step 9: Reports",
 )
-WORKFLOW_STEP_WHY = (
-    "Invalid or inconsistent structures can make every downstream result "
-    "misleading, so structure quality is checked first.",
-    "Exact names and identifiers make later public evidence easier to interpret "
-    "without guessing what a structure represents.",
-    "Public records show whether exact or related compounds are already present "
-    "in external chemistry resources.",
-    "These interpretable properties reveal size, polarity, lipophilicity, "
-    "drug-likeness, and rule-based property concerns.",
-    "Learned embeddings provide a complementary view of structural relationships "
-    "that is not limited to a single hand-designed fingerprint.",
-    "Biomedical evidence uses a lightweight general embedding baseline by default; "
-    "BioBERT/PubMedBERT-style local cached models are optional, and a skipped cloud "
-    "model is not an error.",
-    "Patent/IP-context evidence keeps SureChEMBL structure evidence separate from "
-    "optional PaECTER/patent-BERT-style patent-text embeddings and is not a legal "
-    "conclusion.",
-    "The prior evidence is combined into one transparent research-prioritization "
-    "view while preserving each stage's availability status.",
-    "A report collects the evidence for one molecule into a readable artifact "
-    "that can be reviewed or shared locally.",
+WORKFLOW_STEP_PARAGRAPHS = (
+    "This step converts input SMILES into a consistent molecule table using "
+    "[RDKit](https://www.rdkit.org/) structure parsing and standardization "
+    "utilities. The expected output is `standardized.csv`, with molecule "
+    "identifiers, canonical SMILES, InChIKeys, validity status, and parse-error "
+    "messages where structures cannot be interpreted. These records define the "
+    "molecular input used by downstream identity, descriptor, similarity, "
+    "public-evidence, and reporting steps; invalid or ambiguous structures should "
+    "be reviewed before interpretation.",
+    "This step derives chemical identity annotations from standardized structures "
+    "using [RDKit](https://www.rdkit.org/) identifiers and optional online lookup "
+    "of public names when enabled. The expected output is `chemical_identity.csv`, "
+    "which includes SMILES-derived identifiers such as InChI/InChIKey, lookup "
+    "status, source, and available public names. Identity annotations support "
+    "exact-match lookup, molecule tracking, and reproducible comparison across "
+    "workflow steps, but they can depend on standardization, stereochemistry, "
+    "salts, and tautomer handling.",
+    "This step checks whether each standardized molecule has exact or related "
+    "records in public chemistry and patent-associated resources by querying "
+    "[PubChem](https://pubchem.ncbi.nlm.nih.gov/), "
+    "[ChEMBL](https://www.ebi.ac.uk/chembl/), and "
+    "[SureChEMBL](https://www.surechembl.org/) when those lookup modes or local "
+    "evidence files are available. The expected outputs are `public_lookup.csv` "
+    "and `surechembl_evidence.csv`, with match status, database identifiers, "
+    "query status, similarity or structure-evidence categories, and evidence "
+    "counts when available. These results help identify molecules or related "
+    "chemistry already represented in public resources, but absence of a match "
+    "does not prove novelty, patentability, or freedom to operate.",
+    "This step calculates molecular descriptors, rule-based drug-likeness "
+    "indicators, and reference-ligand similarity using "
+    "[RDKit](https://www.rdkit.org/) descriptors and molecular fingerprints. The "
+    "expected outputs are `descriptors.csv`, `similarity.csv`, and "
+    "`similarity_top_hits.csv`, containing physicochemical properties, "
+    "drug-likeness flags, closest reference compounds, Tanimoto similarity, and "
+    "top-hit summaries. These results support early triage of molecular quality "
+    "and reference proximity, but they do not predict potency, selectivity, "
+    "toxicity, or experimental activity.",
+    "This step places generated and reference molecules into a shared "
+    "chemical-space view using optional "
+    "[ChemBERTa](https://arxiv.org/abs/2010.09885) molecular embeddings generated "
+    "with [Hugging Face Transformers](https://huggingface.co/docs/transformers/index), "
+    "followed by [UMAP](https://umap-learn.readthedocs.io/en/latest/) when "
+    "appropriate or deterministic PCA fallback coordinates. The expected outputs "
+    "are `chemberta_embeddings.csv` and `visualization_coordinates.csv`, with "
+    "embedding availability, model metadata, source-type labels, two-dimensional "
+    "coordinates, cluster annotations, and nearest-reference relationships. The "
+    "map helps inspect whether generated molecules overlap with or separate from "
+    "reference chemistry, but two-dimensional projections are qualitative and "
+    "should be interpreted with molecule-level similarity and descriptor outputs.",
+    "This step links molecule context records to biomedical text evidence using "
+    "local semantic-similarity tools based on "
+    "[Sentence Transformers](https://www.sbert.net/) when available, with "
+    "BioBERT/PubMedBERT-style local cached models supported through the same "
+    "sentence-transformer interface. The expected outputs include "
+    "`compound_context.csv`, `text_nlp.csv`, and `biomedical_evidence.csv`, with "
+    "model status, evidence status, similarity score, evidence count, top evidence "
+    "text, and relevance category. These outputs provide literature-context "
+    "triage signals and model-availability transparency, but they are not evidence "
+    "of biological activity, mechanism, efficacy, or safety.",
+    "This step summarizes patent-context evidence using public structure evidence "
+    "from [SureChEMBL](https://www.surechembl.org/) and optional patent-text "
+    "embedding tools configured through "
+    "[Sentence Transformers](https://www.sbert.net/), including PaECTER- or "
+    "patent-BERT-style local cached encoders when supplied. The expected output is "
+    "`patent_evidence_embeddings.csv`, with model status, SureChEMBL structure "
+    "status, patent similarity score, top evidence text, evidence counts, and "
+    "evidence notes. These results support early IP-context triage, but they do "
+    "not determine novelty, patentability, freedom to operate, ownership, "
+    "infringement risk, or legal strategy.",
+    "This step combines standardized identity, public-evidence signals, molecular "
+    "descriptors, reference similarity, ChemBERTa availability, and available "
+    "contextual evidence into an interpretable prioritization table using the "
+    "app's scoring workflow. The expected output is `prioritization_results.csv`, "
+    "with ranked candidates, score components, known-public-match flags, "
+    "novelty/IP-context categories, evidence-stage statuses, and explanatory "
+    "notes. Scores are intended for computational triage and hypothesis generation "
+    "only; they are not predictions of activity, safety, synthesizability, "
+    "patentability, or clinical value.",
+    "This step converts available molecule-level outputs into downloadable "
+    "Markdown summary reports and supporting report images for selected top "
+    "candidates. The expected outputs are `compound_intelligence_report_*.md` "
+    "files under `reports/` and generated structure images under `report_images/`, "
+    "preserving the evidence used during prioritization. Reports are intended to "
+    "support review, documentation, and follow-up analysis; they should be checked "
+    "by domain experts before experimental, legal, or investment decisions.",
 )
-WORKFLOW_STEP_GET = (
-    "A standardized table with valid/invalid status, canonical SMILES, and InChIKeys.",
-    "Exact public names and identifiers when supported, plus explicit no-match status.",
-    "PubChem/ChEMBL lookup evidence and SureChEMBL structure-evidence status.",
-    "RDKit descriptors, drug-likeness categories, flags, and property visualizations.",
-    "ChemBERTa embeddings and two-dimensional chemical-space coordinates.",
-    "Grounded compound context and biomedical evidence relevance results.",
-    "A patent/IP-context evidence file that is safe when the patent model is unavailable.",
-    "A ranked molecule table with component scores and evidence-stage statuses.",
-    "Molecule-level Markdown reports with structures and evidence summaries.",
+WORKFLOW_STEP_REFERENCES = (
+    (
+        ("RDKit", "https://www.rdkit.org/"),
+        ("RDKit documentation", "https://www.rdkit.org/docs/"),
+    ),
+    (
+        ("RDKit", "https://www.rdkit.org/"),
+        ("InChI Trust / IUPAC InChI", "https://iupac.org/who-we-are/divisions/division-details/inchi/"),
+    ),
+    (
+        ("PubChem", "https://pubchem.ncbi.nlm.nih.gov/"),
+        ("PubChem PUG-REST documentation", "https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest"),
+        ("ChEMBL", "https://www.ebi.ac.uk/chembl/"),
+        ("SureChEMBL", "https://www.surechembl.org/"),
+    ),
+    (
+        ("RDKit", "https://www.rdkit.org/"),
+        ("RDKit descriptors documentation", "https://www.rdkit.org/docs/GettingStartedInPython.html#list-of-available-descriptors"),
+        ("RDKit fingerprints documentation", "https://www.rdkit.org/docs/GettingStartedInPython.html#fingerprinting-and-molecular-similarity"),
+    ),
+    (
+        ("ChemBERTa", "https://arxiv.org/abs/2010.09885"),
+        ("Hugging Face Transformers", "https://huggingface.co/docs/transformers/index"),
+        ("UMAP", "https://umap-learn.readthedocs.io/en/latest/"),
+    ),
+    (
+        ("Sentence Transformers", "https://www.sbert.net/"),
+        ("Hugging Face Transformers", "https://huggingface.co/docs/transformers/index"),
+        ("Optional embedding models", "README.md#optional-embedding-models"),
+    ),
+    (
+        ("SureChEMBL", "https://www.surechembl.org/"),
+        ("Sentence Transformers", "https://www.sbert.net/"),
+        ("Optional embedding models", "README.md#optional-embedding-models"),
+    ),
+    (
+        ("Project scoring overview", "README.md#about-the-workflow"),
+        ("RDKit", "https://www.rdkit.org/"),
+        ("PubChem", "https://pubchem.ncbi.nlm.nih.gov/"),
+        ("ChEMBL", "https://www.ebi.ac.uk/chembl/"),
+        ("SureChEMBL", "https://www.surechembl.org/"),
+    ),
+    (
+        ("Guided example outputs", "README.md#run-the-guided-example-pipeline"),
+        ("Project scope", "README.md#scope"),
+    ),
 )
 WORKFLOW_MODE_OPTIONS = (
     "Start",
@@ -4536,6 +4636,13 @@ def render_output_artifacts(outputs: Iterable[Path]) -> None:
             render_reports_output_artifact(path)
 
 
+def render_step_references(step_number: int) -> None:
+    """Render compact documentation links for one workflow step."""
+    with st.expander("References and documentation"):
+        for label, url in WORKFLOW_STEP_REFERENCES[step_number - 1]:
+            st.markdown(f"- [{label}]({url})")
+
+
 def render_step_header(
     step_number: int,
     description: str,
@@ -4544,12 +4651,8 @@ def render_step_header(
 ) -> None:
     """Render shared explanation and artifact details for one workflow step."""
     st.header(WORKFLOW_STEP_NAMES[step_number - 1])
-    st.markdown("#### What this step calculates")
-    st.write(description)
-    st.markdown("#### Why we run it")
-    st.write(WORKFLOW_STEP_WHY[step_number - 1])
-    st.markdown("#### What you will get")
-    st.write(WORKFLOW_STEP_GET[step_number - 1])
+    st.markdown(WORKFLOW_STEP_PARAGRAPHS[step_number - 1])
+    render_step_references(step_number)
     left, right = st.columns(2)
     with left:
         st.markdown("**Input used**")
