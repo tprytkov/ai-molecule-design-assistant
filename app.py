@@ -72,6 +72,7 @@ from src.text_nlp import text_nlp_csv
 OUTPUT_FILES = {
     "prioritization": "prioritization_results.csv",
     "descriptors": "descriptors.csv",
+    "similarity": "similarity.csv",
     "public_lookup": "public_lookup.csv",
     "chemical_identity": "chemical_identity.csv",
     "text_nlp": "text_nlp.csv",
@@ -540,9 +541,9 @@ STEP_OUTPUT_KEYS = {
     1: ("standardized",),
     2: ("chemical_identity",),
     3: ("public_lookup", "surechembl"),
-    4: ("descriptors",),
-    5: ("visualization",),
-    6: ("biomedical_evidence",),
+    4: ("descriptors", "similarity", "similarity_top_hits"),
+    5: ("chemberta_embeddings", "visualization"),
+    6: ("compound_context", "text_nlp", "biomedical_evidence"),
     7: ("patent_evidence_embeddings",),
     8: ("prioritization",),
     9: ("reports",),
@@ -948,6 +949,22 @@ def run_uploaded_analysis(
         clean_report_dir=True,
     )
 
+
+
+def get_step_artifacts(step_number: int, output_dir: str | Path) -> list[Path]:
+    """Return output artifacts that belong on one workflow step page."""
+    root = Path(output_dir)
+    if step_number == 9:
+        return [root / "reports"]
+    artifacts = []
+    for key in STEP_OUTPUT_KEYS.get(step_number, ()):
+        if key == "reports":
+            artifacts.append(root / "reports")
+            continue
+        filename = OUTPUT_FILES.get(key)
+        if filename:
+            artifacts.append(root / filename)
+    return artifacts
 
 def load_output_directory(output_dir: str | Path) -> LoadedOutputs:
     """Load known pipeline outputs from an output directory."""
@@ -4917,7 +4934,7 @@ def render_workflow_step(
             "Checks whether each SMILES can be parsed, creates a canonical "
             "representation, and calculates an InChIKey for valid structures.",
             [DEMO_INPUT if "public_demo_" in str(output_dir) else "uploaded SMILES CSV"],
-            [loaded.paths["standardized"]],
+            get_step_artifacts(1, output_dir),
         )
         if not results_available:
             return
@@ -4930,7 +4947,7 @@ def render_workflow_step(
             "Uses standardized structures to find exact public chemical names "
             "when supported and clearly labels unmatched structures.",
             [loaded.paths["standardized"]],
-            [loaded.paths["chemical_identity"]],
+            get_step_artifacts(2, output_dir),
         )
         if not results_available:
             return
@@ -4948,7 +4965,7 @@ def render_workflow_step(
             "Checks public compound databases for exact or structurally related "
             "records and records match, no-match, and query status separately.",
             [loaded.paths["standardized"], loaded.paths["chemical_identity"]],
-            [loaded.paths["public_lookup"], loaded.paths["surechembl"]],
+            get_step_artifacts(3, output_dir),
         )
         if not results_available:
             return
@@ -4979,7 +4996,7 @@ def render_workflow_step(
             "Calculates interpretable RDKit properties and classifies each "
             "molecule as favorable, borderline, unfavorable, or invalid.",
             [loaded.paths["standardized"]],
-            [loaded.paths["descriptors"]],
+            get_step_artifacts(4, output_dir),
         )
         if not results_available:
             return
@@ -4992,10 +5009,7 @@ def render_workflow_step(
             "Places molecules in a learned chemical-space representation so "
             "clusters, close neighbors, and outliers can be explored visually.",
             [loaded.paths["standardized"]],
-            [
-                loaded.paths["chemberta_embeddings"],
-                loaded.paths["visualization"],
-            ],
+            get_step_artifacts(5, output_dir),
         )
         if not results_available:
             return
@@ -5021,11 +5035,7 @@ def render_workflow_step(
                 loaded.paths["chemical_identity"],
                 loaded.paths["public_lookup"],
             ],
-            [
-                loaded.paths["biomedical_evidence"],
-                loaded.paths["text_nlp"],
-                loaded.paths["compound_context"],
-            ],
+            get_step_artifacts(6, output_dir),
         )
         if not results_available:
             return
@@ -5052,7 +5062,7 @@ def render_workflow_step(
                 loaded.paths["chemical_identity"],
                 loaded.paths["compound_context"],
             ],
-            [loaded.paths["patent_evidence_embeddings"]],
+            get_step_artifacts(7, output_dir),
         )
         if not results_available:
             return
@@ -5079,7 +5089,7 @@ def render_workflow_step(
                 loaded.paths["text_nlp"],
                 loaded.paths["compound_context"],
             ],
-            [loaded.paths["prioritization"]],
+            get_step_artifacts(8, output_dir),
         )
         if not results_available:
             return
@@ -5094,7 +5104,7 @@ def render_workflow_step(
             "Creates molecule-level Markdown reports that bring the available "
             "identity, properties, public evidence, context, and ranking into one view.",
             [loaded.paths["prioritization"], loaded.paths["compound_context"]],
-            [loaded.reports_dir],
+            get_step_artifacts(9, output_dir),
         )
         if not results_available:
             return

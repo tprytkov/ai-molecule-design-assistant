@@ -3042,6 +3042,183 @@ def test_output_loading_handles_missing_optional_files(tmp_path: Path) -> None:
     assert loaded.images_dir == output_dir / "report_images"
 
 
+
+def write_minimal_step_outputs(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_by_name = {
+        "standardized.csv": "molecule_id,smiles,canonical_smiles,valid_smiles\nmol_a,CCO,CCO,True\n",
+        "chemical_identity.csv": "molecule_id,identity_status,exact_public_name\nmol_a,no_public_identity,\n",
+        "public_lookup.csv": "molecule_id,pubchem_status,chembl_status\nmol_a,no_match,no_match\n",
+        "surechembl_evidence.csv": "molecule_id,lookup_status\nmol_a,no_match\n",
+        "descriptors.csv": "molecule_id,molecular_weight,logp,tpsa,qed,druglikeness_category\nmol_a,46.0,0.1,20.2,0.5,favorable\n",
+        "similarity.csv": "molecule_id,best_reference_name,tanimoto_similarity\nmol_a,ref_a,0.42\n",
+        "similarity_top_hits.csv": "molecule_id,reference_id,reference_name,tanimoto_similarity\nmol_a,ref_a,Reference A,0.42\n",
+        "chemberta_embeddings.csv": "molecule_id,embedding_status\nmol_a,available\n",
+        "visualization_coordinates.csv": "molecule_id,x,y,cluster_id\nmol_a,0.1,0.2,0\n",
+        "compound_context.csv": "molecule_id,context_text\nmol_a,Demo context\n",
+        "text_nlp.csv": "molecule_id,nlp_status,nlp_relevance_category\nmol_a,available,relevant\n",
+        "biomedical_evidence.csv": "molecule_id,biomedical_model_name,biomedical_model_status,biomedical_evidence_status\nmol_a,fake,preferred_model_used,available\n",
+        "patent_evidence_embeddings.csv": "molecule_id,patent_model_name,patent_model_status,patent_evidence_status\nmol_a,fake,preferred_model_used,available\n",
+        "prioritization_results.csv": "molecule_id,prioritization_score,known_public_match\nmol_a,0.750,False\n",
+    }
+    for filename, content in csv_by_name.items():
+        (output_dir / filename).write_text(content, encoding="utf-8")
+    reports_dir = output_dir / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    (reports_dir / "compound_intelligence_report_mol_a.md").write_text(
+        "# mol_a report\n", encoding="utf-8"
+    )
+
+
+def rendered_step_output_names(
+    monkeypatch: pytest.MonkeyPatch,
+    output_dir: Path,
+    step_number: int,
+) -> list[str]:
+    captured = []
+
+    def capture_header(step, description, inputs, outputs):
+        captured.append([Path(path).name for path in outputs])
+
+    monkeypatch.setattr(app, "render_step_header", capture_header)
+    app.render_workflow_step(
+        app.load_output_directory(output_dir),
+        step_number,
+        results_available=False,
+    )
+    return captured[0]
+
+
+def test_get_step_artifacts_maps_outputs_to_step_pages(tmp_path: Path) -> None:
+    output_dir = tmp_path / "outputs"
+
+    assert [path.name for path in app.get_step_artifacts(1, output_dir)] == [
+        "standardized.csv"
+    ]
+    assert [path.name for path in app.get_step_artifacts(2, output_dir)] == [
+        "chemical_identity.csv"
+    ]
+    assert [path.name for path in app.get_step_artifacts(6, output_dir)] == [
+        "compound_context.csv",
+        "text_nlp.csv",
+        "biomedical_evidence.csv",
+    ]
+    assert [path.name for path in app.get_step_artifacts(7, output_dir)] == [
+        "patent_evidence_embeddings.csv"
+    ]
+
+
+def test_step_one_page_shows_standardized_output_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+
+    assert rendered_step_output_names(monkeypatch, output_dir, 1) == [
+        "standardized.csv"
+    ]
+
+
+def test_step_two_page_shows_identity_not_standardized_table(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+
+    names = rendered_step_output_names(monkeypatch, output_dir, 2)
+
+    assert names == ["chemical_identity.csv"]
+    assert "standardized.csv" not in names
+
+
+def test_step_six_page_shows_biomedical_outputs_not_earlier_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+
+    names = rendered_step_output_names(monkeypatch, output_dir, 6)
+
+    assert names == ["compound_context.csv", "text_nlp.csv", "biomedical_evidence.csv"]
+    assert "standardized.csv" not in names
+    assert "descriptors.csv" not in names
+    assert "visualization_coordinates.csv" not in names
+
+
+def test_step_seven_page_shows_patent_outputs_not_earlier_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+
+    names = rendered_step_output_names(monkeypatch, output_dir, 7)
+
+    assert names == ["patent_evidence_embeddings.csv"]
+    assert "biomedical_evidence.csv" not in names
+    assert "compound_context.csv" not in names
+    assert "text_nlp.csv" not in names
+
+
+def test_downloads_page_still_lists_all_available_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+    captured = []
+    fake_streamlit = SimpleNamespace(
+        subheader=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(app, "render_output_artifacts", lambda artifacts: captured.extend(artifacts))
+
+    app.render_active_run_downloads(output_dir)
+
+    names = {Path(path).name for path in captured}
+    assert "standardized.csv" in names
+    assert "chemical_identity.csv" in names
+    assert "similarity.csv" in names
+    assert "biomedical_evidence.csv" in names
+    assert "patent_evidence_embeddings.csv" in names
+    assert "reports" in names
+
+
+def test_overview_page_shows_compact_status_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+    metrics = []
+    writes = []
+    fake_streamlit = SimpleNamespace(
+        session_state={"workflow_step": 6, "completed_workflow_steps": [1, 2, 3]},
+        subheader=lambda value, *args, **kwargs: None,
+        caption=lambda value, *args, **kwargs: None,
+        columns=lambda count: [MetricColumn(metrics) for _ in range(count)],
+        write=lambda value, *args, **kwargs: writes.append(str(value)),
+        info=lambda value, *args, **kwargs: None,
+        dataframe=lambda *args, **kwargs: pytest.fail("Overview should not render output tables."),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "render_output_artifacts",
+        lambda *args, **kwargs: pytest.fail("Overview should not render artifact cards."),
+    )
+
+    app.render_active_run_overview(output_dir)
+
+    assert ("Completed steps", "3 of 9") in metrics
+    assert ("Current guided step", 6) in metrics
+    assert any(label == "Available output files" for label, value in metrics)
+    assert writes == ["Completed workflow steps: 1, 2, 3"]
+
 def test_step_six_biomedical_output_can_be_loaded_by_app(
     tmp_path: Path,
 ) -> None:
