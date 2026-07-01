@@ -123,15 +123,21 @@ def test_step_six_and_step_seven_required_columns_are_preserved():
 
     assert BIOMEDICAL_OUTPUT_COLUMNS[: len(biomedical_required)] == biomedical_required
     assert PATENT_OUTPUT_COLUMNS[: len(patent_required)] == patent_required
-    assert BIOMEDICAL_OUTPUT_COLUMNS[-3:] == (
+    assert BIOMEDICAL_OUTPUT_COLUMNS[-6:] == (
         "embedding_backend",
         "pooling_method",
         "model_source",
+        "preferred_model_name",
+        "fallback_model_name",
+        "actual_model_used",
     )
-    assert PATENT_OUTPUT_COLUMNS[-3:] == (
+    assert PATENT_OUTPUT_COLUMNS[-6:] == (
         "embedding_backend",
         "pooling_method",
         "model_source",
+        "preferred_model_name",
+        "fallback_model_name",
+        "actual_model_used",
     )
 
 
@@ -163,19 +169,24 @@ def test_downloads_disabled_biomedical_csv_does_not_load_model(monkeypatch, tmp_
         evidence,
         output,
         model_name="dmis-lab/biobert-base-cased-v1.1",
-        unavailable_status="downloads_disabled",
+        unavailable_status="embeddings_disabled",
         unavailable_metadata={
             "embedding_backend": "transformers",
             "pooling_method": "mean_pooling",
             "model_source": "dmis-lab/biobert-base-cased-v1.1",
+            "preferred_model_name": "dmis-lab/biobert-base-cased-v1.1",
+            "fallback_model_name": odm.FALLBACK_MODEL_ID,
+            "actual_model_used": "",
         },
     )
 
     frame = pd.read_csv(output)
-    assert frame.loc[0, "biomedical_model_status"] == "downloads_disabled"
+    assert frame.loc[0, "biomedical_model_status"] == "embeddings_disabled"
     assert frame.loc[0, "embedding_backend"] == "transformers"
     assert frame.loc[0, "pooling_method"] == "mean_pooling"
     assert frame.loc[0, "model_source"] == "dmis-lab/biobert-base-cased-v1.1"
+    assert frame.loc[0, "preferred_model_name"] == "dmis-lab/biobert-base-cased-v1.1"
+    assert frame.loc[0, "fallback_model_name"] == odm.FALLBACK_MODEL_ID
 
 
 def test_downloads_disabled_patent_csv_does_not_load_model(monkeypatch, tmp_path):
@@ -196,16 +207,21 @@ def test_downloads_disabled_patent_csv_does_not_load_model(monkeypatch, tmp_path
         surechembl,
         output,
         model_name="AI-Growth-Lab/PatentSBERTa",
-        unavailable_status="downloads_disabled",
+        unavailable_status="embeddings_disabled",
         unavailable_metadata={
             "embedding_backend": "sentence-transformers",
             "pooling_method": "model_default",
             "model_source": "AI-Growth-Lab/PatentSBERTa",
+            "preferred_model_name": "AI-Growth-Lab/PatentSBERTa",
+            "fallback_model_name": odm.FALLBACK_MODEL_ID,
+            "actual_model_used": "",
         },
     )
 
     frame = pd.read_csv(output)
-    assert frame.loc[0, "patent_model_status"] == "downloads_disabled"
+    assert frame.loc[0, "patent_model_status"] == "embeddings_disabled"
     assert frame.loc[0, "embedding_backend"] == "sentence-transformers"
     assert frame.loc[0, "pooling_method"] == "model_default"
     assert frame.loc[0, "model_source"] == "AI-Growth-Lab/PatentSBERTa"
+    assert frame.loc[0, "preferred_model_name"] == "AI-Growth-Lab/PatentSBERTa"
+    assert frame.loc[0, "fallback_model_name"] == odm.FALLBACK_MODEL_ID

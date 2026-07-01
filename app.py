@@ -34,13 +34,12 @@ from src.descriptors import descriptor_csv
 from src.patent_evidence_embeddings import patent_evidence_embeddings_csv
 from src.optional_domain_models import (
     ALLOW_LOCAL_MODEL_DOWNLOADS_ENV,
-    BENCHMARK_COLUMNS,
     BIOMEDICAL_MODEL_OPTIONS,
     CLOUD_SAFE_FALLBACK_LABEL,
     CUSTOM_MODEL_LABEL,
+    FALLBACK_MODEL_ID,
     PATENT_MODEL_OPTIONS,
     DomainModelUnavailableError,
-    benchmark_optional_models,
     encoder_metadata,
     load_optional_model,
     resolve_model_selection,
@@ -3736,6 +3735,71 @@ def pubchem_preflight(
         )
 
 
+def environment_model_check_row(check_type: str, selection) -> dict[str, str]:
+    """Return one compact model availability check row."""
+    name = selection.model_id or selection.label
+    try:
+        load_optional_model(selection)
+    except DomainModelUnavailableError as exc:
+        return {
+            "Check type": check_type,
+            "Name or endpoint": name,
+            "Status": "Not available",
+            "Notes": str(exc),
+        }
+    return {
+        "Check type": check_type,
+        "Name or endpoint": name,
+        "Status": "Available",
+        "Notes": "Model loaded from local cache/environment.",
+    }
+
+
+def run_environment_checks() -> list[dict[str, str]]:
+    """Run online lookup and embedding model availability checks."""
+    online = pubchem_preflight()
+    rows = [
+        {
+            "Check type": "Online lookup",
+            "Name or endpoint": online.url,
+            "Status": "Available" if online.available else "Not available",
+            "Notes": (
+                "PubChem aspirin CID endpoint returned 2244."
+                if online.available
+                else pubchem_preflight_failure_message(online)
+            ),
+        }
+    ]
+    biomedical = preferred_model_selection("biomedical")
+    patent = preferred_model_selection("patent")
+    fallback_biomedical = resolve_model_selection(
+        model_type="biomedical",
+        option=CLOUD_SAFE_FALLBACK_LABEL,
+        fallback_model_id=FALLBACK_MODEL_ID,
+    )
+    rows.append(environment_model_check_row("Biomedical model", biomedical))
+    rows.append(environment_model_check_row("Patent model", patent))
+    rows.append(environment_model_check_row("Lightweight fallback", fallback_biomedical))
+    st.session_state["environment_check_result"] = rows
+    return rows
+
+
+def render_environment_check_rows(rows: list[dict[str, str]]) -> None:
+    """Render compact environment check table while preserving preflight messages."""
+    if not rows:
+        return
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    for row in rows:
+        if row.get("Check type") == "Online lookup":
+            if row.get("Status") == "Available":
+                st.success(f"Online database lookup is available. {row.get('Notes')}")
+            else:
+                st.error(str(row.get("Notes", "")))
+                st.info(ONLINE_LOOKUP_RESTART_MESSAGE)
+            continue
+        if row.get("Status") != "Available":
+            st.warning(f"{row.get('Check type')}: {row.get('Notes')}")
+
 def pubchem_preflight_failure_message(result: OnlineLookupPreflight) -> str:
     """Return browser-visible process and exception diagnostics."""
     return (
@@ -4017,51 +4081,134 @@ def render_step3_progress(progress: Step3Progress, bar: object, status: object) 
 
 
 def optional_domain_model_state(model_type: str) -> dict[str, str]:
-    """Return explicit optional local model settings from session state."""
-    if not bool(st.session_state.get("local_domain_model_testing_enabled", False)):
-        return {"enabled": "false"}
+    """Return preferred local model settings from session state."""
     if model_type == "biomedical":
         return {
-            "enabled": "true",
             "option": str(st.session_state.get("biomedical_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
             "custom_model_id": str(st.session_state.get("biomedical_custom_model_id", "")),
         }
     return {
-        "enabled": "true",
         "option": str(st.session_state.get("patent_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
         "custom_model_id": str(st.session_state.get("patent_custom_model_id", "")),
+    }
+
+
+def preferred_model_selection(model_type: str):
+    """Resolve preferred model selection for Step 6 or Step 7."""
+    state = optional_domain_model_state(model_type)
+    return resolve_model_selection(
+        model_type=model_type,
+        option=state.get("option", CLOUD_SAFE_FALLBACK_LABEL),
+        custom_model_id=state.get("custom_model_id", ""),
+        fallback_model_id=FALLBACK_MODEL_ID,
+    )
+
+
+def model_metadata_for_status(
+    *,
+    preferred_model: str,
+    fallback_model: str = FALLBACK_MODEL_ID,
+    actual_model: str = "",
+    embedding_backend: str = "",
+    pooling_method: str = "",
+) -> dict[str, str]:
+    """Return common model provenance columns for Step 6 and Step 7 outputs."""
+    return {
+        "embedding_backend": embedding_backend,
+        "pooling_method": pooling_method,
+        "model_source": actual_model,
+        "preferred_model_name": preferred_model,
+        "fallback_model_name": fallback_model,
+        "actual_model_used": actual_model,
     }
 
 
 def load_selected_domain_model(
     *,
     model_type: str,
-    fallback_model_id: str,
-) -> tuple[object | None, str, str, dict[str, str]]:
-    """Load an explicitly selected local model or return safe fallback metadata."""
-    state = optional_domain_model_state(model_type)
-    if state.get("enabled") != "true":
-        return None, fallback_model_id, "model_unavailable", {}
-    selection = resolve_model_selection(
+    fallback_model_id: str = FALLBACK_MODEL_ID,
+) -> tuple[object | None, str, str, dict[str, str], str]:
+    """Load preferred model, then fallback model, returning safe output metadata."""
+    preferred = preferred_model_selection(model_type)
+    preferred_name = preferred.model_id or preferred.label or fallback_model_id
+    fallback_selection = resolve_model_selection(
         model_type=model_type,
-        option=state.get("option", CLOUD_SAFE_FALLBACK_LABEL),
-        custom_model_id=state.get("custom_model_id", ""),
+        option=CLOUD_SAFE_FALLBACK_LABEL,
         fallback_model_id=fallback_model_id,
     )
-    if selection.label == CLOUD_SAFE_FALLBACK_LABEL:
-        return None, fallback_model_id, "model_unavailable", {}
-    metadata = {
-        "embedding_backend": selection.embedding_backend,
-        "pooling_method": selection.pooling_method,
-        "model_source": selection.model_id,
-    }
+    fallback_name = fallback_selection.model_id
+    if preferred.label == CLOUD_SAFE_FALLBACK_LABEL:
+        try:
+            model = load_optional_model(fallback_selection)
+        except DomainModelUnavailableError as exc:
+            metadata = model_metadata_for_status(
+                preferred_model=fallback_name,
+                fallback_model=fallback_name,
+                actual_model="",
+                embedding_backend=fallback_selection.embedding_backend,
+                pooling_method=fallback_selection.pooling_method,
+            )
+            return None, fallback_name, "model_unavailable", metadata, (
+                "Lightweight general-purpose fallback model was unavailable; "
+                "embedding evidence was skipped."
+            )
+        metadata = encoder_metadata(model, model_source=fallback_name)
+        metadata.update(
+            model_metadata_for_status(
+                preferred_model=fallback_name,
+                fallback_model=fallback_name,
+                actual_model=fallback_name,
+                embedding_backend=metadata.get("embedding_backend", ""),
+                pooling_method=metadata.get("pooling_method", ""),
+            )
+        )
+        return model, fallback_name, "fallback_model_used", metadata, (
+            "Lightweight general-purpose fallback model was used; this is not an error."
+        )
+
     try:
-        model = load_optional_model(selection)
-    except DomainModelUnavailableError as exc:
-        return None, selection.model_id or selection.label, exc.status, metadata
-    return model, selection.model_id, "model_unavailable", encoder_metadata(
-        model,
-        model_source=selection.model_id,
+        model = load_optional_model(preferred)
+    except DomainModelUnavailableError:
+        try:
+            fallback_model = load_optional_model(fallback_selection)
+        except DomainModelUnavailableError:
+            metadata = model_metadata_for_status(
+                preferred_model=preferred_name,
+                fallback_model=fallback_name,
+                actual_model="",
+                embedding_backend=preferred.embedding_backend,
+                pooling_method=preferred.pooling_method,
+            )
+            return None, preferred_name, "model_unavailable", metadata, (
+                "Preferred model and lightweight general-purpose fallback were unavailable; "
+                "embedding evidence was skipped."
+            )
+        metadata = encoder_metadata(fallback_model, model_source=fallback_name)
+        metadata.update(
+            model_metadata_for_status(
+                preferred_model=preferred_name,
+                fallback_model=fallback_name,
+                actual_model=fallback_name,
+                embedding_backend=metadata.get("embedding_backend", ""),
+                pooling_method=metadata.get("pooling_method", ""),
+            )
+        )
+        return fallback_model, fallback_name, "fallback_model_used", metadata, (
+            "Preferred model was unavailable; lightweight general-purpose fallback was used."
+        )
+
+    metadata = encoder_metadata(model, model_source=preferred.model_id)
+    metadata.update(
+        model_metadata_for_status(
+            preferred_model=preferred_name,
+            fallback_model=fallback_name,
+            actual_model=preferred.model_id,
+            embedding_backend=metadata.get("embedding_backend", ""),
+            pooling_method=metadata.get("pooling_method", ""),
+        )
+    )
+    return model, preferred.model_id, "preferred_model_used", metadata, (
+        "Preferred embedding model was used for local evidence ranking."
     )
 
 def run_public_demo_step(
@@ -4120,9 +4267,9 @@ def run_public_demo_step(
             descriptor_path=paths.descriptors,
             identity_path=identity_path,
         )
-        biomedical_model, biomedical_model_name, biomedical_unavailable_status, biomedical_metadata = load_selected_domain_model(
+        biomedical_model, biomedical_model_name, biomedical_model_status, biomedical_metadata, biomedical_note = load_selected_domain_model(
             model_type="biomedical",
-            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
+            fallback_model_id=FALLBACK_MODEL_ID,
         )
         biomedical_evidence_csv(
             context_path,
@@ -4132,13 +4279,17 @@ def run_public_demo_step(
             model_name=biomedical_model_name,
             identity_path=identity_path,
             descriptor_path=paths.descriptors,
-            unavailable_status=biomedical_unavailable_status,
-            unavailable_metadata=biomedical_metadata or None,
+            unavailable_status=biomedical_model_status,
+            unavailable_metadata=biomedical_metadata if biomedical_model is None else None,
+            unavailable_note=biomedical_note,
+            model_status=biomedical_model_status,
+            available_note=biomedical_note,
+            model_metadata=biomedical_metadata,
         )
     elif step_number == 7:
-        patent_model, patent_model_name, patent_unavailable_status, patent_metadata = load_selected_domain_model(
+        patent_model, patent_model_name, patent_model_status, patent_metadata, patent_note = load_selected_domain_model(
             model_type="patent",
-            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
+            fallback_model_id=FALLBACK_MODEL_ID,
         )
         patent_evidence_embeddings_csv(
             paths.surechembl_lookup,
@@ -4148,8 +4299,12 @@ def run_public_demo_step(
             context_path=context_path,
             model=patent_model,
             model_name=patent_model_name,
-            unavailable_status=patent_unavailable_status,
-            unavailable_metadata=patent_metadata or None,
+            unavailable_status=patent_model_status,
+            unavailable_metadata=patent_metadata if patent_model is None else None,
+            unavailable_note=patent_note,
+            model_status=patent_model_status,
+            available_note=patent_note,
+            model_metadata=patent_metadata,
         )
     elif step_number == 8:
         scoring_csv(
@@ -4198,8 +4353,12 @@ def render_public_demo_choice() -> Path | None:
     )
     for path in public_demo_input_paths():
         render_example_file_preview(path)
-    if st.button("Test online lookup connection"):
-        render_pubchem_preflight_result(pubchem_preflight())
+    environment_rows = []
+    if st.button("Run environment checks"):
+        environment_rows = run_environment_checks()
+    else:
+        environment_rows = st.session_state.get("environment_check_result", [])
+    render_environment_check_rows(environment_rows)
     if not st.button("Run guided example workflow", type="primary"):
         return None
     preflight = pubchem_preflight()
@@ -5885,10 +6044,10 @@ def render_optional_domain_model_settings(output_dir: Path) -> None:
         "Cloud may skip these models or fall back to the cloud-safe model if they "
         "are unavailable."
     )
-    st.checkbox(
-        "Enable explicit local domain-model testing for Step 6 and Step 7",
-        key="local_domain_model_testing_enabled",
-        value=bool(st.session_state.get("local_domain_model_testing_enabled", False)),
+    st.caption(
+        "Selected domain models are attempted from local/cache-safe sources first; "
+        "the lightweight general-purpose fallback is used when a preferred model "
+        "is unavailable."
     )
     biomedical_option = st.selectbox(
         "Biomedical evidence model",
@@ -5920,50 +6079,10 @@ def render_optional_domain_model_settings(output_dir: Path) -> None:
     st.caption(
         f"{ALLOW_LOCAL_MODEL_DOWNLOADS_ENV}={'1' if gate_enabled else 'not set'}"
     )
-    if st.button("Test selected local models on demo evidence"):
-        biomedical_selection = resolve_model_selection(
-            model_type="biomedical",
-            option=str(st.session_state.get("biomedical_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
-            custom_model_id=str(st.session_state.get("biomedical_custom_model_id", "")),
-            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
-        )
-        patent_selection = resolve_model_selection(
-            model_type="patent",
-            option=str(st.session_state.get("patent_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
-            custom_model_id=str(st.session_state.get("patent_custom_model_id", "")),
-            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
-        )
-        benchmark = benchmark_optional_models(
-            biomedical_selection=biomedical_selection,
-            patent_selection=patent_selection,
-            output_dir=output_dir,
-        )
-        biomedical_rows = benchmark["biomedical_rows"]
-        patent_rows = benchmark["patent_rows"]
-        summary = pd.DataFrame([*biomedical_rows, *patent_rows], columns=BENCHMARK_COLUMNS)
-        st.dataframe(summary, width="stretch", hide_index=True)
-        for row in [*biomedical_rows, *patent_rows]:
-            if str(row.get("model_status", "")) != "available":
-                st.warning(
-                    f"{row.get('model_name')}: {row.get('model_status')} - "
-                    f"{row.get('error_message')}"
-                )
-        biomedical_path = benchmark["biomedical_path"]
-        patent_path = benchmark["patent_path"]
-        st.download_button(
-            "Download biomedical_model_benchmark.csv",
-            data=biomedical_path.read_bytes(),
-            file_name="biomedical_model_benchmark.csv",
-            mime="text/csv",
-            key="download_biomedical_model_benchmark",
-        )
-        st.download_button(
-            "Download patent_model_benchmark.csv",
-            data=patent_path.read_bytes(),
-            file_name="patent_model_benchmark.csv",
-            mime="text/csv",
-            key="download_patent_model_benchmark",
-        )
+    latest_checks = st.session_state.get("environment_check_result", [])
+    if latest_checks:
+        st.markdown("**Latest environment-check result**")
+        render_environment_check_rows(latest_checks)
 
 def render_active_run_settings(output_dir: Path) -> None:
     """Show passive configuration notes for the active run."""

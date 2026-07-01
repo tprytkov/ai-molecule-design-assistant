@@ -12,6 +12,7 @@ from typing import Callable, Iterable, Protocol, Sequence
 from src.text_nlp import cosine_similarity
 
 ALLOW_LOCAL_MODEL_DOWNLOADS_ENV = "ALLOW_LOCAL_MODEL_DOWNLOADS"
+FALLBACK_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 CLOUD_SAFE_FALLBACK_LABEL = "Cloud-safe fallback"
 CUSTOM_MODEL_LABEL = "Custom Hugging Face model ID"
 BIOBERT_LABEL = "BioBERT"

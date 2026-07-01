@@ -143,7 +143,7 @@ def test_patent_evidence_scores_with_fake_encoder(tmp_path: Path) -> None:
         rows = list(csv.DictReader(output_file))
     assert count == 1
     assert rows[0]["patent_model_name"] == "fake-paecter-model"
-    assert rows[0]["patent_model_status"] == "available"
+    assert rows[0]["patent_model_status"] == "preferred_model_used"
     assert rows[0]["patent_evidence_status"] == "available"
     assert rows[0]["patent_similarity_score"] == "1.000"
     assert rows[0]["patent_relevance_category"] == "high_patent_relevance"

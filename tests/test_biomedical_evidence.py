@@ -116,7 +116,7 @@ def test_biomedical_evidence_csv_scores_with_fake_encoder(
     assert count == 1
     assert rows[0]["molecule_id"] == "mol_1"
     assert rows[0]["biomedical_model_name"] == "fake-biomedical-model"
-    assert rows[0]["biomedical_model_status"] == "available"
+    assert rows[0]["biomedical_model_status"] == "preferred_model_used"
     assert rows[0]["biomedical_evidence_status"] == "available"
     assert rows[0]["biomedical_similarity_score"] == "1.000"
     assert rows[0]["biomedical_relevance_category"] == "high_biomedical_relevance"

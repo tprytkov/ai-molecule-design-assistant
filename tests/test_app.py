@@ -1024,6 +1024,7 @@ def test_failed_preflight_warns_but_allows_guided_example_start(
         text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: label == "Run guided example workflow",
         error=lambda message, *args, **kwargs: errors.append(message),
+        warning=lambda *args, **kwargs: None,
         info=lambda message, *args, **kwargs: information.append(message),
         success=lambda *args, **kwargs: None,
     )
@@ -1156,9 +1157,10 @@ def test_connection_button_runs_same_preflight_without_activating_output(
         download_button=lambda *args, **kwargs: None,
         text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: (
-            label == "Test online lookup connection"
+            label == "Run environment checks"
         ),
         error=lambda message, *args, **kwargs: errors.append(message),
+        warning=lambda *args, **kwargs: None,
         info=lambda message, *args, **kwargs: information.append(message),
         success=lambda *args, **kwargs: None,
     )
@@ -1167,6 +1169,16 @@ def test_connection_button_runs_same_preflight_without_activating_output(
         app,
         "pubchem_preflight",
         lambda: calls.append("preflight") or failure,
+    )
+    monkeypatch.setattr(
+        app,
+        "environment_model_check_row",
+        lambda check_type, selection: {
+            "Check type": check_type,
+            "Name or endpoint": selection.model_id or selection.label,
+            "Status": "Available",
+            "Notes": "ok",
+        },
     )
     monkeypatch.setattr(
         app,
@@ -1203,22 +1215,30 @@ def test_connection_button_shows_success(
         download_button=lambda *args, **kwargs: None,
         text_area=lambda *args, **kwargs: None,
         button=lambda label, *args, **kwargs: (
-            label == "Test online lookup connection"
+            label == "Run environment checks"
         ),
         error=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
         info=lambda *args, **kwargs: None,
         success=lambda message, *args, **kwargs: successes.append(message),
     )
     monkeypatch.setattr(app, "st", fake_streamlit)
     monkeypatch.setattr(app, "pubchem_preflight", lambda: result)
+    monkeypatch.setattr(
+        app,
+        "environment_model_check_row",
+        lambda check_type, selection: {
+            "Check type": check_type,
+            "Name or endpoint": selection.model_id or selection.label,
+            "Status": "Available",
+            "Notes": "ok",
+        },
+    )
 
     assert app.render_public_demo_choice() is None
     assert successes == [
-        "Online database lookup is available from this process. "
-        "PubChem aspirin CID endpoint returned 2244.\n\n"
-        r"Python executable: C:\conda\python.exe"
-        "\n\n"
-        f"PubChem URL: {app.PUBCHEM_PREFLIGHT_URL}"
+        "Online database lookup is available. "
+        "PubChem aspirin CID endpoint returned 2244."
     ]
     assert "active_output_dir" not in fake_streamlit.session_state
 
@@ -1386,6 +1406,110 @@ def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> No
     )
 
 
+def test_run_environment_checks_reports_online_and_model_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_streamlit = SimpleNamespace(session_state={})
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "pubchem_preflight",
+        lambda: app.OnlineLookupPreflight(True, "python.exe", app.PUBCHEM_PREFLIGHT_URL),
+    )
+    monkeypatch.setattr(
+        app,
+        "environment_model_check_row",
+        lambda check_type, selection: {
+            "Check type": check_type,
+            "Name or endpoint": selection.model_id or selection.label,
+            "Status": "Available",
+            "Notes": "ok",
+        },
+    )
+
+    rows = app.run_environment_checks()
+
+    assert [row["Check type"] for row in rows] == [
+        "Online lookup",
+        "Biomedical model",
+        "Patent model",
+        "Lightweight fallback",
+    ]
+    assert rows[0]["Status"] == "Available"
+    assert fake_streamlit.session_state["environment_check_result"] == rows
+
+
+def test_load_selected_biomedical_model_tries_preferred_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    class FakeModel:
+        embedding_backend = "sentence-transformers"
+        pooling_method = "model_default"
+        model_source = app.FALLBACK_MODEL_ID
+
+    fake_streamlit = SimpleNamespace(
+        session_state={"biomedical_domain_model_option": "BioBERT"}
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    def load(selection):
+        calls.append(selection.label)
+        if selection.label == "BioBERT":
+            raise app.DomainModelUnavailableError("missing")
+        return FakeModel()
+
+    monkeypatch.setattr(app, "load_optional_model", load)
+
+    model, model_name, status, metadata, note = app.load_selected_domain_model(
+        model_type="biomedical"
+    )
+
+    assert calls == ["BioBERT", app.CLOUD_SAFE_FALLBACK_LABEL]
+    assert model is not None
+    assert model_name == app.FALLBACK_MODEL_ID
+    assert status == "fallback_model_used"
+    assert metadata["preferred_model_name"] == "dmis-lab/biobert-base-cased-v1.1"
+    assert metadata["actual_model_used"] == app.FALLBACK_MODEL_ID
+    assert "fallback" in note.lower()
+
+
+def test_load_selected_patent_model_tries_preferred_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    class FakeModel:
+        embedding_backend = "sentence-transformers"
+        pooling_method = "model_default"
+        model_source = app.FALLBACK_MODEL_ID
+
+    fake_streamlit = SimpleNamespace(
+        session_state={"patent_domain_model_option": "PatentSBERTa"}
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    def load(selection):
+        calls.append(selection.label)
+        if selection.label == "PatentSBERTa":
+            raise app.DomainModelUnavailableError("missing")
+        return FakeModel()
+
+    monkeypatch.setattr(app, "load_optional_model", load)
+
+    model, model_name, status, metadata, note = app.load_selected_domain_model(
+        model_type="patent"
+    )
+
+    assert calls == ["PatentSBERTa", app.CLOUD_SAFE_FALLBACK_LABEL]
+    assert model is not None
+    assert model_name == app.FALLBACK_MODEL_ID
+    assert status == "fallback_model_used"
+    assert metadata["preferred_model_name"] == "AI-Growth-Lab/PatentSBERTa"
+    assert metadata["actual_model_used"] == app.FALLBACK_MODEL_ID
+    assert "fallback" in note.lower()
+
 def test_optional_domain_model_settings_show_selectors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1422,7 +1546,7 @@ def test_optional_domain_model_settings_show_selectors(
     assert "PaECTER" in patent
     assert "PatentSBERTa" in patent
     assert "Custom Hugging Face model ID" in patent
-    assert "Test selected local models on demo evidence" in buttons
+    assert "Test selected local models on demo evidence" not in buttons
 
 
 def test_optional_domain_model_settings_are_lazy(
@@ -2063,6 +2187,11 @@ def test_public_demo_step_six_handles_unavailable_nlp_model(
             _ for _ in ()
         ).throw(biomedical_evidence_module.BiomedicalModelUnavailableError("missing")),
     )
+    monkeypatch.setattr(
+        app,
+        "load_optional_model",
+        lambda selection: (_ for _ in ()).throw(app.DomainModelUnavailableError("missing")),
+    )
 
     app.run_public_demo_step(6, paths)
 
@@ -2148,6 +2277,11 @@ def test_public_demo_step_seven_fallback_allows_step_eight(
         lambda model_name=patent_evidence_module.DEFAULT_PATENT_MODEL: (
             _ for _ in ()
         ).throw(patent_evidence_module.PatentModelUnavailableError("missing")),
+    )
+    monkeypatch.setattr(
+        app,
+        "load_optional_model",
+        lambda selection: (_ for _ in ()).throw(app.DomainModelUnavailableError("missing")),
     )
     monkeypatch.setattr(app, "merge_chemberta_into_prioritized", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "visualization_coordinates_csv", lambda *args, **kwargs: None)

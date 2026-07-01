@@ -42,6 +42,9 @@ OUTPUT_COLUMNS = (
     "embedding_backend",
     "pooling_method",
     "model_source",
+    "preferred_model_name",
+    "fallback_model_name",
+    "actual_model_used",
 )
 
 
@@ -80,6 +83,9 @@ class BiomedicalEvidenceResult:
     embedding_backend: str = ""
     pooling_method: str = ""
     model_source: str = ""
+    preferred_model_name: str = ""
+    fallback_model_name: str = ""
+    actual_model_used: str = ""
 
 
 def load_model(
@@ -199,6 +205,7 @@ def unavailable_results(
     *,
     model_status: str = "model_unavailable",
     metadata: dict[str, str] | None = None,
+    evidence_note: str = BIOMEDICAL_MODEL_UNAVAILABLE_NOTE,
 ) -> list[BiomedicalEvidenceResult]:
     """Create fallback rows when embeddings cannot be loaded."""
     metadata = metadata or {}
@@ -211,7 +218,7 @@ def unavailable_results(
             biomedical_similarity_score="0.000",
             biomedical_relevance_category="not_run",
             biomedical_evidence_count="0",
-            evidence_note=BIOMEDICAL_MODEL_UNAVAILABLE_NOTE,
+            evidence_note=evidence_note,
             **metadata,
         )
         for row in molecule_rows
@@ -224,6 +231,9 @@ def score_biomedical_evidence(
     model: BiomedicalEncoder,
     *,
     model_name: str = DEFAULT_BIOMEDICAL_MODEL,
+    model_status: str = "preferred_model_used",
+    evidence_note: str = BIOMEDICAL_MODEL_AVAILABLE_NOTE,
+    metadata: dict[str, str] | None = None,
 ) -> list[BiomedicalEvidenceResult]:
     """Score biomedical evidence against molecule context and aggregate by molecule."""
     molecules = [
@@ -231,6 +241,7 @@ def score_biomedical_evidence(
         for row in molecule_rows
         if row_molecule_id(row)
     ]
+    metadata = metadata or encoder_metadata(model, model_source=model_name)
     evidence = [row for row in evidence_rows if str(row.get("text", "")).strip()]
     if not molecules:
         return []
@@ -239,16 +250,15 @@ def score_biomedical_evidence(
             BiomedicalEvidenceResult(
                 molecule_id=row_molecule_id(row),
                 biomedical_model_name=model_name,
-                biomedical_model_status="available",
+                biomedical_model_status=model_status,
                 biomedical_evidence_status="no_evidence",
                 biomedical_relevance_category="not_run",
                 evidence_note="No biomedical evidence text was available to match.",
-                **encoder_metadata(model, model_source=model_name),
+                **metadata,
             )
             for row, _ in molecules
         ]
 
-    metadata = encoder_metadata(model, model_source=model_name)
     molecule_texts = [text or row_molecule_id(row) for row, text in molecules]
     evidence_texts = [str(row.get("text", "")).strip() for row in evidence]
     molecule_embeddings = encode_sentences(model, molecule_texts)
@@ -263,7 +273,7 @@ def score_biomedical_evidence(
                 BiomedicalEvidenceResult(
                     molecule_id=molecule_id,
                     biomedical_model_name=model_name,
-                    biomedical_model_status="available",
+                    biomedical_model_status=model_status,
                     biomedical_evidence_status="no_match",
                     biomedical_relevance_category="not_run",
                     evidence_note="No biomedical evidence rows applied to this molecule.",
@@ -292,7 +302,7 @@ def score_biomedical_evidence(
             BiomedicalEvidenceResult(
                 molecule_id=molecule_id,
                 biomedical_model_name=model_name,
-                biomedical_model_status="available",
+                biomedical_model_status=model_status,
                 biomedical_evidence_status="available",
                 biomedical_similarity_score=f"{best_score:.3f}",
                 biomedical_relevance_category=(
@@ -303,7 +313,7 @@ def score_biomedical_evidence(
                     best_row.get("evidence_id", "")
                 ).strip(),
                 top_biomedical_evidence_text=str(best_row.get("text", "")).strip(),
-                evidence_note=BIOMEDICAL_MODEL_AVAILABLE_NOTE,
+                evidence_note=evidence_note,
                 **metadata,
             )
         )
@@ -335,6 +345,10 @@ def biomedical_evidence_csv(
     descriptor_path: Path | None = None,
     unavailable_status: str = "model_unavailable",
     unavailable_metadata: dict[str, str] | None = None,
+    unavailable_note: str = BIOMEDICAL_MODEL_UNAVAILABLE_NOTE,
+    model_status: str = "preferred_model_used",
+    available_note: str = BIOMEDICAL_MODEL_AVAILABLE_NOTE,
+    model_metadata: dict[str, str] | None = None,
 ) -> int:
     """Write molecule-level biomedical evidence matching results."""
     context_rows = read_optional_csv(compound_context_path)
@@ -354,6 +368,7 @@ def biomedical_evidence_csv(
                 model_name,
                 model_status=unavailable_status,
                 metadata=unavailable_metadata,
+                evidence_note=unavailable_note,
             ),
             output_path,
         )
@@ -367,6 +382,7 @@ def biomedical_evidence_csv(
                 model_name,
                 model_status=unavailable_status,
                 metadata=unavailable_metadata,
+                evidence_note=unavailable_note,
             ),
             output_path,
         )
@@ -377,6 +393,9 @@ def biomedical_evidence_csv(
             evidence_rows,
             active_model,
             model_name=model_name,
+            model_status=model_status,
+            evidence_note=available_note,
+            metadata=model_metadata,
         ),
         output_path,
     )
