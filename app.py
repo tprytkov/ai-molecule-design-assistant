@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import sys
@@ -31,6 +32,19 @@ from src.compound_context import compound_context_csv
 from src.compound_search import top_hits_csv
 from src.descriptors import descriptor_csv
 from src.patent_evidence_embeddings import patent_evidence_embeddings_csv
+from src.optional_domain_models import (
+    ALLOW_LOCAL_MODEL_DOWNLOADS_ENV,
+    BENCHMARK_COLUMNS,
+    BIOMEDICAL_MODEL_OPTIONS,
+    CLOUD_SAFE_FALLBACK_LABEL,
+    CUSTOM_MODEL_LABEL,
+    PATENT_MODEL_OPTIONS,
+    DomainModelUnavailableError,
+    benchmark_optional_models,
+    encoder_metadata,
+    load_optional_model,
+    resolve_model_selection,
+)
 from src.pipeline import (
     PipelinePaths,
     build_paths,
@@ -4002,6 +4016,54 @@ def render_step3_progress(progress: Step3Progress, bar: object, status: object) 
     )
 
 
+def optional_domain_model_state(model_type: str) -> dict[str, str]:
+    """Return explicit optional local model settings from session state."""
+    if not bool(st.session_state.get("local_domain_model_testing_enabled", False)):
+        return {"enabled": "false"}
+    if model_type == "biomedical":
+        return {
+            "enabled": "true",
+            "option": str(st.session_state.get("biomedical_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
+            "custom_model_id": str(st.session_state.get("biomedical_custom_model_id", "")),
+        }
+    return {
+        "enabled": "true",
+        "option": str(st.session_state.get("patent_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
+        "custom_model_id": str(st.session_state.get("patent_custom_model_id", "")),
+    }
+
+
+def load_selected_domain_model(
+    *,
+    model_type: str,
+    fallback_model_id: str,
+) -> tuple[object | None, str, str, dict[str, str]]:
+    """Load an explicitly selected local model or return safe fallback metadata."""
+    state = optional_domain_model_state(model_type)
+    if state.get("enabled") != "true":
+        return None, fallback_model_id, "model_unavailable", {}
+    selection = resolve_model_selection(
+        model_type=model_type,
+        option=state.get("option", CLOUD_SAFE_FALLBACK_LABEL),
+        custom_model_id=state.get("custom_model_id", ""),
+        fallback_model_id=fallback_model_id,
+    )
+    if selection.label == CLOUD_SAFE_FALLBACK_LABEL:
+        return None, fallback_model_id, "model_unavailable", {}
+    metadata = {
+        "embedding_backend": selection.embedding_backend,
+        "pooling_method": selection.pooling_method,
+        "model_source": selection.model_id,
+    }
+    try:
+        model = load_optional_model(selection)
+    except DomainModelUnavailableError as exc:
+        return None, selection.model_id or selection.label, exc.status, metadata
+    return model, selection.model_id, "model_unavailable", encoder_metadata(
+        model,
+        model_source=selection.model_id,
+    )
+
 def run_public_demo_step(
     step_number: int,
     paths: PipelinePaths,
@@ -4058,20 +4120,36 @@ def run_public_demo_step(
             descriptor_path=paths.descriptors,
             identity_path=identity_path,
         )
+        biomedical_model, biomedical_model_name, biomedical_unavailable_status, biomedical_metadata = load_selected_domain_model(
+            model_type="biomedical",
+            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        )
         biomedical_evidence_csv(
             context_path,
             paths.text_evidence,
             paths.biomedical_evidence,
+            model=biomedical_model,
+            model_name=biomedical_model_name,
             identity_path=identity_path,
             descriptor_path=paths.descriptors,
+            unavailable_status=biomedical_unavailable_status,
+            unavailable_metadata=biomedical_metadata or None,
         )
     elif step_number == 7:
+        patent_model, patent_model_name, patent_unavailable_status, patent_metadata = load_selected_domain_model(
+            model_type="patent",
+            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        )
         patent_evidence_embeddings_csv(
             paths.surechembl_lookup,
             paths.patent_evidence_embeddings,
             public_lookup_path=paths.public_lookup,
             identity_path=identity_path,
             context_path=context_path,
+            model=patent_model,
+            model_name=patent_model_name,
+            unavailable_status=patent_unavailable_status,
+            unavailable_metadata=patent_metadata or None,
         )
     elif step_number == 8:
         scoring_csv(
@@ -5799,6 +5877,94 @@ def render_run_path_status(output_dir: Path) -> None:
     render_step_list("Unresolved paths", status.unresolved_paths)
 
 
+def render_optional_domain_model_settings(output_dir: Path) -> None:
+    """Render local-only optional domain-model testing controls."""
+    st.markdown("### Optional local domain-model testing")
+    st.warning(
+        "Large domain-specific models are intended for local testing. Streamlit "
+        "Cloud may skip these models or fall back to the cloud-safe model if they "
+        "are unavailable."
+    )
+    st.checkbox(
+        "Enable explicit local domain-model testing for Step 6 and Step 7",
+        key="local_domain_model_testing_enabled",
+        value=bool(st.session_state.get("local_domain_model_testing_enabled", False)),
+    )
+    biomedical_option = st.selectbox(
+        "Biomedical evidence model",
+        BIOMEDICAL_MODEL_OPTIONS,
+        key="biomedical_domain_model_option",
+    )
+    if biomedical_option == CUSTOM_MODEL_LABEL:
+        st.text_input(
+            "Biomedical custom Hugging Face model ID",
+            key="biomedical_custom_model_id",
+        )
+    patent_option = st.selectbox(
+        "Patent/IP-context evidence model",
+        PATENT_MODEL_OPTIONS,
+        key="patent_domain_model_option",
+    )
+    if patent_option == "PaECTER":
+        st.info(
+            "PaECTER was described as available on Hugging Face, but this app does "
+            "not hardcode an unverified model ID. Select Custom Hugging Face model "
+            "ID to test a local PaECTER checkpoint."
+        )
+    if patent_option == CUSTOM_MODEL_LABEL:
+        st.text_input(
+            "Patent/IP custom Hugging Face model ID",
+            key="patent_custom_model_id",
+        )
+    gate_enabled = bool(os.environ.get(ALLOW_LOCAL_MODEL_DOWNLOADS_ENV) == "1")
+    st.caption(
+        f"{ALLOW_LOCAL_MODEL_DOWNLOADS_ENV}={'1' if gate_enabled else 'not set'}"
+    )
+    if st.button("Test selected local models on demo evidence"):
+        biomedical_selection = resolve_model_selection(
+            model_type="biomedical",
+            option=str(st.session_state.get("biomedical_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
+            custom_model_id=str(st.session_state.get("biomedical_custom_model_id", "")),
+            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        )
+        patent_selection = resolve_model_selection(
+            model_type="patent",
+            option=str(st.session_state.get("patent_domain_model_option", CLOUD_SAFE_FALLBACK_LABEL)),
+            custom_model_id=str(st.session_state.get("patent_custom_model_id", "")),
+            fallback_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        )
+        benchmark = benchmark_optional_models(
+            biomedical_selection=biomedical_selection,
+            patent_selection=patent_selection,
+            output_dir=output_dir,
+        )
+        biomedical_rows = benchmark["biomedical_rows"]
+        patent_rows = benchmark["patent_rows"]
+        summary = pd.DataFrame([*biomedical_rows, *patent_rows], columns=BENCHMARK_COLUMNS)
+        st.dataframe(summary, width="stretch", hide_index=True)
+        for row in [*biomedical_rows, *patent_rows]:
+            if str(row.get("model_status", "")) != "available":
+                st.warning(
+                    f"{row.get('model_name')}: {row.get('model_status')} - "
+                    f"{row.get('error_message')}"
+                )
+        biomedical_path = benchmark["biomedical_path"]
+        patent_path = benchmark["patent_path"]
+        st.download_button(
+            "Download biomedical_model_benchmark.csv",
+            data=biomedical_path.read_bytes(),
+            file_name="biomedical_model_benchmark.csv",
+            mime="text/csv",
+            key="download_biomedical_model_benchmark",
+        )
+        st.download_button(
+            "Download patent_model_benchmark.csv",
+            data=patent_path.read_bytes(),
+            file_name="patent_model_benchmark.csv",
+            mime="text/csv",
+            key="download_patent_model_benchmark",
+        )
+
 def render_active_run_settings(output_dir: Path) -> None:
     """Show passive configuration notes for the active run."""
     st.subheader("Settings")
@@ -5813,6 +5979,7 @@ def render_active_run_settings(output_dir: Path) -> None:
         "PaECTER/patent-BERT-style models.\n"
         "- Selecting a sidebar page does not run pipeline steps."
     )
+    render_optional_domain_model_settings(output_dir)
     render_run_path_status(output_dir)
     render_custom_analysis_planner(output_dir)
 

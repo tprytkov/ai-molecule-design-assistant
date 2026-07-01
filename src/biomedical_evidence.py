@@ -13,6 +13,11 @@ from src.text_nlp import (
     encode_sentences,
     read_input_csv,
 )
+from src.optional_domain_models import (
+    DomainModelUnavailableError,
+    encoder_metadata,
+    load_sentence_transformer,
+)
 
 
 DEFAULT_BIOMEDICAL_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -34,6 +39,9 @@ OUTPUT_COLUMNS = (
     "top_biomedical_evidence_id",
     "top_biomedical_evidence_text",
     "evidence_note",
+    "embedding_backend",
+    "pooling_method",
+    "model_source",
 )
 
 
@@ -69,6 +77,9 @@ class BiomedicalEvidenceResult:
     top_biomedical_evidence_id: str = ""
     top_biomedical_evidence_text: str = ""
     evidence_note: str = ""
+    embedding_backend: str = ""
+    pooling_method: str = ""
+    model_source: str = ""
 
 
 def load_model(
@@ -76,18 +87,9 @@ def load_model(
 ) -> BiomedicalEncoder:
     """Load a cached sentence-transformer compatible biomedical model."""
     try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
-        raise BiomedicalModelUnavailableError(
-            "sentence-transformers is not installed in this environment."
-        ) from exc
-
-    try:
-        return SentenceTransformer(model_name, local_files_only=True)
-    except Exception as exc:
-        raise BiomedicalModelUnavailableError(
-            f"Model '{model_name}' is not available in the local cache."
-        ) from exc
+        return load_sentence_transformer(model_name)
+    except DomainModelUnavailableError as exc:
+        raise BiomedicalModelUnavailableError(str(exc)) from exc
 
 
 def read_optional_csv(path: Path | None) -> list[dict[str, str]]:
@@ -194,23 +196,27 @@ def applicable_evidence_rows(
 def unavailable_results(
     molecule_rows: Iterable[dict[str, str]],
     model_name: str,
+    *,
+    model_status: str = "model_unavailable",
+    metadata: dict[str, str] | None = None,
 ) -> list[BiomedicalEvidenceResult]:
     """Create fallback rows when embeddings cannot be loaded."""
+    metadata = metadata or {}
     return [
         BiomedicalEvidenceResult(
             molecule_id=row_molecule_id(row),
             biomedical_model_name=model_name,
-            biomedical_model_status="model_unavailable",
+            biomedical_model_status=model_status,
             biomedical_evidence_status="skipped",
             biomedical_similarity_score="0.000",
             biomedical_relevance_category="not_run",
             biomedical_evidence_count="0",
             evidence_note=BIOMEDICAL_MODEL_UNAVAILABLE_NOTE,
+            **metadata,
         )
         for row in molecule_rows
         if row_molecule_id(row)
     ]
-
 
 def score_biomedical_evidence(
     molecule_rows: Iterable[dict[str, str]],
@@ -237,10 +243,12 @@ def score_biomedical_evidence(
                 biomedical_evidence_status="no_evidence",
                 biomedical_relevance_category="not_run",
                 evidence_note="No biomedical evidence text was available to match.",
+                **encoder_metadata(model, model_source=model_name),
             )
             for row, _ in molecules
         ]
 
+    metadata = encoder_metadata(model, model_source=model_name)
     molecule_texts = [text or row_molecule_id(row) for row, text in molecules]
     evidence_texts = [str(row.get("text", "")).strip() for row in evidence]
     molecule_embeddings = encode_sentences(model, molecule_texts)
@@ -259,6 +267,7 @@ def score_biomedical_evidence(
                     biomedical_evidence_status="no_match",
                     biomedical_relevance_category="not_run",
                     evidence_note="No biomedical evidence rows applied to this molecule.",
+                    **metadata,
                 )
             )
             continue
@@ -295,6 +304,7 @@ def score_biomedical_evidence(
                 ).strip(),
                 top_biomedical_evidence_text=str(best_row.get("text", "")).strip(),
                 evidence_note=BIOMEDICAL_MODEL_AVAILABLE_NOTE,
+                **metadata,
             )
         )
     return results
@@ -323,6 +333,8 @@ def biomedical_evidence_csv(
     model_name: str = DEFAULT_BIOMEDICAL_MODEL,
     identity_path: Path | None = None,
     descriptor_path: Path | None = None,
+    unavailable_status: str = "model_unavailable",
+    unavailable_metadata: dict[str, str] | None = None,
 ) -> int:
     """Write molecule-level biomedical evidence matching results."""
     context_rows = read_optional_csv(compound_context_path)
@@ -335,11 +347,27 @@ def biomedical_evidence_csv(
     )
     evidence_rows = read_input_csv(text_evidence_path)
 
+    if model is None and unavailable_metadata is not None:
+        return write_results(
+            unavailable_results(
+                molecule_rows,
+                model_name,
+                model_status=unavailable_status,
+                metadata=unavailable_metadata,
+            ),
+            output_path,
+        )
+
     try:
         active_model = model or load_model(model_name)
     except BiomedicalModelUnavailableError:
         return write_results(
-            unavailable_results(molecule_rows, model_name),
+            unavailable_results(
+                molecule_rows,
+                model_name,
+                model_status=unavailable_status,
+                metadata=unavailable_metadata,
+            ),
             output_path,
         )
 

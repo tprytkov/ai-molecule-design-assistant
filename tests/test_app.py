@@ -1386,6 +1386,72 @@ def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> No
     )
 
 
+def test_optional_domain_model_settings_show_selectors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    markdown = []
+    warnings = []
+    selectboxes = []
+    buttons = []
+
+    fake_streamlit = SimpleNamespace(
+        session_state={},
+        markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
+        warning=lambda value, *args, **kwargs: warnings.append(str(value)),
+        checkbox=lambda *args, **kwargs: False,
+        selectbox=lambda label, options, *args, **kwargs: (
+            selectboxes.append((label, tuple(options))) or tuple(options)[0]
+        ),
+        text_input=lambda *args, **kwargs: "",
+        info=lambda *args, **kwargs: None,
+        caption=lambda *args, **kwargs: None,
+        button=lambda label, *args, **kwargs: buttons.append(label) and False,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_optional_domain_model_settings(tmp_path)
+
+    assert "### Optional local domain-model testing" in markdown
+    assert any("Large domain-specific models are intended for local testing" in item for item in warnings)
+    biomedical = dict(selectboxes)["Biomedical evidence model"]
+    patent = dict(selectboxes)["Patent/IP-context evidence model"]
+    assert "BioBERT" in biomedical
+    assert "PubMedBERT" in biomedical
+    assert "Custom Hugging Face model ID" in biomedical
+    assert "PaECTER" in patent
+    assert "PatentSBERTa" in patent
+    assert "Custom Hugging Face model ID" in patent
+    assert "Test selected local models on demo evidence" in buttons
+
+
+def test_optional_domain_model_settings_are_lazy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+    fake_streamlit = SimpleNamespace(
+        session_state={},
+        markdown=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        checkbox=lambda *args, **kwargs: False,
+        selectbox=lambda label, options, *args, **kwargs: tuple(options)[0],
+        text_input=lambda *args, **kwargs: "",
+        info=lambda *args, **kwargs: None,
+        caption=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "load_optional_model",
+        lambda selection: calls.append(selection) or pytest.fail("lazy load violated"),
+    )
+
+    app.render_optional_domain_model_settings(tmp_path)
+
+    assert calls == []
+
 def test_sidebar_special_pages_render_without_workflow_step_body(
     tmp_path: Path,
 ) -> None:

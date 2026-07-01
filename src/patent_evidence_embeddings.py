@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Iterable, Protocol, Sequence
 
 from src.text_nlp import cosine_similarity, encode_sentences
+from src.optional_domain_models import (
+    DomainModelUnavailableError,
+    encoder_metadata,
+    load_sentence_transformer,
+)
 
 
 DEFAULT_PATENT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -33,6 +38,9 @@ OUTPUT_COLUMNS = (
     "surechembl_structure_status",
     "patent_document_metadata_status",
     "evidence_note",
+    "embedding_backend",
+    "pooling_method",
+    "model_source",
 )
 
 
@@ -70,23 +78,17 @@ class PatentEvidenceEmbeddingResult:
     surechembl_structure_status: str = "not_run"
     patent_document_metadata_status: str = "not_run"
     evidence_note: str = ""
+    embedding_backend: str = ""
+    pooling_method: str = ""
+    model_source: str = ""
 
 
 def load_model(model_name: str = DEFAULT_PATENT_MODEL) -> PatentEncoder:
     """Load a cached sentence-transformer compatible patent model."""
     try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
-        raise PatentModelUnavailableError(
-            "sentence-transformers is not installed in this environment."
-        ) from exc
-
-    try:
-        return SentenceTransformer(model_name, local_files_only=True)
-    except Exception as exc:
-        raise PatentModelUnavailableError(
-            f"Model '{model_name}' is not available in the local cache."
-        ) from exc
+        return load_sentence_transformer(model_name)
+    except DomainModelUnavailableError as exc:
+        raise PatentModelUnavailableError(str(exc)) from exc
 
 
 def read_optional_csv(path: Path | None) -> list[dict[str, str]]:
@@ -302,8 +304,11 @@ def fallback_results(
     *,
     model_name: str,
     surechembl_by_molecule: dict[str, list[dict[str, str]]],
+    model_status: str = "model_unavailable",
+    metadata: dict[str, str] | None = None,
 ) -> list[PatentEvidenceEmbeddingResult]:
     """Create model-unavailable fallback rows."""
+    metadata = metadata or {}
     results = []
     for molecule_id in molecule_ids:
         surechembl_rows = surechembl_by_molecule.get(molecule_id, [])
@@ -311,7 +316,7 @@ def fallback_results(
             PatentEvidenceEmbeddingResult(
                 molecule_id=molecule_id,
                 patent_model_name=model_name,
-                patent_model_status="model_unavailable",
+                patent_model_status=model_status,
                 patent_evidence_status="skipped",
                 patent_similarity_score="0.000",
                 patent_relevance_category="not_run",
@@ -322,10 +327,10 @@ def fallback_results(
                     surechembl_rows
                 ),
                 evidence_note=PATENT_MODEL_UNAVAILABLE_NOTE,
+                **metadata,
             )
         )
     return results
-
 
 def score_patent_evidence(
     molecule_ids: Iterable[str],
@@ -360,10 +365,12 @@ def score_patent_evidence(
                     surechembl_by_molecule.get(molecule_id, [])
                 ),
                 evidence_note="No patent/IP-context text was available to match.",
+                **encoder_metadata(model, model_source=model_name),
             )
             for molecule_id in ids
         ]
 
+    metadata = encoder_metadata(model, model_source=model_name)
     molecule_texts = [
         context_text(
             molecule_id,
@@ -399,6 +406,7 @@ def score_patent_evidence(
                         surechembl_for_molecule
                     ),
                     evidence_note="No patent evidence rows applied to this molecule.",
+                    **metadata,
                 )
             )
             continue
@@ -434,6 +442,7 @@ def score_patent_evidence(
                     surechembl_for_molecule
                 ),
                 evidence_note=PATENT_MODEL_AVAILABLE_NOTE,
+                **metadata,
             )
         )
     return results
@@ -463,6 +472,8 @@ def patent_evidence_embeddings_csv(
     patent_text_path: Path | None = None,
     model: PatentEncoder | None = None,
     model_name: str = DEFAULT_PATENT_MODEL,
+    unavailable_status: str = "model_unavailable",
+    unavailable_metadata: dict[str, str] | None = None,
 ) -> int:
     """Write molecule-level patent/IP-context evidence embedding results."""
     surechembl_rows = read_optional_csv(surechembl_path)
@@ -480,6 +491,18 @@ def patent_evidence_embeddings_csv(
     surechembl_by_molecule = index_rows(surechembl_rows)
     evidence_rows = patent_evidence_rows(surechembl_rows, patent_text_rows)
 
+    if model is None and unavailable_metadata is not None:
+        return write_results(
+            fallback_results(
+                molecule_ids,
+                model_name=model_name,
+                surechembl_by_molecule=surechembl_by_molecule,
+                model_status=unavailable_status,
+                metadata=unavailable_metadata,
+            ),
+            output_path,
+        )
+
     try:
         active_model = model or load_model(model_name)
     except PatentModelUnavailableError:
@@ -488,6 +511,8 @@ def patent_evidence_embeddings_csv(
                 molecule_ids,
                 model_name=model_name,
                 surechembl_by_molecule=surechembl_by_molecule,
+                model_status=unavailable_status,
+                metadata=unavailable_metadata,
             ),
             output_path,
         )

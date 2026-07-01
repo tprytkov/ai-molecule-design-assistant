@@ -129,6 +129,17 @@ environments. Users who need domain-specific biomedical or patent semantics can
 configure cached local models without making those models required for app
 startup or public deployment.
 
+## Optional local domain models
+
+BioBERT, PubMedBERT, PatentSBERTa, and custom Hugging Face checkpoints are optional local research-mode models for Step 6 biomedical evidence and Step 7 patent/IP-context evidence. They are not required for Streamlit Cloud, and the app keeps the cloud-safe fallback behavior when these models are unavailable.
+
+Set `ALLOW_LOCAL_MODEL_DOWNLOADS=1` before local testing. Large models are loaded only after an explicit action, such as running the Settings-page benchmark or executing a step with local testing enabled. BioBERT and PubMedBERT are transformer language models, so the app uses `transformers` `AutoTokenizer`/`AutoModel` with attention-mask mean pooling unless a sentence-transformers backend is selected. Patent/IP model outputs are evidence-ranking signals only; they are not biological validation, patentability opinions, freedom-to-operate analysis, or legal conclusions.
+
+To cache models explicitly for offline testing, run for example:
+
+```bash
+python scripts/cache_optional_models.py --models dmis-lab/biobert-base-cased-v1.1 microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext
+```
 ## Key Features
 
 - SMILES validation, canonicalization, and molecular descriptors with RDKit
