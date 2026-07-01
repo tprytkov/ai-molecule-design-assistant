@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import re
 import shutil
@@ -1888,6 +1889,197 @@ def build_external_public_evidence_table(
     return pd.DataFrame(rows)
 
 
+def render_design_foundation_css() -> None:
+    """Install a small, reusable visual foundation for Streamlit pages."""
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stMetric"] {
+            background: #ffffff;
+            border: 1px solid #d9e8e4;
+            border-radius: 8px;
+            padding: 0.85rem 0.95rem;
+            box-shadow: 0 1px 2px rgba(16, 42, 67, 0.04);
+        }
+        .ui-card {
+            background: #ffffff;
+            border: 1px solid #d9e8e4;
+            border-radius: 8px;
+            padding: 0.9rem 1rem;
+            margin: 0.55rem 0 0.85rem;
+        }
+        .ui-card--subtle {
+            background: #f4faf8;
+        }
+        .ui-card--warning {
+            background: #fff8e6;
+            border-color: #f0d38a;
+        }
+        .ui-card__title {
+            color: #102a43;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+        .ui-card__body {
+            color: #334e68;
+            line-height: 1.5;
+        }
+        .ui-status-badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            border: 1px solid #c9d8d5;
+            background: #eef6f4;
+            color: #264653;
+            font-size: 0.78rem;
+            font-weight: 700;
+            line-height: 1;
+            padding: 0.28rem 0.55rem;
+            margin: 0.1rem 0.2rem 0.1rem 0;
+            white-space: nowrap;
+        }
+        .ui-status-badge--success {
+            background: #e7f5ee;
+            border-color: #a9d9c0;
+            color: #146c43;
+        }
+        .ui-status-badge--warning {
+            background: #fff3cd;
+            border-color: #f0d38a;
+            color: #7a5200;
+        }
+        .ui-status-badge--error {
+            background: #fdecec;
+            border-color: #f0b4b4;
+            color: #9f1c1c;
+        }
+        .ui-section-note {
+            color: #52616f;
+            margin-top: -0.35rem;
+            margin-bottom: 0.75rem;
+        }
+        div[data-testid="stDataFrame"], div[data-testid="stTable"] {
+            border: 1px solid #d9e8e4;
+            border-radius: 8px;
+            padding: 0.35rem;
+            background: #ffffff;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stDataFrame"]),
+        div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stTable"]) {
+            margin-top: 0.35rem;
+            margin-bottom: 0.85rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _ui_text(value: object) -> str:
+    """Escape user-visible text before placing it in small HTML cards."""
+    return html.escape(str(value or ""), quote=True)
+
+
+def render_metric_card(
+    label: str,
+    value: object,
+    *,
+    help_text: str | None = None,
+    container: object | None = None,
+) -> None:
+    """Render a native Streamlit metric styled by the shared visual foundation."""
+    target = container or st
+    target.metric(label, value)
+    if help_text:
+        target.caption(help_text)
+
+
+def render_status_badge(
+    label: str,
+    *,
+    status: str = "neutral",
+    container: object | None = None,
+) -> None:
+    """Render a compact status badge without replacing Streamlit warnings/errors."""
+    target = container or st
+    status_class = slugify_key(status) or "neutral"
+    target.markdown(
+        f'<span class="ui-status-badge ui-status-badge--{status_class}">{_ui_text(label)}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_info_card(
+    title: str,
+    body: str,
+    *,
+    container: object | None = None,
+) -> None:
+    """Render a subtle informational card for passive context."""
+    target = container or st
+    target.markdown(
+        '<div class="ui-card ui-card--subtle">'
+        f'<div class="ui-card__title">{_ui_text(title)}</div>'
+        f'<div class="ui-card__body">{_ui_text(body)}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_warning_card(
+    title: str,
+    body: str,
+    *,
+    container: object | None = None,
+) -> None:
+    """Render a non-blocking warning card while leaving st.warning available."""
+    target = container or st
+    target.markdown(
+        '<div class="ui-card ui-card--warning">'
+        f'<div class="ui-card__title">{_ui_text(title)}</div>'
+        f'<div class="ui-card__body">{_ui_text(body)}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_header(
+    title: str,
+    body: str | None = None,
+    *,
+    level: int = 2,
+) -> None:
+    """Render a consistent section heading with optional supporting text."""
+    if level <= 1:
+        st.header(title)
+    elif level == 2:
+        st.subheader(title)
+    else:
+        st.markdown(f"{'#' * min(level, 6)} {title}")
+    if body:
+        if hasattr(st, "caption"):
+            st.caption(body)
+        else:
+            st.markdown(body)
+
+
+def render_step_summary_card(
+    title: str,
+    steps: Iterable[str],
+    *,
+    empty_text: str = "None",
+) -> None:
+    """Render compact lists used by step summaries and path-status panels."""
+    items = list(steps)
+    body = empty_text if not items else "<br>".join(_ui_text(step) for step in items)
+    st.markdown(
+        '<div class="ui-card">'
+        f'<div class="ui-card__title">{_ui_text(title)}</div>'
+        f'<div class="ui-card__body">{body}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
 def build_computed_analysis_status_table(df: pd.DataFrame) -> pd.DataFrame:
     """Build computed-analysis status counts."""
     rows = []
@@ -1923,7 +2115,6 @@ def build_computed_analysis_status_table(df: pd.DataFrame) -> pd.DataFrame:
         )
     return pd.DataFrame(rows)
 
-
 def render_summary_cards(loaded: LoadedOutputs) -> None:
     """Render high-level run summary metrics."""
     df = loaded.tables["prioritization"]
@@ -1933,11 +2124,12 @@ def render_summary_cards(loaded: LoadedOutputs) -> None:
     )
     metrics = st.columns(4)
     for index, (label, value) in enumerate(summary.items()):
-        metrics[index].metric(label, value)
+        render_metric_card(label, value, container=metrics[index])
 
-    st.markdown("#### External Public Evidence")
-    st.caption(
-        "Not queried means the molecule was not checked because of the molecule limit or workflow settings."
+    render_section_header(
+        "External Public Evidence",
+        "Not queried means the molecule was not checked because of the molecule limit or workflow settings.",
+        level=4,
     )
     st.table(
         build_external_public_evidence_table(
@@ -1946,14 +2138,14 @@ def render_summary_cards(loaded: LoadedOutputs) -> None:
             surechembl_exists=loaded.paths["surechembl"].exists(),
         )
     )
-    st.markdown("#### Computed Analysis Status")
-    st.info(nlp_output_note(loaded.paths["text_nlp"], loaded.tables["text_nlp"]))
-    st.caption(
-        "ChemBERTa availability means molecular embeddings were generated; "
-        "it is not a public database match. ChemBERTa is unavailable for invalid SMILES."
+    render_section_header(
+        "Computed Analysis Status",
+        "ChemBERTa availability means molecular embeddings were generated; it is not a public database match.",
+        level=4,
     )
+    st.info(nlp_output_note(loaded.paths["text_nlp"], loaded.tables["text_nlp"]))
+    st.caption("ChemBERTa is unavailable for invalid SMILES.")
     st.table(build_computed_analysis_status_table(df))
-
 
 def chemical_space_dataframe(
     coords: pd.DataFrame,
@@ -3800,11 +3992,15 @@ def run_environment_checks() -> list[dict[str, str]]:
     st.session_state["environment_check_result"] = rows
     return rows
 
-
 def render_environment_check_rows(rows: list[dict[str, str]]) -> None:
     """Render compact environment check table while preserving preflight messages."""
     if not rows:
         return
+    available = sum(1 for row in rows if row.get("Status") == "Available")
+    render_status_badge(
+        f"{available} of {len(rows)} checks available",
+        status="success" if available == len(rows) else "warning",
+    )
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     for row in rows:
         if row.get("Check type") == "Online lookup":
@@ -4364,9 +4560,10 @@ def render_public_demo_choice() -> Path | None:
         "Learn the evaluation process one stage at a time. Each step explains "
         "what is calculated, why it matters, and what evidence it produces."
     )
-    st.markdown("**Public example files**")
-    st.markdown(
-        "Use these files as templates for preparing your own generated SMILES input."
+    render_section_header(
+        "Public example files",
+        "Use these files as templates for preparing your own generated SMILES input.",
+        level=3,
     )
     for path in public_demo_input_paths():
         render_example_file_preview(path)
@@ -4375,6 +4572,11 @@ def render_public_demo_choice() -> Path | None:
         environment_rows = run_environment_checks()
     else:
         environment_rows = st.session_state.get("environment_check_result", [])
+    render_section_header(
+        "Run environment checks",
+        "Check local package, online lookup, and optional model availability without starting a workflow.",
+        level=3,
+    )
     render_environment_check_rows(environment_rows)
     if not st.button("Run guided example workflow", type="primary"):
         return None
@@ -5744,20 +5946,24 @@ def render_step_list(label: str, steps: Iterable[str]) -> None:
         return
     st.markdown("\n".join(f"- {step}" for step in step_list))
 
-
 def render_selected_step_run_summary(summary: dict[str, list[str]]) -> None:
     """Render the result of a public-demo selected-step run."""
     st.success("Selected planned steps finished.")
-    render_step_list("Executed steps", summary.get("executed", []))
-    render_step_list("Skipped existing outputs", summary.get("skipped_existing", []))
-    render_step_list(
-        "Failed or blocked steps",
-        [
-            *summary.get("blocked", []),
-            *summary.get("failed", []),
-        ],
-    )
-
+    left, middle, right = st.columns(3)
+    with left:
+        render_step_summary_card("Executed steps", summary.get("executed", []))
+    with middle:
+        render_step_summary_card(
+            "Skipped existing outputs", summary.get("skipped_existing", [])
+        )
+    with right:
+        render_step_summary_card(
+            "Failed or blocked steps",
+            [
+                *summary.get("blocked", []),
+                *summary.get("failed", []),
+            ],
+        )
 
 def render_custom_analysis_planner(output_dir: Path) -> None:
     """Render a passive step-selection planner for future custom execution."""
@@ -5955,7 +6161,6 @@ def render_active_run_reset_button(*, key: str) -> None:
         clear_active_run_state()
         st.rerun()
 
-
 def render_active_run_overview(output_dir: Path) -> None:
     """Show passive current-run status before the guided workflow body."""
     completed = {
@@ -5965,15 +6170,23 @@ def render_active_run_overview(output_dir: Path) -> None:
     }
     current = int(st.session_state.get("workflow_step", 1))
     current = max(1, min(current, len(WORKFLOW_STEP_NAMES)))
-    st.subheader("Overview")
+    render_section_header(
+        "Overview",
+        "Passive run status. Selecting pages here does not execute pipeline steps.",
+    )
     st.caption(f"Current run folder: {output_dir}")
     columns = st.columns(3)
-    columns[0].metric(
+    render_metric_card(
         "Completed steps",
         f"{len(completed)} of {len(WORKFLOW_STEP_NAMES)}",
+        container=columns[0],
     )
-    columns[1].metric("Current guided step", current)
-    columns[2].metric("Available output files", count_existing_outputs(output_dir))
+    render_metric_card("Current guided step", current, container=columns[1])
+    render_metric_card(
+        "Available output files",
+        count_existing_outputs(output_dir),
+        container=columns[2],
+    )
     if completed:
         st.write(
             "Completed workflow steps: "
@@ -5981,7 +6194,6 @@ def render_active_run_overview(output_dir: Path) -> None:
         )
     else:
         st.info("No workflow steps have been marked complete for this active run yet.")
-
 
 def count_existing_outputs(output_dir: Path) -> int:
     """Count known output artifacts that already exist for a run."""
@@ -6029,22 +6241,28 @@ def render_active_run_downloads(output_dir: Path) -> None:
         return
     render_output_artifacts(artifacts)
 
-
 def render_run_path_status(output_dir: Path) -> None:
     """Show read-only active-run path resolution details."""
     status = resolve_active_run_paths(
         output_dir,
         str(st.session_state.get("workflow_mode", "")),
     )
-    st.markdown("### Run path status")
+    render_section_header("Run path status", level=3)
     columns = st.columns(3)
-    columns[0].metric("Run type", status.run_type)
-    columns[1].metric("Paths resolved", "yes" if status.paths_resolved else "no")
-    columns[2].metric("Existing outputs", len(status.existing_outputs))
-    render_step_list("Missing inputs", status.missing_inputs)
-    render_step_list("Existing outputs", status.existing_outputs)
-    render_step_list("Unresolved paths", status.unresolved_paths)
-
+    render_metric_card("Run type", status.run_type, container=columns[0])
+    render_metric_card(
+        "Paths resolved", "yes" if status.paths_resolved else "no", container=columns[1]
+    )
+    render_metric_card(
+        "Existing outputs", len(status.existing_outputs), container=columns[2]
+    )
+    left, middle, right = st.columns(3)
+    with left:
+        render_step_summary_card("Missing inputs", status.missing_inputs)
+    with middle:
+        render_step_summary_card("Existing outputs", status.existing_outputs)
+    with right:
+        render_step_summary_card("Unresolved paths", status.unresolved_paths)
 
 def render_optional_domain_model_settings(output_dir: Path) -> None:
     """Render local-only optional domain-model testing controls."""
@@ -6096,26 +6314,26 @@ def render_optional_domain_model_settings(output_dir: Path) -> None:
 
 def render_active_run_settings(output_dir: Path) -> None:
     """Show passive configuration notes for the active run."""
-    st.subheader("Settings")
-    st.write(
-        "This sidebar scaffold does not change execution settings, scoring, output "
-        "schemas, or cloud-safe model fallback behavior."
+    render_section_header(
+        "Settings",
+        "Read-only configuration notes and local model controls for this active run.",
     )
-    st.markdown(
-        "- Biomedical evidence can use a lightweight default sentence-transformer "
-        "baseline or optional local/cached BioBERT/PubMedBERT-style models.\n"
-        "- Patent/IP-context evidence can use optional local/cached "
-        "PaECTER/patent-BERT-style models.\n"
-        "- Selecting a sidebar page does not run pipeline steps."
+    render_info_card(
+        "Execution behavior",
+        "This sidebar scaffold does not change execution settings, scoring, output schemas, or cloud-safe model fallback behavior.",
+    )
+    render_info_card(
+        "Optional evidence models",
+        "Biomedical and patent/IP evidence can use lightweight defaults or optional local/cached domain models. Selecting a sidebar page does not run pipeline steps.",
     )
     render_optional_domain_model_settings(output_dir)
     render_run_path_status(output_dir)
     render_custom_analysis_planner(output_dir)
 
-
 def run_app() -> None:
     """Run the guided Streamlit workflow without loading old results."""
     st.set_page_config(page_title=APP_TITLE, layout="wide")
+    render_design_foundation_css()
     st.title(APP_TITLE)
     st.markdown(WELCOME_TEXT)
     st.info(START_GUIDANCE)
