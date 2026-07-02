@@ -21,6 +21,11 @@ import plotly.graph_objects as go
 import streamlit as st
 from rdkit import Chem
 
+try:
+    import streamlit_shadcn_ui as shadcn_ui
+except Exception:
+    shadcn_ui = None
+
 from src.biomedical_evidence import biomedical_evidence_csv
 from src.compound_qa import compound_qa
 from src.chemberta_embeddings import (
@@ -641,6 +646,24 @@ ONLINE_LOOKUP_UNAVAILABLE_MESSAGE = (
 ONLINE_LOOKUP_RESTART_MESSAGE = (
     "Restart Streamlit from a normal conda terminal, then run the guided example again."
 )
+STEP3_CHEMBL_UNAVAILABLE_WARNING = (
+    "ChEMBL lookup was unavailable or failed for this run. PubChem and available "
+    "public evidence were preserved. You can rerun Step 3 later."
+)
+STEP3_CHEMBL_WARNING_CARD = (
+    "ChEMBL lookup failed or was unavailable. This is usually an online-service "
+    "or network issue, not a molecule-processing error."
+)
+STEP3_DEGRADED_LOOKUP_WARNING = (
+    "Public lookup evidence is incomplete because one or more online services "
+    "were unavailable. Valid partial results were activated so downstream steps "
+    "can continue in degraded mode."
+)
+STEP3_SUMMARY_METADATA_KEYS = {
+    "__completion_status",
+    "__degraded_sources",
+    "__chembl_unavailable",
+}
 APP_USAGE_STEPS = (
     "Upload generated SMILES.",
     "Upload optional reference molecules.",
@@ -1924,6 +1947,42 @@ def render_design_foundation_css() -> None:
             color: #334e68;
             line-height: 1.5;
         }
+        .ui-hero-card {
+            background: linear-gradient(135deg, #ffffff 0%, #eef8f6 54%, #e8f2fb 100%);
+            border: 1px solid #cfe1dc;
+            border-radius: 12px;
+            padding: 1.35rem 1.45rem;
+            margin: 0.75rem 0 1.1rem;
+            box-shadow: 0 10px 28px rgba(16, 42, 67, 0.08);
+        }
+        .ui-hero-card__title {
+            color: #102a43;
+            font-size: 1.65rem;
+            font-weight: 800;
+            margin-bottom: 0.35rem;
+        }
+        .ui-card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.85rem;
+            margin: 0.75rem 0 1rem;
+        }
+        .ui-step-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            margin: 0.35rem 0 1rem;
+        }
+        .ui-step-chip {
+            background: #ffffff;
+            border: 1px solid #cfe1dc;
+            border-radius: 999px;
+            color: #264653;
+            font-size: 0.78rem;
+            font-weight: 700;
+            padding: 0.35rem 0.6rem;
+            white-space: nowrap;
+        }
         .ui-status-badge {
             display: inline-flex;
             align-items: center;
@@ -2007,8 +2066,6 @@ def render_status_badge(
         f'<span class="ui-status-badge ui-status-badge--{status_class}">{_ui_text(label)}</span>',
         unsafe_allow_html=True,
     )
-
-
 def render_info_card(
     title: str,
     body: str,
@@ -2017,14 +2074,16 @@ def render_info_card(
 ) -> None:
     """Render a subtle informational card for passive context."""
     target = container or st
-    target.markdown(
-        '<div class="ui-card ui-card--subtle">'
-        f'<div class="ui-card__title">{_ui_text(title)}</div>'
-        f'<div class="ui-card__body">{_ui_text(body)}</div>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
+    if hasattr(target, "markdown"):
+        target.markdown(
+            '<div class="ui-card ui-card--subtle">'
+            f'<div class="ui-card__title">{_ui_text(title)}</div>'
+            f'<div class="ui-card__body">{_ui_text(body)}</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    elif hasattr(target, "caption"):
+        target.caption(f"{title}: {body}")
 
 def render_warning_card(
     title: str,
@@ -2034,15 +2093,16 @@ def render_warning_card(
 ) -> None:
     """Render a non-blocking warning card while leaving st.warning available."""
     target = container or st
-    target.markdown(
-        '<div class="ui-card ui-card--warning">'
-        f'<div class="ui-card__title">{_ui_text(title)}</div>'
-        f'<div class="ui-card__body">{_ui_text(body)}</div>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-
+    if hasattr(target, "markdown"):
+        target.markdown(
+            '<div class="ui-card ui-card--warning">'
+            f'<div class="ui-card__title">{_ui_text(title)}</div>'
+            f'<div class="ui-card__body">{_ui_text(body)}</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    elif hasattr(target, "caption"):
+        target.caption(f"{title}: {body}")
 def render_section_header(
     title: str,
     body: str | None = None,
@@ -2077,6 +2137,97 @@ def render_step_summary_card(
         f'<div class="ui-card__title">{_ui_text(title)}</div>'
         f'<div class="ui-card__body">{body}</div>'
         '</div>',
+        unsafe_allow_html=True,
+    )
+def shadcn_ui_available() -> bool:
+    """Return whether shadcn components can safely render in this Streamlit run."""
+    return shadcn_ui is not None and getattr(st, "__name__", "") == "streamlit"
+
+def render_modern_badge(
+    label: str,
+    *,
+    variant: str = "secondary",
+    status: str = "neutral",
+    key: str | None = None,
+) -> None:
+    """Render a shadcn badge with a native fallback."""
+    if shadcn_ui_available():
+        shadcn_ui.badges([(label, variant)], key=key)
+    render_status_badge(label, status=status)
+
+def render_modern_card(
+    title: str,
+    body: str,
+    *,
+    description: str | None = None,
+    badges: Iterable[tuple[str, str]] = (),
+    key: str | None = None,
+) -> None:
+    """Render a shadcn card with a native card fallback companion."""
+    badge_list = list(badges)
+    if shadcn_ui_available():
+        shadcn_ui.card(
+            title=title,
+            content=body,
+            description=description,
+            key=key,
+        )
+        if badge_list:
+            shadcn_ui.badges(badge_list, key=f"{key}_badges" if key else None)
+    render_info_card(title, body if description is None else f"{description} {body}")
+    for badge, variant in badge_list:
+        render_status_badge(
+            badge,
+            status="success" if variant == "default" else "neutral",
+        )
+
+def render_modern_metric_card(
+    title: str,
+    value: object,
+    *,
+    description: str | None = None,
+    key: str | None = None,
+    container: object | None = None,
+) -> None:
+    """Render a shadcn metric card with native metric fallback."""
+    target = container or st
+    if shadcn_ui_available() and container is None:
+        shadcn_ui.metric_card(
+            title=title,
+            content=str(value),
+            description=description,
+            key=key,
+        )
+    render_metric_card(title, value, help_text=description, container=target)
+def render_modern_step_card(
+    title: str,
+    steps: Iterable[Path | str],
+    *,
+    empty_text: str = "None",
+    key: str | None = None,
+) -> None:
+    """Render a compact artifact/step list card."""
+    values = [Path(step).name if isinstance(step, Path) else str(step) for step in steps]
+    body = empty_text if not values else " | ".join(values)
+    render_modern_card(title, body, key=key)
+
+
+def render_modern_evidence_card(
+    title: str,
+    rows: dict[str, object],
+    *,
+    key: str | None = None,
+) -> None:
+    """Render evidence summary values in modern card form."""
+    body = " | ".join(f"{label}: {value}" for label, value in rows.items())
+    render_modern_card(title, body or "No evidence summary available.", key=key)
+
+
+def render_timeline_chips(items: Iterable[str]) -> None:
+    """Render compact workflow timeline chips."""
+    chips = "".join(f'<span class="ui-step-chip">{_ui_text(item)}</span>' for item in items)
+    st.markdown(
+        f'<div class="ui-step-chip-row">{chips}</div>',
         unsafe_allow_html=True,
     )
 
@@ -3106,6 +3257,15 @@ def render_text_evidence_view(
         plot_df["max_relevance_score"], errors="coerce"
     ).fillna(0.0)
     plot_df["display_nlp_status"] = plot_df["nlp_status"].map(readable_status)
+    render_modern_evidence_card(
+        "Text evidence summary",
+        {
+            "Molecules": len(plot_df),
+            "Available matches": int(plot_df["nlp_status"].astype(str).eq("available").sum()),
+            "Evidence rows": int(pd.to_numeric(plot_df["evidence_matches"], errors="coerce").fillna(0).sum()),
+        },
+        key=f"{key}_text_evidence_summary_card",
+    )
     table_columns = [
         "molecule_id",
         "nlp_status",
@@ -3163,6 +3323,40 @@ def render_biomedical_evidence_view(
         st.info(
             "Biomedical evidence matching was skipped because the embedding "
             "model is unavailable in this cloud environment."
+        )
+    model_available_count = int(
+        plot_df["biomedical_model_status"].astype(str).str.strip().eq("available").sum()
+    )
+    model_skipped_count = int(
+        plot_df["biomedical_model_status"]
+        .astype(str)
+        .str.strip()
+        .eq("model_unavailable")
+        .sum()
+    )
+    evidence_matched_count = int(
+        plot_df["biomedical_evidence_status"].astype(str).str.strip().eq("available").sum()
+    )
+    card_cols = st.columns(2)
+    with card_cols[0]:
+        render_modern_evidence_card(
+            "Biomedical evidence summary",
+            {
+                "Molecules": len(plot_df),
+                "Evidence matched": evidence_matched_count,
+                "Evidence skipped": int(len(plot_df) - evidence_matched_count),
+            },
+            key=f"{key}_biomedical_summary_card",
+        )
+    with card_cols[1]:
+        render_modern_evidence_card(
+            "Model/fallback status",
+            {
+                "Model available": model_available_count,
+                "Model skipped": model_skipped_count,
+                "Fallback preserved": "yes",
+            },
+            key=f"{key}_biomedical_model_status_card",
         )
     left, middle, right = st.columns(3)
     with left:
@@ -3303,6 +3497,41 @@ def render_patent_evidence_view(
         .str.strip()
         .eq("available")
         .sum()
+    )
+    patent_card_cols = st.columns(2)
+    with patent_card_cols[0]:
+        render_modern_evidence_card(
+            "Patent/IP-context evidence summary",
+            {
+                "Molecules": len(plot_df),
+                "Structure evidence": int(structure_available),
+                "Patent metadata": int(metadata_available),
+            },
+            key=f"{key}_patent_summary_card",
+        )
+    with patent_card_cols[1]:
+        render_modern_evidence_card(
+            "Patent-text evidence and model status",
+            {
+                "Patent-text evidence": int(embedding_available),
+                "Model unavailable": int(
+                    plot_df["patent_model_status"]
+                    .astype(str)
+                    .str.strip()
+                    .eq("model_unavailable")
+                    .sum()
+                ),
+                "Fallback preserved": "yes",
+            },
+            key=f"{key}_patent_model_status_card",
+        )
+    render_modern_evidence_card(
+        "Structure evidence",
+        {
+            "SureChEMBL structure evidence": int(structure_available),
+            "Patent document metadata": int(metadata_available),
+        },
+        key=f"{key}_patent_structure_card",
     )
     left, middle, right = st.columns(3)
     with left:
@@ -3785,8 +4014,6 @@ def format_file_size(path: Path) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.1f} KB"
     return f"{size / (1024 * 1024):.1f} MB"
-
-
 def render_output_artifact_card(
     label: str,
     dataframe: pd.DataFrame,
@@ -3802,12 +4029,20 @@ def render_output_artifact_card(
 ) -> None:
     """Render a compact artifact summary with hidden optional previews."""
     row_word = "row" if len(dataframe) == 1 else "rows"
-    size_text = f" - {file_size}" if file_size else ""
+    size_text = file_size or "size unavailable"
+    legacy_size_text = f" - {file_size}" if file_size else ""
     st.markdown(f"#### {label}")
     st.write(description)
     st.write(
         f"Artifact: {filename} - {len(dataframe)} {row_word} - "
-        f"{len(dataframe.columns)} columns{size_text}"
+        f"{len(dataframe.columns)} columns{legacy_size_text}"
+    )
+    render_modern_card(
+        label,
+        description,
+        description=f"{filename} | {len(dataframe)} {row_word} | {len(dataframe.columns)} columns | {size_text}",
+        badges=(("Downloadable artifact", "secondary"),),
+        key=f"{key_prefix}_artifact_card_{slugify_key(filename)}",
     )
     st.download_button(
         f"Download {filename}",
@@ -3831,8 +4066,6 @@ def render_output_artifact_card(
                 height=220,
                 key=f"{key_prefix}_raw_{filename}",
             )
-
-
 def example_column_meanings(path: Path, columns: Iterable[str]) -> pd.DataFrame:
     """Return visible example-file column explanations for present columns."""
     _, meanings, _ = EXAMPLE_FILE_NOTES[path]
@@ -4191,12 +4424,6 @@ def run_public_demo_step3(
         pubchem_rows = [
             item for item in public_results if item.source_database == "PubChem"
         ]
-        if pubchem_rows and all(
-            item.lookup_status == "lookup_error" for item in pubchem_rows
-        ):
-            raise RuntimeError(
-                f"PubChem lookup failed for all {len(pubchem_rows)} valid molecules."
-            )
 
         for index, row in enumerate(records, start=1):
             valid = row["valid_smiles"].lower() in {"true", "1", "yes", "y"}
@@ -4216,12 +4443,6 @@ def run_public_demo_step3(
         chembl_rows = [
             item for item in public_results if item.source_database == "ChEMBL"
         ]
-        if chembl_rows and all(
-            item.lookup_status == "lookup_error" for item in chembl_rows
-        ):
-            raise RuntimeError(
-                f"ChEMBL lookup failed for all {len(chembl_rows)} valid molecules."
-            )
 
         for index, row in enumerate(records, start=1):
             hits = lookup_online_rows(
@@ -4235,14 +4456,14 @@ def run_public_demo_step3(
         surechembl_valid_results = [
             item for item in surechembl_results if item.valid_smiles
         ]
-        if surechembl_valid_results and all(
-            item.lookup_status == "lookup_error"
-            for item in surechembl_valid_results
-        ):
-            raise RuntimeError(
-                "SureChEMBL lookup failed for all "
-                f"{len(valid_rows)} valid molecules."
-            )
+        if not public_results and not surechembl_results:
+            raise RuntimeError("No Step 3 lookup rows could be produced.")
+
+        degraded_sources = step3_degraded_sources(
+            pubchem_rows,
+            chembl_rows,
+            surechembl_valid_results,
+        )
 
         write_public_lookup_csv(public_temp, public_results)
         write_surechembl_output_csv(surechembl_temp, surechembl_results)
@@ -4253,21 +4474,119 @@ def run_public_demo_step3(
         surechembl_temp.unlink(missing_ok=True)
         raise
 
-    return step3_summary(
+    return step3_summary_with_completion(
         pd.read_csv(paths.public_lookup),
         pd.read_csv(paths.surechembl_lookup),
         standardized,
     )
 
 
-def render_step3_summary(summary: dict[str, int]) -> None:
-    """Show the requested Step 3 completion counts."""
-    st.success("Step 3 public database lookup completed.")
+def step3_degraded_sources(
+    pubchem_rows: list[object],
+    chembl_rows: list[object],
+    surechembl_valid_results: list[object],
+) -> tuple[str, ...]:
+    """Return source names whose valid Step 3 lookups all ended in errors."""
+    degraded = []
+    for source_name, rows in (
+        ("PubChem", pubchem_rows),
+        ("ChEMBL", chembl_rows),
+        ("SureChEMBL", surechembl_valid_results),
+    ):
+        if rows and all(
+            getattr(item, "lookup_status", "") == "lookup_error" for item in rows
+        ):
+            degraded.append(source_name)
+    return tuple(degraded)
+
+
+def add_step3_completion_metadata(
+    summary: dict[str, int],
+    degraded_sources: tuple[str, ...],
+) -> dict[str, object]:
+    """Attach non-CSV UI metadata describing Step 3 evidence completeness."""
+    result: dict[str, object] = dict(summary)
+    if degraded_sources:
+        completion_status = "degraded_lookup"
+    elif summary.get("PubChem errors", 0) or summary.get("ChEMBL errors", 0) or summary.get("SureChEMBL errors", 0):
+        completion_status = "partial_evidence"
+    else:
+        completion_status = "full_evidence"
+    result["__completion_status"] = completion_status
+    result["__degraded_sources"] = ", ".join(degraded_sources)
+    result["__chembl_unavailable"] = "ChEMBL" in degraded_sources
+    return result
+
+
+def step3_dataframe_degraded_sources(
+    public_lookup: pd.DataFrame,
+    surechembl: pd.DataFrame,
+) -> tuple[str, ...]:
+    """Infer degraded Step 3 sources from activated output CSV statuses."""
+    degraded = []
+    if {"source_database", "lookup_status"}.issubset(public_lookup.columns):
+        for source_name in ("PubChem", "ChEMBL"):
+            rows = public_lookup[public_lookup["source_database"].astype(str).eq(source_name)]
+            statuses = rows["lookup_status"].astype(str) if not rows.empty else pd.Series(dtype=str)
+            if not statuses.empty and statuses.eq("lookup_error").all():
+                degraded.append(source_name)
+    if "lookup_status" in surechembl.columns:
+        sure_rows = surechembl
+        if "valid_smiles" in sure_rows.columns:
+            valid = sure_rows["valid_smiles"].astype(str).str.lower().isin({"true", "1", "yes", "y"})
+            sure_rows = sure_rows[valid]
+        statuses = sure_rows["lookup_status"].astype(str) if not sure_rows.empty else pd.Series(dtype=str)
+        if not statuses.empty and statuses.eq("lookup_error").all():
+            degraded.append("SureChEMBL")
+    return tuple(degraded)
+
+
+def step3_summary_with_completion(
+    public_lookup: pd.DataFrame,
+    surechembl: pd.DataFrame,
+    standardized: pd.DataFrame,
+) -> dict[str, object]:
+    """Build Step 3 counts plus full/partial/degraded completion metadata."""
+    return add_step3_completion_metadata(
+        step3_summary(public_lookup, surechembl, standardized),
+        step3_dataframe_degraded_sources(public_lookup, surechembl),
+    )
+
+
+def step3_completion_label(summary: dict[str, object]) -> str:
+    """Return a user-facing Step 3 completion label."""
+    status = str(summary.get("__completion_status", "full_evidence"))
+    labels = {
+        "full_evidence": "full evidence",
+        "partial_evidence": "partial evidence",
+        "degraded_lookup": "degraded lookup",
+    }
+    return labels.get(status, "completed")
+
+
+def render_step3_summary(summary: dict[str, object]) -> None:
+    """Show the requested Step 3 completion counts and degraded lookup warnings."""
+    st.success(f"Step 3 public database lookup completed with {step3_completion_label(summary)}.")
+    if summary.get("__chembl_unavailable"):
+        st.warning(STEP3_CHEMBL_UNAVAILABLE_WARNING)
+        render_warning_card("ChEMBL unavailable", STEP3_CHEMBL_WARNING_CARD)
+    elif summary.get("__completion_status") == "degraded_lookup":
+        degraded = summary.get("__degraded_sources")
+        detail = (
+            f" Affected service(s): {degraded}." if degraded else ""
+        )
+        st.warning(STEP3_DEGRADED_LOOKUP_WARNING + detail)
+
+    display_summary = {
+        key: value
+        for key, value in summary.items()
+        if key not in STEP3_SUMMARY_METADATA_KEYS
+    }
     st.dataframe(
         pd.DataFrame(
             {
-                "Result": list(summary),
-                "Molecules": list(summary.values()),
+                "Result": list(display_summary),
+                "Molecules": list(display_summary.values()),
             }
         ),
         width="stretch",
@@ -5097,8 +5416,6 @@ def render_step_references(step_number: int) -> None:
     with st.expander("References and documentation"):
         for label, url in WORKFLOW_STEP_REFERENCES[step_number - 1]:
             st.markdown(f"- [{label}]({url})")
-
-
 def render_step_header(
     step_number: int,
     description: str,
@@ -5106,19 +5423,41 @@ def render_step_header(
     outputs: Iterable[Path],
 ) -> None:
     """Render shared explanation and artifact details for one workflow step."""
-    st.header(WORKFLOW_STEP_NAMES[step_number - 1])
+    step_name = WORKFLOW_STEP_NAMES[step_number - 1]
+    st.header(step_name)
     st.markdown(WORKFLOW_STEP_PARAGRAPHS[step_number - 1])
+    render_modern_card(
+        f"Step {step_number}: {step_name}",
+        WORKFLOW_STEP_PARAGRAPHS[step_number - 1],
+        description=description,
+        badges=(("Step ready", "secondary"),),
+        key=f"workflow_step_{step_number}_header_card",
+    )
+    render_modern_badge(
+        "Completed output available" if outputs else "No outputs listed",
+        variant="secondary",
+        status="success" if outputs else "warning",
+        key=f"workflow_step_{step_number}_status_badge",
+    )
     render_step_references(step_number)
     left, right = st.columns(2)
     with left:
         st.markdown("**Input used**")
         render_artifact_name_list(inputs)
+        render_modern_step_card(
+            "Prerequisites",
+            inputs,
+            key=f"workflow_step_{step_number}_prerequisites_card",
+        )
     with right:
         st.markdown("**Output file created**")
         render_artifact_name_list(outputs)
+        render_modern_step_card(
+            "Outputs produced",
+            outputs,
+            key=f"workflow_step_{step_number}_outputs_card",
+        )
     render_output_artifacts(outputs)
-
-
 def render_workflow_step(
     loaded: LoadedOutputs,
     step_number: int,
@@ -5184,7 +5523,7 @@ def render_workflow_step(
             key="workflow_step_3",
         )
         render_step3_summary(
-            step3_summary(
+            step3_summary_with_completion(
                 frame,
                 loaded.tables["surechembl"],
                 loaded.tables["standardized"],
@@ -5246,6 +5585,17 @@ def render_workflow_step(
             if not context.empty and "molecule_id" in context.columns
             else ()
         )
+        text_nlp = loaded.tables["text_nlp"]
+        if not text_nlp.empty:
+            render_modern_evidence_card(
+                "Text evidence summary",
+                {
+                    "Rows": len(text_nlp),
+                    "Molecules": int(text_nlp["molecule_id"].nunique()) if "molecule_id" in text_nlp.columns else len(molecule_ids),
+                    "Available": int(text_nlp["nlp_status"].astype(str).eq("available").sum()) if "nlp_status" in text_nlp.columns else 0,
+                },
+                key="workflow_step_6_text_evidence_summary_card",
+            )
         selected = render_biomedical_evidence_view(
             biomedical, molecule_ids, key="workflow_step_6"
         )
@@ -5542,26 +5892,66 @@ def render_active_run_sidebar_status(output_dir: Path) -> None:
     st.caption(f"Active run: {active_run_folder_name(output_dir)}")
     with st.expander("Full run path", expanded=False):
         st.caption(str(output_dir))
-
-
 def render_start_workflow_mode() -> None:
     """Explain the available workflow modes without starting calculations."""
     st.markdown("### Choose a workflow mode")
+    st.markdown(
+        '<div class="ui-hero-card">'
+        f'<div class="ui-hero-card__title">{_ui_text(APP_TITLE)}</div>'
+        '<div class="ui-card__body">Evaluate generated molecules with structure validation, public evidence, biomedical context, patent/IP triage, and transparent report artifacts.</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    badge_columns = st.columns(3)
+    with badge_columns[0]:
+        render_modern_badge("Cheminformatics", variant="default", status="success", key="start_badge_cheminformatics")
+    with badge_columns[1]:
+        render_modern_badge("Biomedical evidence", variant="secondary", status="neutral", key="start_badge_biomedical")
+    with badge_columns[2]:
+        render_modern_badge("Patent/IP-context triage", variant="outline", status="warning", key="start_badge_patent")
+
     st.write(
         "Use the sidebar Workflow mode selector to choose how you want to begin."
     )
-    st.markdown(
-        "- **Guided demo:** start the bundled public-safe example workflow.\n"
-        "- **Analyze my molecules:** upload your own generated SMILES and optional "
-        "reference/text evidence files.\n"
-        "- **Load previous run:** open an existing output folder without rerunning "
-        "the pipeline."
+    st.markdown("Guided demo | Analyze my molecules | Load previous run")
+    workflow_columns = st.columns(3)
+    with workflow_columns[0]:
+        render_modern_card(
+            "Guided demo",
+            "Start the bundled public-safe example workflow and run each step only when you click its button.",
+            description="Best for learning the evidence flow.",
+            key="start_card_guided_demo",
+        )
+    with workflow_columns[1]:
+        render_modern_card(
+            "Analyze my molecules",
+            "Upload generated SMILES with optional reference and text-evidence files for a new local run.",
+            description="Best for your own public-safe datasets.",
+            key="start_card_analyze",
+        )
+    with workflow_columns[2]:
+        render_modern_card(
+            "Load previous run",
+            "Open an existing output folder without rerunning the pipeline or changing outputs.",
+            description="Best for reviewing completed artifacts.",
+            key="start_card_load_previous",
+        )
+    render_timeline_chips(
+        (
+            "1 Standardize",
+            "2 Identity",
+            "3 Public evidence",
+            "4 Descriptors",
+            "5 Chemical space",
+            "6 Biomedical",
+            "7 Patent/IP",
+            "8 Prioritize",
+            "9 Reports",
+        )
     )
     st.info(
         "No pipeline step runs until you click an explicit run or load button."
     )
-
-
 def completed_workflow_steps() -> set[int]:
     """Return completed workflow steps from session state."""
     completed = set()
@@ -6160,7 +6550,6 @@ def render_active_run_reset_button(*, key: str) -> None:
     if st.button("Start over", key=key):
         clear_active_run_state()
         st.rerun()
-
 def render_active_run_overview(output_dir: Path) -> None:
     """Show passive current-run status before the guided workflow body."""
     completed = {
@@ -6170,31 +6559,42 @@ def render_active_run_overview(output_dir: Path) -> None:
     }
     current = int(st.session_state.get("workflow_step", 1))
     current = max(1, min(current, len(WORKFLOW_STEP_NAMES)))
+    workflow_mode = str(st.session_state.get("workflow_mode", "active run")) or "active run"
+    artifacts = count_existing_outputs(output_dir)
     render_section_header(
         "Overview",
         "Passive run status. Selecting pages here does not execute pipeline steps.",
     )
     st.caption(f"Current run folder: {output_dir}")
-    columns = st.columns(3)
-    render_metric_card(
+    columns = st.columns(4)
+    render_modern_metric_card("Workflow mode", workflow_mode, container=columns[0])
+    render_modern_metric_card(
         "Completed steps",
         f"{len(completed)} of {len(WORKFLOW_STEP_NAMES)}",
-        container=columns[0],
+        container=columns[1],
     )
-    render_metric_card("Current guided step", current, container=columns[1])
-    render_metric_card(
-        "Available output files",
-        count_existing_outputs(output_dir),
-        container=columns[2],
-    )
+    render_modern_metric_card("Current guided step", current, container=columns[2])
+    render_modern_metric_card("Available output files", artifacts, container=columns[3])
     if completed:
         st.write(
             "Completed workflow steps: "
             + ", ".join(str(step) for step in sorted(completed))
         )
+        next_action = "Continue from the sidebar step navigation or open Downloads to review artifacts."
     else:
         st.info("No workflow steps have been marked complete for this active run yet.")
-
+        next_action = "Open the first workflow step and run it only when you are ready."
+    render_modern_card(
+        "Next recommended action",
+        next_action,
+        key="active_run_next_action_card",
+    )
+    render_modern_card(
+        "Run status",
+        f"{artifacts} known artifact(s) are available. Current guided step is {current}.",
+        description="This panel is read-only and does not execute workflow logic.",
+        key="active_run_status_card",
+    )
 def count_existing_outputs(output_dir: Path) -> int:
     """Count known output artifacts that already exist for a run."""
     count = sum(
@@ -6311,25 +6711,37 @@ def render_optional_domain_model_settings(output_dir: Path) -> None:
     if latest_checks:
         st.markdown("**Latest environment-check result**")
         render_environment_check_rows(latest_checks)
-
 def render_active_run_settings(output_dir: Path) -> None:
     """Show passive configuration notes for the active run."""
     render_section_header(
         "Settings",
         "Read-only configuration notes and local model controls for this active run.",
     )
-    render_info_card(
-        "Execution behavior",
-        "This sidebar scaffold does not change execution settings, scoring, output schemas, or cloud-safe model fallback behavior.",
+    if not shadcn_ui_available():
+        st.caption("Advanced UI components unavailable; using native Streamlit rendering.")
+    render_modern_card(
+        "Environment checks",
+        "Run package, online lookup, and optional model availability checks without starting a workflow.",
+        key="settings_environment_checks_card",
     )
-    render_info_card(
-        "Optional evidence models",
-        "Biomedical and patent/IP evidence can use lightweight defaults or optional local/cached domain models. Selecting a sidebar page does not run pipeline steps.",
+    render_modern_card(
+        "Model configuration/status",
+        "Optional local biomedical and patent/IP evidence models can be selected here; fallback behavior is unchanged.",
+        key="settings_model_configuration_card",
     )
     render_optional_domain_model_settings(output_dir)
+    render_modern_card(
+        "Run path status",
+        "Review resolved inputs, missing inputs, unresolved paths, and existing outputs for this active run.",
+        key="settings_run_path_card",
+    )
     render_run_path_status(output_dir)
+    render_modern_card(
+        "Custom analysis planner",
+        "Preview selected-step dependencies and recommended execution plans without running pipeline steps automatically.",
+        key="settings_custom_planner_card",
+    )
     render_custom_analysis_planner(output_dir)
-
 def run_app() -> None:
     """Run the guided Streamlit workflow without loading old results."""
     st.set_page_config(page_title=APP_TITLE, layout="wide")

@@ -2363,7 +2363,66 @@ def test_step3_existing_results_require_both_files(tmp_path: Path) -> None:
     assert app.step3_outputs_exist(paths) is True
 
 
-def test_step3_all_pubchem_failures_do_not_create_outputs(
+def write_step3_standardized(paths: app.PipelinePaths) -> None:
+    paths.standardized.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "molecule_id": ["a", "b"],
+            "canonical_smiles": ["CCO", "CCN"],
+            "inchi_key": ["KEY-A", "KEY-B"],
+            "valid_smiles": [True, True],
+            "error_message": ["", ""],
+        }
+    ).to_csv(paths.standardized, index=False)
+
+
+def pubchem_success_result(
+    molecule_id: str,
+    canonical_smiles: str,
+    inchi_key: str,
+    client: object,
+    timeout: float,
+):
+    return app.placeholder_result(
+        molecule_id,
+        canonical_smiles,
+        inchi_key,
+        True,
+        source_database="PubChem",
+        match_type="exact",
+        lookup_status="match_found",
+        evidence_note="Mock PubChem exact match.",
+    )
+
+
+def lookup_error_result(source_database: str):
+    def _lookup(
+        molecule_id: str,
+        canonical_smiles: str,
+        inchi_key: str,
+        client: object,
+        timeout: float,
+    ):
+        return app.placeholder_result(
+            molecule_id,
+            canonical_smiles,
+            inchi_key,
+            True,
+            source_database=source_database,
+            match_type="lookup_error",
+            lookup_status="lookup_error",
+            evidence_note=f"{source_database} lookup failed.",
+            error_message="network blocked",
+        )
+
+    return _lookup
+
+
+def no_surechembl_hits(*args, **kwargs) -> list[object]:
+    return []
+
+
+def test_step3_chembl_all_failures_preserve_pubchem_and_write_degraded_output(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     paths = app.build_paths(
@@ -2372,51 +2431,143 @@ def test_step3_all_pubchem_failures_do_not_create_outputs(
         text_evidence_path=app.DEMO_TEXT_EVIDENCE,
         output_dir=tmp_path / "outputs",
     )
-    paths.standardized.parent.mkdir(parents=True)
-    pd.DataFrame(
-        {
-            "molecule_id": ["a", "invalid"],
-            "canonical_smiles": ["CCO", ""],
-            "inchi_key": ["KEY", ""],
-            "valid_smiles": [True, False],
-            "error_message": ["", "invalid"],
-        }
-    ).to_csv(paths.standardized, index=False)
-    monkeypatch.setattr(
-        app,
-        "lookup_pubchem",
-        lambda molecule_id, canonical_smiles, inchi_key, client, timeout: (
-            app.placeholder_result(
-                molecule_id,
-                canonical_smiles,
-                inchi_key,
-                True,
-                source_database="PubChem",
-                match_type="lookup_error",
-                lookup_status="lookup_error",
-                evidence_note="Lookup failed.",
-                error_message="network blocked",
-            )
-        ),
+    write_step3_standardized(paths)
+    monkeypatch.setattr(app, "lookup_pubchem", pubchem_success_result)
+    monkeypatch.setattr(app, "lookup_chembl", lookup_error_result("ChEMBL"))
+    monkeypatch.setattr(app, "lookup_online_rows", no_surechembl_hits)
+
+    summary = app.run_public_demo_step3(
+        paths,
+        public_client=object(),
+        surechembl_client=object(),
     )
-    progress = []
 
-    with pytest.raises(RuntimeError, match="PubChem lookup failed for all"):
-        app.run_public_demo_step3(
-            paths,
-            progress_callback=progress.append,
-            public_client=object(),
-            surechembl_client=object(),
-        )
+    public_lookup = pd.read_csv(paths.public_lookup)
+    chembl_rows = public_lookup[public_lookup["source_database"].eq("ChEMBL")]
+    pubchem_rows = public_lookup[public_lookup["source_database"].eq("PubChem")]
+    assert len(pubchem_rows) == 2
+    assert set(pubchem_rows["lookup_status"]) == {"match_found"}
+    assert set(chembl_rows["lookup_status"]) == {"lookup_error"}
+    assert set(chembl_rows["error_message"]) == {"network blocked"}
+    assert summary["__completion_status"] == "degraded_lookup"
+    assert summary["__chembl_unavailable"] is True
+    assert summary["ChEMBL errors"] == 2
+    assert paths.surechembl_lookup.exists()
 
-    assert [(item.database, item.completed, item.total) for item in progress] == [
-        ("PubChem", 1, 2),
-        ("PubChem", 2, 2),
-    ]
-    assert not paths.public_lookup.exists()
-    assert not paths.surechembl_lookup.exists()
+
+def test_step3_both_pubchem_and_chembl_failures_write_lookup_error_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    write_step3_standardized(paths)
+    monkeypatch.setattr(app, "lookup_pubchem", lookup_error_result("PubChem"))
+    monkeypatch.setattr(app, "lookup_chembl", lookup_error_result("ChEMBL"))
+    monkeypatch.setattr(app, "lookup_online_rows", no_surechembl_hits)
+
+    summary = app.run_public_demo_step3(
+        paths,
+        public_client=object(),
+        surechembl_client=object(),
+    )
+
+    public_lookup = pd.read_csv(paths.public_lookup)
+    assert len(public_lookup) == 4
+    assert set(public_lookup["lookup_status"]) == {"lookup_error"}
+    assert summary["__completion_status"] == "degraded_lookup"
+    assert summary["__degraded_sources"] == "PubChem, ChEMBL"
+
+
+def test_step3_preserves_existing_outputs_when_new_output_write_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    write_step3_standardized(paths)
+    paths.public_lookup.write_text("molecule_id,source_database,lookup_status\nold,PubChem,match_found\n", encoding="utf-8")
+    paths.surechembl_lookup.write_text("molecule_id,lookup_status\nold,no_match\n", encoding="utf-8")
+    monkeypatch.setattr(app, "lookup_pubchem", pubchem_success_result)
+    monkeypatch.setattr(app, "lookup_chembl", lookup_error_result("ChEMBL"))
+    monkeypatch.setattr(app, "lookup_online_rows", no_surechembl_hits)
+
+    def fail_public_write(output_path: Path, records: object) -> None:
+        output_path.write_text("broken partial file", encoding="utf-8")
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(app, "write_public_lookup_csv", fail_public_write)
+
+    with pytest.raises(RuntimeError, match="simulated write failure"):
+        app.run_public_demo_step3(paths, public_client=object(), surechembl_client=object())
+
+    assert paths.public_lookup.read_text(encoding="utf-8") == "molecule_id,source_database,lookup_status\nold,PubChem,match_found\n"
+    assert paths.surechembl_lookup.read_text(encoding="utf-8") == "molecule_id,lookup_status\nold,no_match\n"
     assert not paths.public_lookup.with_suffix(".tmp.csv").exists()
-    assert not paths.surechembl_lookup.with_suffix(".tmp.csv").exists()
+
+
+def test_step3_summary_shows_chembl_unavailable_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    messages = {"success": [], "warning": [], "markdown": [], "dataframe": []}
+    fake_st = SimpleNamespace(
+        success=lambda value: messages["success"].append(value),
+        warning=lambda value: messages["warning"].append(value),
+        markdown=lambda value, **kwargs: messages["markdown"].append(value),
+        dataframe=lambda *args, **kwargs: messages["dataframe"].append((args, kwargs)),
+    )
+    monkeypatch.setattr(app, "st", fake_st)
+
+    app.render_step3_summary(
+        app.add_step3_completion_metadata(
+            {
+                "PubChem matches": 2,
+                "PubChem no matches": 0,
+                "PubChem errors": 0,
+                "ChEMBL matches": 0,
+                "ChEMBL no matches": 0,
+                "ChEMBL errors": 2,
+                "SureChEMBL queried": 0,
+                "SureChEMBL errors": 0,
+                "Invalid molecules skipped": 0,
+            },
+            ("ChEMBL",),
+        )
+    )
+
+    assert messages["warning"] == [app.STEP3_CHEMBL_UNAVAILABLE_WARNING]
+    assert any(app.STEP3_CHEMBL_WARNING_CARD in value for value in messages["markdown"])
+    assert messages["success"] == [
+        "Step 3 public database lookup completed with degraded lookup."
+    ]
+
+
+def test_step4_can_run_after_degraded_step3_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    write_step3_standardized(paths)
+    monkeypatch.setattr(app, "lookup_pubchem", pubchem_success_result)
+    monkeypatch.setattr(app, "lookup_chembl", lookup_error_result("ChEMBL"))
+    monkeypatch.setattr(app, "lookup_online_rows", no_surechembl_hits)
+
+    app.run_public_demo_step3(paths, public_client=object(), surechembl_client=object())
+    app.run_public_demo_step(4, paths)
+
+    assert paths.descriptors.exists()
+    assert paths.similarity.exists()
+    assert paths.similarity_top_hits.exists()
 
 
 def test_public_demo_opens_step_one_before_running_calculation() -> None:
