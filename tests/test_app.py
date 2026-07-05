@@ -108,6 +108,7 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert "Prioritization" in app.STEP_NAVIGATION_LABELS
     assert "Reports" in app.STEP_NAVIGATION_LABELS
     assert "Downloads" in app.STEP_NAVIGATION_LABELS
+    assert "Model and Data Sources" in app.STEP_NAVIGATION_LABELS
     assert "Settings" in app.STEP_NAVIGATION_LABELS
     assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY == "_sidebar_step_navigation_widget"
     assert app.PENDING_ACTIVE_RUN_PAGE_KEY == "pending_active_run_page"
@@ -1585,7 +1586,7 @@ def test_sidebar_special_pages_render_without_workflow_step_body(
     navigation = next(
         item for item in app_test.radio if item.label == "Step navigation"
     )
-    for page in ("Overview", "Input data", "Downloads", "Settings"):
+    for page in ("Overview", "Input data", "Downloads", "Model and Data Sources", "Settings"):
         app_test = navigation.set_value(navigation_option_for(app_test, page)).run(
             timeout=10
         )

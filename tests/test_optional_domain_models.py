@@ -225,3 +225,6 @@ def test_downloads_disabled_patent_csv_does_not_load_model(monkeypatch, tmp_path
     assert frame.loc[0, "model_source"] == "AI-Growth-Lab/PatentSBERTa"
     assert frame.loc[0, "preferred_model_name"] == "AI-Growth-Lab/PatentSBERTa"
     assert frame.loc[0, "fallback_model_name"] == odm.FALLBACK_MODEL_ID
+
+def test_app_managed_huggingface_cache_is_used():
+    assert str(odm.HUGGINGFACE_CACHE_DIR).endswith("app_data\\model_cache\\huggingface") or str(odm.HUGGINGFACE_CACHE_DIR).endswith("app_data/model_cache/huggingface")

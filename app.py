@@ -50,6 +50,19 @@ from src.optional_domain_models import (
     load_optional_model,
     resolve_model_selection,
 )
+from src.model_source_status import (
+    HUGGINGFACE_CACHE_DIR,
+    MODEL_MANIFEST_PATH,
+    PUBLIC_DATA_MANIFEST_PATH,
+    RUN_MANIFEST_PATH,
+    build_model_record,
+    initialize_manifests,
+    model_is_cached,
+    read_manifest,
+    update_model_manifest,
+    update_public_data_manifest,
+    update_run_manifest,
+)
 from src.pipeline import (
     PipelinePaths,
     build_paths,
@@ -92,6 +105,7 @@ OUTPUT_FILES = {
     "chemberta_embeddings": "chemberta_embeddings.csv",
 }
 APP_TITLE = "AI Molecule Design Assistant"
+initialize_manifests()
 IMPORTANT_COLUMNS = [
     "molecule_id",
     "prioritization_score",
@@ -525,6 +539,7 @@ STEP_NAVIGATION_LABELS = (
     "Prioritization",
     "Reports",
     "Downloads",
+    "Model and Data Sources",
     "Settings",
 )
 STEP_NAVIGATION_TO_WORKFLOW_STEP = {
@@ -3324,8 +3339,12 @@ def render_biomedical_evidence_view(
             "Biomedical evidence matching was skipped because the embedding "
             "model is unavailable in this cloud environment."
         )
+    st.caption(
+        "Semantic evidence similarity is not biological activity, efficacy, safety, or clinical prediction."
+    )
+    configured_biomedical = preferred_model_selection("biomedical").model_id or preferred_model_selection("biomedical").label
     model_available_count = int(
-        plot_df["biomedical_model_status"].astype(str).str.strip().eq("available").sum()
+        plot_df["biomedical_model_status"].astype(str).str.strip().isin(["available", "preferred_model_used", "fallback_model_used"]).sum()
     )
     model_skipped_count = int(
         plot_df["biomedical_model_status"]
@@ -3345,6 +3364,9 @@ def render_biomedical_evidence_view(
                 "Molecules": len(plot_df),
                 "Evidence matched": evidence_matched_count,
                 "Evidence skipped": int(len(plot_df) - evidence_matched_count),
+                "Actual model used": latest_column_value(plot_df, "actual_model_used"),
+                "Fallback used": yes_no_status(plot_df["biomedical_model_status"].astype(str).str.strip().eq("fallback_model_used").any()),
+                "Configured model cached": yes_no_status(model_is_cached(configured_biomedical)),
             },
             key=f"{key}_biomedical_summary_card",
         )
@@ -3406,6 +3428,10 @@ def render_biomedical_evidence_view(
             "biomedical_relevance_category",
             "biomedical_evidence_count",
             "top_biomedical_evidence_id",
+            "preferred_model_name",
+            "fallback_model_name",
+            "actual_model_used",
+            "model_source",
         ),
     )
     with st.expander("Preview table", expanded=False):
@@ -3474,9 +3500,11 @@ def render_patent_evidence_view(
         )
     st.caption(
         "These outputs separate public structure evidence, patent document "
-        "metadata, and optional patent-text embedding evidence. They are "
-        "research triage signals, not legal conclusions."
+        "metadata, and optional patent-text embedding evidence. Patent/IP-context "
+        "evidence is research triage only, not legal advice, not patentability, "
+        "not novelty, not FTO, not infringement, and not ownership determination."
     )
+    configured_patent = preferred_model_selection("patent").model_id or preferred_model_selection("patent").label
     structure_available = (
         plot_df["surechembl_structure_status"]
         .astype(str)
@@ -3521,7 +3549,9 @@ def render_patent_evidence_view(
                     .eq("model_unavailable")
                     .sum()
                 ),
-                "Fallback preserved": "yes",
+                "Actual model used": latest_column_value(plot_df, "actual_model_used"),
+                "Fallback used": yes_no_status(plot_df["patent_model_status"].astype(str).str.strip().eq("fallback_model_used").any()),
+                "Configured model cached": yes_no_status(model_is_cached(configured_patent)),
             },
             key=f"{key}_patent_model_status_card",
         )
@@ -3556,6 +3586,10 @@ def render_patent_evidence_view(
             "patent_relevance_category",
             "patent_evidence_count",
             "top_patent_evidence_id",
+            "preferred_model_name",
+            "fallback_model_name",
+            "actual_model_used",
+            "model_source",
         ),
     )
     with st.expander("Preview table", expanded=False):
@@ -4655,6 +4689,202 @@ def model_metadata_for_status(
     }
 
 
+def latest_column_value(frame: pd.DataFrame, column: str, default: str = "not available") -> str:
+    """Return the first nonempty value from a dataframe column."""
+    if frame.empty or column not in frame.columns:
+        return default
+    values = frame[column].fillna("").astype(str).str.strip()
+    values = values[values.ne("")]
+    return str(values.iloc[0]) if not values.empty else default
+
+
+def yes_no_status(value: bool) -> str:
+    """Return a readable yes/no value."""
+    return "yes" if value else "no"
+
+
+def latest_model_usage(output_dir: Path, role: str) -> dict[str, str]:
+    """Read latest Step 6/7 output model usage for one role."""
+    if role == "biomedical":
+        path = output_dir / OUTPUT_FILES["biomedical_evidence"]
+        status_column = "biomedical_model_status"
+        configured_column = "preferred_model_name"
+        model_column = "biomedical_model_name"
+    else:
+        path = output_dir / OUTPUT_FILES["patent_evidence_embeddings"]
+        status_column = "patent_model_status"
+        configured_column = "preferred_model_name"
+        model_column = "patent_model_name"
+    frame = read_optional_csv(path)
+    return {
+        "status": latest_column_value(frame, status_column, "not_checked"),
+        "configured_model": latest_column_value(
+            frame,
+            configured_column,
+            latest_column_value(frame, model_column, ""),
+        ),
+        "actual_model_used": latest_column_value(frame, "actual_model_used", ""),
+        "error_message": latest_column_value(frame, "evidence_note", ""),
+    }
+
+
+def selected_model_records(output_dir: Path) -> list[object]:
+    """Build model manifest records for current UI selections and latest run outputs."""
+    records = []
+    fallback_selection = resolve_model_selection(
+        model_type="biomedical",
+        option=CLOUD_SAFE_FALLBACK_LABEL,
+        fallback_model_id=FALLBACK_MODEL_ID,
+    )
+    fallback_model = fallback_selection.model_id
+    for role in ("biomedical", "patent"):
+        selection = preferred_model_selection(role)
+        usage = latest_model_usage(output_dir, role)
+        configured_model = selection.model_id or usage.get("configured_model", "") or selection.label
+        actual_model = usage.get("actual_model_used", "")
+        status = usage.get("status", "not_checked")
+        if status == "not_checked":
+            status = "cached" if model_is_cached(configured_model) else "not_cached"
+        error = "" if model_is_cached(configured_model) else "Model not found in app-managed cache."
+        if usage.get("error_message") and status in {"model_unavailable", "downloads_disabled"}:
+            error = usage["error_message"]
+        records.append(
+            build_model_record(
+                role=role,
+                configured_model=configured_model,
+                fallback_model=fallback_model,
+                actual_model_used=actual_model,
+                status=status,
+                error_message=error,
+            )
+        )
+    records.append(
+        build_model_record(
+            role="fallback",
+            configured_model=fallback_model,
+            fallback_model=fallback_model,
+            actual_model_used=fallback_model if model_is_cached(fallback_model) else "",
+            status="cached" if model_is_cached(fallback_model) else "not_cached",
+            error_message="" if model_is_cached(fallback_model) else "Fallback model not found in app-managed cache.",
+        )
+    )
+    return records
+
+
+def refresh_model_and_source_manifests(output_dir: Path) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    """Refresh app-managed model, public-source, and run manifests."""
+    model_manifest = update_model_manifest(selected_model_records(output_dir))
+    public_manifest = update_public_data_manifest(output_dir)
+    run_manifest = update_run_manifest(output_dir)
+    return model_manifest, public_manifest, run_manifest
+
+
+def explicit_cache_model(selection) -> tuple[str, bool, str]:
+    """Download/cache a selected model only from the explicit gated UI action."""
+    if not os.environ.get(ALLOW_LOCAL_MODEL_DOWNLOADS_ENV) == "1":
+        return selection.model_id or selection.label, False, "Download disabled. Set ALLOW_LOCAL_MODEL_DOWNLOADS=1."
+    if selection.error_message:
+        return selection.model_id or selection.label, False, selection.error_message
+    model_id = selection.model_id
+    if not model_id:
+        return selection.label, False, "No model ID configured."
+    try:
+        if selection.embedding_backend == "sentence-transformers":
+            from sentence_transformers import SentenceTransformer
+
+            SentenceTransformer(model_id, cache_folder=str(HUGGINGFACE_CACHE_DIR))
+        else:
+            from transformers import AutoModel, AutoTokenizer
+
+            AutoTokenizer.from_pretrained(model_id, cache_dir=str(HUGGINGFACE_CACHE_DIR))
+            AutoModel.from_pretrained(model_id, cache_dir=str(HUGGINGFACE_CACHE_DIR))
+    except Exception as exc:
+        return model_id, False, f"{type(exc).__name__}: {exc}"
+    return model_id, True, "cached"
+
+
+def render_manifest_table(manifest: dict[str, object]) -> None:
+    """Render flattened model manifest rows."""
+    rows = list((manifest.get("models") or {}).values())
+    if rows:
+        st.dataframe(display_dataframe(pd.DataFrame(rows)), width="stretch", hide_index=True)
+    else:
+        st.info("No model status has been checked yet.")
+
+
+def render_public_source_manifest(manifest: dict[str, object]) -> None:
+    """Render public source status manifest rows."""
+    rows = []
+    for name, source in (manifest.get("sources") or {}).items():
+        if not isinstance(source, dict):
+            continue
+        rows.append(
+            {
+                "Source": name,
+                "Exists": yes_no_status(bool(source.get("exists"))),
+                "Rows": source.get("rows", 0),
+                "Status columns": source.get("statuses", {}),
+                "Path": source.get("path", ""),
+            }
+        )
+    if rows:
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    else:
+        st.info("No PubChem, ChEMBL, or SureChEMBL source status is available yet.")
+
+
+def render_model_and_data_sources_page(output_dir: Path) -> None:
+    """Render app-managed model and data source status."""
+    st.subheader("Model and Data Sources")
+    st.caption(
+        "Model weights and downloaded cache data live in app-managed local folders and are not committed to GitHub. Normal app rendering keeps offline local-cache loading enabled and does not download model weights."
+    )
+    st.markdown(f"**App-managed Hugging Face cache:** `{HUGGINGFACE_CACHE_DIR}`")
+    downloads_enabled = os.environ.get(ALLOW_LOCAL_MODEL_DOWNLOADS_ENV) == "1"
+    st.caption(f"{ALLOW_LOCAL_MODEL_DOWNLOADS_ENV}={'1' if downloads_enabled else 'not set'}")
+    if st.button("Check cache/status", key="check_model_data_sources"):
+        refresh_model_and_source_manifests(output_dir)
+    model_manifest = read_manifest(MODEL_MANIFEST_PATH)
+    public_manifest = read_manifest(PUBLIC_DATA_MANIFEST_PATH)
+    run_manifest = read_manifest(RUN_MANIFEST_PATH)
+    st.markdown("#### Configured models")
+    st.write(
+        {
+            "Selected biomedical model": preferred_model_selection("biomedical").model_id or preferred_model_selection("biomedical").label,
+            "Selected patent model": preferred_model_selection("patent").model_id or preferred_model_selection("patent").label,
+            "Fallback model": FALLBACK_MODEL_ID,
+            "Model manifest timestamp": model_manifest.get("last_checked", ""),
+            "Public data manifest timestamp": public_manifest.get("last_checked", ""),
+            "Run manifest timestamp": run_manifest.get("last_checked", ""),
+        }
+    )
+    render_manifest_table(model_manifest)
+    st.markdown("#### PubChem / ChEMBL / SureChEMBL status")
+    render_public_source_manifest(public_manifest)
+    if downloads_enabled:
+        if st.button("Download/cache selected models", key="download_selected_models"):
+            selections = [
+                preferred_model_selection("biomedical"),
+                preferred_model_selection("patent"),
+                resolve_model_selection(
+                    model_type="biomedical",
+                    option=CLOUD_SAFE_FALLBACK_LABEL,
+                    fallback_model_id=FALLBACK_MODEL_ID,
+                ),
+            ]
+            rows = []
+            with st.spinner("Downloading selected models into the app-managed cache..."):
+                for selection in selections:
+                    model_id, ok, message = explicit_cache_model(selection)
+                    rows.append({"Model": model_id, "Status": "cached" if ok else "failed", "Message": message})
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+            refresh_model_and_source_manifests(output_dir)
+    else:
+        st.info(
+            "Model download/cache actions are disabled. Set ALLOW_LOCAL_MODEL_DOWNLOADS=1 before launching Streamlit to enable the explicit download button."
+        )
+
+
 def load_selected_domain_model(
     *,
     model_type: str,
@@ -4669,6 +4899,20 @@ def load_selected_domain_model(
         fallback_model_id=fallback_model_id,
     )
     fallback_name = fallback_selection.model_id
+
+    def record_status(actual_model: str, status: str, note: str) -> None:
+        update_model_manifest(
+            [
+                build_model_record(
+                    role=model_type,
+                    configured_model=preferred_name,
+                    fallback_model=fallback_name,
+                    actual_model_used=actual_model,
+                    status=status,
+                    error_message="" if actual_model else note,
+                )
+            ]
+        )
     if preferred.label == CLOUD_SAFE_FALLBACK_LABEL:
         try:
             model = load_optional_model(fallback_selection)
@@ -4680,10 +4924,12 @@ def load_selected_domain_model(
                 embedding_backend=fallback_selection.embedding_backend,
                 pooling_method=fallback_selection.pooling_method,
             )
-            return None, fallback_name, "model_unavailable", metadata, (
+            note = (
                 "Lightweight general-purpose fallback model was unavailable; "
                 "embedding evidence was skipped."
             )
+            record_status("", "model_unavailable", note)
+            return None, fallback_name, "model_unavailable", metadata, note
         metadata = encoder_metadata(model, model_source=fallback_name)
         metadata.update(
             model_metadata_for_status(
@@ -4694,9 +4940,9 @@ def load_selected_domain_model(
                 pooling_method=metadata.get("pooling_method", ""),
             )
         )
-        return model, fallback_name, "fallback_model_used", metadata, (
-            "Lightweight general-purpose fallback model was used; this is not an error."
-        )
+        note = "Lightweight general-purpose fallback model was used; this is not an error."
+        record_status(fallback_name, "fallback_model_used", note)
+        return model, fallback_name, "fallback_model_used", metadata, note
 
     try:
         model = load_optional_model(preferred)
@@ -4711,10 +4957,12 @@ def load_selected_domain_model(
                 embedding_backend=preferred.embedding_backend,
                 pooling_method=preferred.pooling_method,
             )
-            return None, preferred_name, "model_unavailable", metadata, (
+            note = (
                 "Preferred model and lightweight general-purpose fallback were unavailable; "
                 "embedding evidence was skipped."
             )
+            record_status("", "model_unavailable", note)
+            return None, preferred_name, "model_unavailable", metadata, note
         metadata = encoder_metadata(fallback_model, model_source=fallback_name)
         metadata.update(
             model_metadata_for_status(
@@ -4725,9 +4973,9 @@ def load_selected_domain_model(
                 pooling_method=metadata.get("pooling_method", ""),
             )
         )
-        return fallback_model, fallback_name, "fallback_model_used", metadata, (
-            "Preferred model was unavailable; lightweight general-purpose fallback was used."
-        )
+        note = "Preferred model was unavailable; lightweight general-purpose fallback was used."
+        record_status(fallback_name, "fallback_model_used", note)
+        return fallback_model, fallback_name, "fallback_model_used", metadata, note
 
     metadata = encoder_metadata(model, model_source=preferred.model_id)
     metadata.update(
@@ -4739,9 +4987,9 @@ def load_selected_domain_model(
             pooling_method=metadata.get("pooling_method", ""),
         )
     )
-    return model, preferred.model_id, "preferred_model_used", metadata, (
-        "Preferred embedding model was used for local evidence ranking."
-    )
+    note = "Preferred embedding model was used for local evidence ranking."
+    record_status(preferred.model_id, "preferred_model_used", note)
+    return model, preferred.model_id, "preferred_model_used", metadata, note
 
 def run_public_demo_step(
     step_number: int,
@@ -6521,6 +6769,8 @@ def render_step_navigation_context(
         render_active_run_input_data(output_dir)
     elif selected_page == "Downloads":
         render_active_run_downloads(output_dir)
+    elif selected_page == "Model and Data Sources":
+        render_model_and_data_sources_page(output_dir)
     elif selected_page == "Settings":
         render_active_run_settings(output_dir)
 

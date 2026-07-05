@@ -114,8 +114,23 @@ valid skipped outputs when an embedding model is unavailable, and skipped
 biomedical or patent-text evidence is not treated as a workflow error.
 
 For local runs, these stages use sentence-transformer compatible models only
-when the configured model is already available in the local cache. The app does
-not automatically download large embedding models on Streamlit Cloud.
+when the configured model is already available in the local cache. Normal app
+execution keeps offline cache loading enabled (`local_files_only=True`) and does
+not automatically download large embedding models or model weights.
+
+The app manages local cache and status files under `app_data/`:
+
+- `app_data/model_cache/huggingface/` for Hugging Face model files;
+- `app_data/public_lookup_cache/` for app-managed public lookup cache data;
+- `app_data/manifests/model_manifest.json` for configured, cached, actual-model,
+  and fallback status;
+- `app_data/manifests/public_data_manifest.json` for PubChem, ChEMBL, and
+  SureChEMBL source status;
+- `app_data/manifests/run_manifest.json` for the latest checked run folder.
+
+Model weights and downloaded cache contents are ignored by Git and should not be
+committed to GitHub. The small manifest JSON files and `.gitkeep` placeholders
+are kept so users can see the expected folder structure.
 
 Recommended biomedical model category: BioBERT/PubMedBERT-style sentence
 embedding models for biomedical evidence and biological-context matching.
@@ -133,7 +148,9 @@ startup or public deployment.
 
 BioBERT, PubMedBERT, PatentSBERTa, and custom Hugging Face checkpoints are optional local research-mode models for Step 6 biomedical evidence and Step 7 patent/IP-context evidence. They are not required for Streamlit Cloud, and the app keeps the cloud-safe fallback behavior when these models are unavailable.
 
-Set `ALLOW_LOCAL_MODEL_DOWNLOADS=1` before local testing. Large models are loaded only after an explicit action, such as running the Settings-page benchmark or executing a step with local testing enabled. BioBERT and PubMedBERT are transformer language models, so the app uses `transformers` `AutoTokenizer`/`AutoModel` with attention-mask mean pooling unless a sentence-transformers backend is selected. Patent/IP model outputs are evidence-ranking signals only; they are not biological validation, patentability opinions, freedom-to-operate analysis, or legal conclusions.
+Open the Streamlit **Model and Data Sources** page and click **Check cache/status** to refresh the model, public-data, and run manifests without downloading models or running a workflow step.
+
+Set `ALLOW_LOCAL_MODEL_DOWNLOADS=1` before launching Streamlit only when you want to enable the explicit **Download/cache selected models** action. Large models are never downloaded during normal rendering; the download button is hidden behind that environment variable. BioBERT and PubMedBERT are transformer language models, so the app uses `transformers` `AutoTokenizer`/`AutoModel` with attention-mask mean pooling unless a sentence-transformers backend is selected. Patent/IP model outputs are evidence-ranking signals only; they are not biological validation, patentability opinions, freedom-to-operate analysis, or legal conclusions.
 
 To cache models explicitly for offline testing, run for example:
 

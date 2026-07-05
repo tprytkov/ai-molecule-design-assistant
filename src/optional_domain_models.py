@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
 
 from src.text_nlp import cosine_similarity
+from src.model_source_status import (
+    HUGGINGFACE_CACHE_DIR,
+    configure_huggingface_cache_env,
+    ensure_app_data_dirs,
+)
+
+configure_huggingface_cache_env()
 
 ALLOW_LOCAL_MODEL_DOWNLOADS_ENV = "ALLOW_LOCAL_MODEL_DOWNLOADS"
 FALLBACK_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
@@ -113,8 +120,15 @@ class TransformersMeanPoolingEncoder:
     embedding_backend = TRANSFORMERS_BACKEND
     pooling_method = MEAN_POOLING
 
-    def __init__(self, model_id: str, *, local_files_only: bool = True) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        local_files_only: bool = True,
+        cache_dir: Path | None = None,
+    ) -> None:
         self.model_source = model_id
+        cache_dir = cache_dir or HUGGINGFACE_CACHE_DIR
         try:
             import torch
             from transformers import AutoModel, AutoTokenizer
@@ -127,10 +141,12 @@ class TransformersMeanPoolingEncoder:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model_id,
                 local_files_only=local_files_only,
+                cache_dir=str(cache_dir),
             )
             self.model = AutoModel.from_pretrained(
                 model_id,
                 local_files_only=local_files_only,
+                cache_dir=str(cache_dir),
             )
             self.model.eval()
         except Exception as exc:
@@ -233,6 +249,7 @@ def resolve_model_selection(
 
 def load_sentence_transformer(model_id: str) -> Encoder:
     """Load a cached sentence-transformer model and attach metadata."""
+    ensure_app_data_dirs()
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
@@ -241,7 +258,11 @@ def load_sentence_transformer(model_id: str) -> Encoder:
         ) from exc
     try:
         return SentenceTransformerEncoder(
-            SentenceTransformer(model_id, local_files_only=True),
+            SentenceTransformer(
+                model_id,
+                cache_folder=str(HUGGINGFACE_CACHE_DIR),
+                local_files_only=True,
+            ),
             model_id,
         )
     except Exception as exc:
@@ -261,7 +282,11 @@ def load_optional_model(selection: OptionalModelSelection) -> Encoder:
         )
     if selection.embedding_backend == SENTENCE_TRANSFORMERS_BACKEND:
         return load_sentence_transformer(selection.model_id)
-    return TransformersMeanPoolingEncoder(selection.model_id, local_files_only=True)
+    return TransformersMeanPoolingEncoder(
+        selection.model_id,
+        local_files_only=True,
+        cache_dir=HUGGINGFACE_CACHE_DIR,
+    )
 
 
 def encoder_metadata(model: object, *, model_source: str = "") -> dict[str, str]:

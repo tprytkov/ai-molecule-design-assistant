@@ -45,3 +45,23 @@ data/demo_generated_smiles.csv
 data/demo_surechembl_compounds.csv
 data/demo_text_evidence.csv
 data/reference_molecules.csv
+
+# App-managed local caches and manifests
+!app_data/model_cache/
+app_data/model_cache/**
+!app_data/model_cache/.gitkeep
+!app_data/model_cache/huggingface/
+app_data/model_cache/huggingface/**
+!app_data/model_cache/huggingface/.gitkeep
+app_data/public_lookup_cache/**
+!app_data/public_lookup_cache/.gitkeep
+app_data/manifests/*.tmp
+app_data/manifests/*_local.json
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.parquet
+*.arrow
