@@ -27,6 +27,7 @@ except Exception:
     shadcn_ui = None
 
 from src.biomedical_evidence import biomedical_evidence_csv
+from src.analytics import generate_biopharma_outputs
 from src.compound_qa import compound_qa
 from src.chemberta_embeddings import (
     chemberta_embeddings_csv,
@@ -101,6 +102,11 @@ OUTPUT_FILES = {
     "text_nlp": "text_nlp.csv",
     "biomedical_evidence": "biomedical_evidence.csv",
     "patent_evidence_embeddings": "patent_evidence_embeddings.csv",
+    "biopharma_positioning": "biopharma_positioning.csv",
+    "evidence_readiness": "evidence_readiness.csv",
+    "mock_rwe_cohort_summary": "mock_rwe_cohort_summary.csv",
+    "trial_endpoint_map": "trial_endpoint_map.csv",
+    "biopharma_summary_report": "biopharma_summary_report.md",
     "surechembl": "surechembl_evidence.csv",
     "visualization": "visualization_coordinates.csv",
     "standardized": "standardized.csv",
@@ -542,6 +548,7 @@ STEP_NAVIGATION_LABELS = (
     "Biomedical evidence",
     "Patent/IP-context evidence",
     "Prioritization",
+    "Biopharma Analytics",
     "Reports",
     "Downloads",
     "Model and Data Sources",
@@ -577,7 +584,14 @@ STEP_OUTPUT_KEYS = {
     5: ("chemberta_embeddings", "visualization"),
     6: ("compound_context", "text_nlp", "biomedical_evidence"),
     7: ("patent_evidence_embeddings",),
-    8: ("prioritization",),
+    8: (
+        "prioritization",
+        "biopharma_positioning",
+        "evidence_readiness",
+        "mock_rwe_cohort_summary",
+        "trial_endpoint_map",
+        "biopharma_summary_report",
+    ),
     9: ("reports",),
 }
 STEP_STATUS_ICONS = {
@@ -799,7 +813,7 @@ class Step3Progress:
 
 def read_optional_csv(path: Path) -> pd.DataFrame:
     """Read a CSV if present, otherwise return an empty frame."""
-    if not path.exists():
+    if not path.exists() or path.suffix.lower() != ".csv":
         return pd.DataFrame()
     return pd.read_csv(path)
 
@@ -3357,6 +3371,107 @@ def render_admet_prediction_page(output_dir: Path) -> None:
     st.dataframe(pd.DataFrame(registry_rows), width="stretch", hide_index=True)
 
 
+def render_biopharma_analytics_page(output_dir: Path) -> None:
+    """Render biopharma analytics and translational positioning outputs."""
+    st.subheader("Biopharma Analytics")
+    st.warning(
+        "Research and portfolio analytics only. This page is not medical advice, "
+        "clinical evidence, safety evidence, efficacy evidence, toxicity evidence, "
+        "legal advice, or a patentability, novelty, freedom-to-operate, "
+        "infringement, or ownership determination."
+    )
+    st.caption(
+        "Demo framing: Alzheimer's disease and alpha7 nicotinic acetylcholine "
+        "receptor positive allosteric modulation. Mock OMOP/RWE content is "
+        "synthetic demonstration data, not real patient data."
+    )
+    loaded = load_output_directory(output_dir)
+    positioning = loaded.tables["biopharma_positioning"]
+    readiness = loaded.tables["evidence_readiness"]
+    mock_rwe = loaded.tables["mock_rwe_cohort_summary"]
+    endpoint_map = loaded.tables["trial_endpoint_map"]
+    report_path = loaded.paths["biopharma_summary_report"]
+    output_paths = [
+        loaded.paths["biopharma_positioning"],
+        loaded.paths["evidence_readiness"],
+        loaded.paths["mock_rwe_cohort_summary"],
+        loaded.paths["trial_endpoint_map"],
+        report_path,
+    ]
+
+    if readiness.empty and not loaded.paths["evidence_readiness"].exists():
+        if loaded.paths["standardized"].exists() or loaded.paths["prioritization"].exists():
+            if st.button(
+                "Generate biopharma analytics outputs",
+                key="generate_biopharma_analytics_outputs",
+            ):
+                generate_biopharma_outputs(output_dir=output_dir)
+                st.rerun()
+        else:
+            st.info(
+                "Biopharma analytics outputs are not available yet. Run at least "
+                "standardization and descriptor/prioritization steps first."
+            )
+            return
+
+    columns = st.columns(4)
+    render_modern_metric_card(
+        "Molecules",
+        len(readiness) if not readiness.empty else len(positioning),
+        container=columns[0],
+    )
+    render_modern_metric_card(
+        "Positioning rows",
+        len(positioning),
+        container=columns[1],
+    )
+    render_modern_metric_card(
+        "Mock RWE cohorts",
+        len(mock_rwe),
+        container=columns[2],
+    )
+    render_modern_metric_card(
+        "Endpoint mappings",
+        len(endpoint_map),
+        container=columns[3],
+    )
+
+    st.markdown("#### Evidence readiness")
+    if readiness.empty:
+        st.info("evidence_readiness.csv is not available.")
+    else:
+        st.dataframe(display_dataframe(readiness), width="stretch", hide_index=True)
+
+    st.markdown("#### Translational positioning")
+    if positioning.empty:
+        st.info("biopharma_positioning.csv is not available.")
+    else:
+        st.dataframe(display_dataframe(positioning), width="stretch", hide_index=True)
+
+    st.markdown("#### Mock OMOP/RWE cohort summary")
+    if mock_rwe.empty:
+        st.info("mock_rwe_cohort_summary.csv is not available.")
+    else:
+        st.dataframe(display_dataframe(mock_rwe), width="stretch", hide_index=True)
+
+    st.markdown("#### Trial endpoint map")
+    if endpoint_map.empty:
+        st.info("trial_endpoint_map.csv is not available.")
+    else:
+        st.dataframe(display_dataframe(endpoint_map), width="stretch", hide_index=True)
+
+    st.markdown("#### Summary report")
+    if report_path.exists():
+        report_text = report_path.read_text(encoding="utf-8", errors="replace")
+        st.markdown(report_text)
+    else:
+        st.info("biopharma_summary_report.md is not available.")
+
+    existing_outputs = [path for path in output_paths if path.exists()]
+    if existing_outputs:
+        render_output_artifacts(existing_outputs)
+
+
 def render_text_evidence_view(
     text_nlp: pd.DataFrame,
     molecule_ids: Iterable[str],
@@ -5220,6 +5335,22 @@ def run_public_demo_step(
             paths.visualization_coordinates,
             reference_path=paths.references,
         )
+        generate_biopharma_outputs(
+            output_dir=paths.prioritized.parent,
+            standardized_path=paths.standardized,
+            descriptors_path=paths.descriptors,
+            similarity_path=paths.similarity,
+            public_lookup_path=paths.public_lookup,
+            biomedical_path=paths.biomedical_evidence,
+            patent_path=paths.patent_evidence_embeddings,
+            prioritization_path=paths.prioritized,
+            admet_summary_path=paths.admet_summary,
+            positioning_path=paths.biopharma_positioning,
+            readiness_path=paths.evidence_readiness,
+            mock_rwe_path=paths.mock_rwe_cohort_summary,
+            trial_endpoint_path=paths.trial_endpoint_map,
+            report_path=paths.biopharma_summary_report,
+        )
     elif step_number == 9:
         loaded = load_output_directory(paths.prioritized.parent)
         prioritization = loaded.tables["prioritization"]
@@ -5584,6 +5715,30 @@ def render_reports_output_artifact(reports_dir: Path) -> None:
     )
 
 
+def render_text_output_artifact(path: Path) -> None:
+    """Show one generated text or Markdown output as a compact artifact."""
+    st.markdown(f"#### {path.name}")
+    if not path.exists():
+        st.info("Run this step to create the output file.")
+        return
+    data = path.read_bytes()
+    raw_text = data.decode("utf-8", errors="replace")
+    st.download_button(
+        f"Download {path.name}",
+        data=data,
+        file_name=path.name,
+        mime="text/markdown" if path.suffix.lower() == ".md" else "text/plain",
+        key=f"download_output_{path.name}",
+    )
+    with st.expander(f"Preview {path.name}"):
+        st.text_area(
+            "Text preview",
+            value=raw_text[:4000],
+            height=240,
+            key=f"raw_output_{path.name}",
+        )
+
+
 def report_molecule_id(path: Path) -> str:
     """Extract a molecule ID from a generated report filename."""
     prefix = "compound_intelligence_report_"
@@ -5766,8 +5921,10 @@ def render_output_artifacts(outputs: Iterable[Path]) -> None:
     for path in outputs:
         if path.suffix.lower() == ".csv":
             render_csv_output_artifact(path)
-        else:
+        elif path.is_dir():
             render_reports_output_artifact(path)
+        else:
+            render_text_output_artifact(path)
 
 
 def render_step_references(step_number: int) -> None:
@@ -6888,6 +7045,8 @@ def render_step_navigation_context(
         render_active_run_downloads(output_dir)
     elif selected_page == "ADMET Prediction":
         render_admet_prediction_page(output_dir)
+    elif selected_page == "Biopharma Analytics":
+        render_biopharma_analytics_page(output_dir)
     elif selected_page == "Model and Data Sources":
         render_model_and_data_sources_page(output_dir)
     elif selected_page == "Settings":

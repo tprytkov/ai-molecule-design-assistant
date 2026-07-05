@@ -77,6 +77,32 @@ ADMET outputs are computational research triage only. They are not experimental
 ADMET evidence, toxicity evidence, safety evidence, clinical evidence, or a
 substitute for domain review.
 
+### Biopharma analytics and translational positioning
+
+The Biopharma Analytics layer writes separate portfolio-analysis artifacts after
+prioritization:
+
+- `biopharma_positioning.csv`
+- `evidence_readiness.csv`
+- `mock_rwe_cohort_summary.csv`
+- `trial_endpoint_map.csv`
+- `biopharma_summary_report.md`
+
+This layer uses existing local outputs when available, including standardized
+structures, descriptors, similarity, public lookup, biomedical evidence,
+patent/IP-context evidence, prioritization, and ADMET summary files. It does not
+feed back into the prioritization score and does not change existing scoring
+formulas. The bundled demo framing is Alzheimer's disease / alpha7 nicotinic
+acetylcholine receptor positive allosteric modulation.
+
+Demo files live under `data/demo_biopharma/`. The mock OMOP/RWE-style cohort
+file is synthetic demonstration data only; it is not real patient data and is
+not patient-level RWE. Trial endpoint mapping is conceptual translational
+framing only. These outputs are research and portfolio analytics, not medical
+advice, clinical evidence, safety evidence, efficacy evidence, toxicity
+evidence, legal advice, or a patentability, novelty, freedom-to-operate,
+infringement, or ownership determination.
+
 ### 5. ChemBERTa chemical-space embeddings
 
 [ChemBERTa](https://arxiv.org/abs/2010.09885) uses transformer-based
@@ -184,6 +210,8 @@ python scripts/cache_optional_models.py --models dmis-lab/biobert-base-cased-v1.
   an optional systematic-name fallback
 - Morgan fingerprint and Tanimoto similarity against a public reference panel
 - Descriptor/rule fallback ADMET triage outputs kept separate from scoring
+- Biopharma analytics, evidence-readiness, mock synthetic RWE summary, and
+  conceptual endpoint-mapping outputs kept separate from scoring
 - Conservative public biomedical context with similarity-gated annotations
 - Local molecule-to-text evidence matching
 - Optional ChemBERTa embeddings and UMAP/PCA visualization
@@ -253,6 +281,11 @@ Important generated files include:
 - `similarity_top_hits.csv`
 - `chemberta_embeddings.csv`
 - `visualization_coordinates.csv`
+- `biopharma_positioning.csv`
+- `evidence_readiness.csv`
+- `mock_rwe_cohort_summary.csv`
+- `trial_endpoint_map.csv`
+- `biopharma_summary_report.md`
 - `reports/`
 - `report_images/`
 
@@ -293,7 +326,7 @@ The tutorial follows these stages:
 5. ChemBERTa chemical space
 6. Biomedical evidence and biological context
 7. Patent/IP-context evidence
-8. Final prioritization
+8. Final prioritization and Biopharma Analytics outputs
 9. Reports
 
 Each stage explains its purpose, shows its inputs and generated files, presents
@@ -312,7 +345,10 @@ The command-line pipeline creates artifacts in the same logical order:
 6. `compound_context.csv`, legacy-compatible `text_nlp.csv`, and molecule-level
    `biomedical_evidence.csv`
 7. `patent_evidence_embeddings.csv`
-8. `prioritization_results.csv`
+8. `prioritization_results.csv`, plus Biopharma Analytics outputs:
+   `biopharma_positioning.csv`, `evidence_readiness.csv`,
+   `mock_rwe_cohort_summary.csv`, `trial_endpoint_map.csv`, and
+   `biopharma_summary_report.md`
 9. Markdown reports
 
 Final prioritization retains evidence status from preceding stages. Unrun
@@ -336,6 +372,11 @@ for the selected folder. The app does not require online database access for the
 guided example. UI tables, filters, plot axes, and hover labels use
 readable presentation names while generated CSV files retain stable
 machine-readable column names.
+
+The **Biopharma Analytics** sidebar page displays translational positioning,
+evidence-readiness, mock synthetic RWE cohort, conceptual endpoint mapping, and
+summary-report artifacts. The central **Downloads** page includes these files
+when they exist.
 
 ## Browser Testing
 

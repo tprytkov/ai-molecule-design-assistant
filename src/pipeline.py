@@ -25,6 +25,7 @@ from src.compound_context import compound_context_csv
 from src.compound_qa import compound_qa
 from src.compound_search import top_hits_csv
 from src.admet import admet_csv
+from src.analytics import generate_biopharma_outputs
 from src.descriptors import descriptor_csv
 from src.patent_evidence_embeddings import (
     DEFAULT_PATENT_MODEL,
@@ -47,6 +48,7 @@ DEFAULT_REFERENCES = Path("data/reference_molecules.csv")
 DEFAULT_TEXT_EVIDENCE = Path("data/demo_text_evidence.csv")
 DEFAULT_OUTPUT_DIR = Path("outputs")
 DEFAULT_SURECHEMBL_COMPOUNDS = Path("data/demo_surechembl_compounds.csv")
+DEFAULT_BIOPHARMA_DEMO_DIR = Path("data/demo_biopharma")
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,11 @@ class PipelinePaths:
         "outputs/visualization_coordinates.csv"
     )
     prioritized: Path = Path("outputs/prioritization_results.csv")
+    biopharma_positioning: Path = Path("outputs/biopharma_positioning.csv")
+    evidence_readiness: Path = Path("outputs/evidence_readiness.csv")
+    mock_rwe_cohort_summary: Path = Path("outputs/mock_rwe_cohort_summary.csv")
+    trial_endpoint_map: Path = Path("outputs/trial_endpoint_map.csv")
+    biopharma_summary_report: Path = Path("outputs/biopharma_summary_report.md")
 
 
 def build_paths(
@@ -108,6 +115,11 @@ def build_paths(
         chemberta_embeddings=output_dir / "chemberta_embeddings.csv",
         visualization_coordinates=output_dir / "visualization_coordinates.csv",
         prioritized=output_dir / "prioritization_results.csv",
+        biopharma_positioning=output_dir / "biopharma_positioning.csv",
+        evidence_readiness=output_dir / "evidence_readiness.csv",
+        mock_rwe_cohort_summary=output_dir / "mock_rwe_cohort_summary.csv",
+        trial_endpoint_map=output_dir / "trial_endpoint_map.csv",
+        biopharma_summary_report=output_dir / "biopharma_summary_report.md",
     )
 
 
@@ -516,6 +528,25 @@ def run_pipeline(
             active_paths.visualization_coordinates,
             reference_path=active_paths.references,
         )
+
+    print("Generating biopharma analytics and translational positioning outputs")
+    generate_biopharma_outputs(
+        output_dir=active_paths.prioritized.parent,
+        demo_data_dir=DEFAULT_BIOPHARMA_DEMO_DIR,
+        standardized_path=active_paths.standardized,
+        descriptors_path=active_paths.descriptors,
+        similarity_path=active_paths.similarity,
+        public_lookup_path=active_paths.public_lookup,
+        biomedical_path=active_paths.biomedical_evidence,
+        patent_path=active_paths.patent_evidence_embeddings,
+        prioritization_path=active_paths.prioritized,
+        admet_summary_path=active_paths.admet_summary,
+        positioning_path=active_paths.biopharma_positioning,
+        readiness_path=active_paths.evidence_readiness,
+        mock_rwe_path=active_paths.mock_rwe_cohort_summary,
+        trial_endpoint_path=active_paths.trial_endpoint_map,
+        report_path=active_paths.biopharma_summary_report,
+    )
 
     report_ids = select_report_molecule_ids(
         active_paths.prioritized,

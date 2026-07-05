@@ -175,6 +175,11 @@ def create_pipeline_inputs(root: Path) -> PipelinePaths:
         chemberta_embeddings=output_dir / "chemberta_embeddings.csv",
         visualization_coordinates=output_dir / "visualization_coordinates.csv",
         prioritized=output_dir / "prioritized.csv",
+        biopharma_positioning=output_dir / "biopharma_positioning.csv",
+        evidence_readiness=output_dir / "evidence_readiness.csv",
+        mock_rwe_cohort_summary=output_dir / "mock_rwe_cohort_summary.csv",
+        trial_endpoint_map=output_dir / "trial_endpoint_map.csv",
+        biopharma_summary_report=output_dir / "biopharma_summary_report.md",
     )
 
 
@@ -230,6 +235,11 @@ def create_non_demo_inputs(root: Path) -> PipelinePaths:
         chemberta_embeddings=output_dir / "chemberta_embeddings.csv",
         visualization_coordinates=output_dir / "visualization_coordinates.csv",
         prioritized=output_dir / "prioritized.csv",
+        biopharma_positioning=output_dir / "biopharma_positioning.csv",
+        evidence_readiness=output_dir / "evidence_readiness.csv",
+        mock_rwe_cohort_summary=output_dir / "mock_rwe_cohort_summary.csv",
+        trial_endpoint_map=output_dir / "trial_endpoint_map.csv",
+        biopharma_summary_report=output_dir / "biopharma_summary_report.md",
     )
 
 
@@ -268,6 +278,11 @@ def test_pipeline_creates_expected_outputs(tmp_path: Path) -> None:
         paths.biomedical_evidence,
         paths.patent_evidence_embeddings,
         paths.prioritized,
+        paths.biopharma_positioning,
+        paths.evidence_readiness,
+        paths.mock_rwe_cohort_summary,
+        paths.trial_endpoint_map,
+        paths.biopharma_summary_report,
     )
     assert final_path == paths.prioritized
     assert all(path.exists() for path in expected_outputs)
@@ -577,6 +592,11 @@ def test_custom_cli_inputs_outputs_and_report_top_n(tmp_path: Path) -> None:
         "public_lookup.csv",
         "surechembl_evidence.csv",
         "prioritization_results.csv",
+        "biopharma_positioning.csv",
+        "evidence_readiness.csv",
+        "mock_rwe_cohort_summary.csv",
+        "trial_endpoint_map.csv",
+        "biopharma_summary_report.md",
     )
     assert all((output_dir / name).exists() for name in expected_outputs)
     generated_names = [path.name for path in output_dir.glob("*")]

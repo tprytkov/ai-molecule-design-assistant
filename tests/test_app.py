@@ -107,6 +107,7 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert "Biomedical evidence" in app.STEP_NAVIGATION_LABELS
     assert "Patent/IP-context evidence" in app.STEP_NAVIGATION_LABELS
     assert "Prioritization" in app.STEP_NAVIGATION_LABELS
+    assert "Biopharma Analytics" in app.STEP_NAVIGATION_LABELS
     assert "Reports" in app.STEP_NAVIGATION_LABELS
     assert "Downloads" in app.STEP_NAVIGATION_LABELS
     assert "Model and Data Sources" in app.STEP_NAVIGATION_LABELS
@@ -1591,6 +1592,7 @@ def test_sidebar_special_pages_render_without_workflow_step_body(
         "Overview",
         "Input data",
         "ADMET Prediction",
+        "Biopharma Analytics",
         "Downloads",
         "Model and Data Sources",
         "Settings",
@@ -3233,10 +3235,46 @@ def write_minimal_step_outputs(output_dir: Path) -> None:
         "text_nlp.csv": "molecule_id,nlp_status,nlp_relevance_category\nmol_a,available,relevant\n",
         "biomedical_evidence.csv": "molecule_id,biomedical_model_name,biomedical_model_status,biomedical_evidence_status\nmol_a,fake,preferred_model_used,available\n",
         "patent_evidence_embeddings.csv": "molecule_id,patent_model_name,patent_model_status,patent_evidence_status\nmol_a,fake,preferred_model_used,available\n",
+        "biopharma_positioning.csv": (
+            "molecule_id,smiles,indication,target_context,positioning_category,"
+            "public_database_differentiation_signal,reference_neighbor_similarity,"
+            "biomedical_context_signal,patent_associated_structure_crowding,"
+            "admet_signal,translational_positioning_summary,disclaimer\n"
+            "mol_a,CCO,Alzheimer's disease,alpha7 nicotinic receptor PAM,"
+            "biomedical_evidence_support,available,moderate,available,"
+            "available,moderate,Demo summary,Research triage only.\n"
+        ),
+        "evidence_readiness.csv": (
+            "molecule_id,smiles,descriptor_readiness,public_lookup_readiness,"
+            "biomedical_evidence_readiness,patent_context_readiness,admet_readiness,"
+            "translational_readiness_category,key_gaps,recommended_next_steps,disclaimer\n"
+            "mol_a,CCO,available,available,available,available,moderate,"
+            "discovery_research_fit,None,Review translational hypothesis,"
+            "Research triage only.\n"
+        ),
+        "mock_rwe_cohort_summary.csv": (
+            "cohort_name,n_mock_patients,age_mean,diagnosis_group,"
+            "medication_exposure_example,cognitive_endpoint_available,"
+            "biomarker_available,note\n"
+            "synthetic_ad_demo,10,72.1,synthetic Alzheimer's disease cohort,"
+            "synthetic standard of care,yes,no,Mock/synthetic data only; "
+            "not real patient data.\n"
+        ),
+        "trial_endpoint_map.csv": (
+            "molecule_id,indication,target_context,endpoint_name,endpoint_type,"
+            "conceptual_use,mapping_note,disclaimer\n"
+            "mol_a,Alzheimer's disease,alpha7 nicotinic receptor PAM,ADAS-Cog,"
+            "cognitive scale,Conceptual endpoint,Demo mapping,"
+            "Conceptual mapping only.\n"
+        ),
         "prioritization_results.csv": "molecule_id,prioritization_score,known_public_match\nmol_a,0.750,False\n",
     }
     for filename, content in csv_by_name.items():
         (output_dir / filename).write_text(content, encoding="utf-8")
+    (output_dir / "biopharma_summary_report.md").write_text(
+        "# Biopharma Analytics Summary\n\nSynthetic demo report.\n",
+        encoding="utf-8",
+    )
     reports_dir = output_dir / "reports"
     reports_dir.mkdir(exist_ok=True)
     (reports_dir / "compound_intelligence_report_mol_a.md").write_text(
@@ -3359,6 +3397,11 @@ def test_downloads_page_still_lists_all_available_artifacts(
     assert "similarity.csv" in names
     assert "admet_predictions.csv" in names
     assert "admet_summary.csv" in names
+    assert "biopharma_positioning.csv" in names
+    assert "evidence_readiness.csv" in names
+    assert "mock_rwe_cohort_summary.csv" in names
+    assert "trial_endpoint_map.csv" in names
+    assert "biopharma_summary_report.md" in names
     assert "biomedical_evidence.csv" in names
     assert "patent_evidence_embeddings.csv" in names
     assert "reports" in names

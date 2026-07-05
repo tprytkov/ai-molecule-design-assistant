@@ -1,0 +1,4 @@
+reference_name,indication,target_context,mechanism_class,development_context,public_safe_note
+donepezil,Alzheimer's disease,acetylcholinesterase inhibitor,symptomatic cognitive therapy,approved reference context,Public-safe reference profile only.
+galantamine,Alzheimer's disease,acetylcholinesterase inhibitor and nicotinic receptor modulator,symptomatic cognitive therapy,approved reference context,Public-safe reference profile only.
+alpha7 PAM demo reference,Alzheimer's disease,alpha7 nicotinic acetylcholine receptor PAM,discovery-stage nicotinic modulation,research hypothesis context,Synthetic/public-safe demo reference profile.
