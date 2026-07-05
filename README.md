@@ -57,6 +57,26 @@ empirical property ranges, and [QED](https://doi.org/10.1038/nchem.1243)
 combines molecular-property distributions into a quantitative drug-likeness
 estimate. Neither constitutes evidence of biological activity or safety.
 
+### ADMET descriptor fallback
+
+The ADMET Prediction layer writes `admet_predictions.csv` and
+`admet_summary.csv` as a separate research-triage output. The current
+implementation uses RDKit descriptors and conservative rules for BBB/CNS
+likeness, ESOL-style solubility, LogP, hERG/cardiotoxicity triage, CYP
+inhibition triage, and general toxicity triage. It does not use ChemBERTa as an
+ADMET predictor and does not claim validated ADMET prediction.
+
+ChemBERTa embeddings are molecular representations learned from SMILES
+pretraining. Real model-based ADMET prediction requires endpoint-specific
+fine-tuned models with documented training data for each ADMET endpoint. Future
+endpoint-specific models should be cached under
+`app_data/model_cache/huggingface`; model weights and downloaded cache contents
+are not committed to GitHub.
+
+ADMET outputs are computational research triage only. They are not experimental
+ADMET evidence, toxicity evidence, safety evidence, clinical evidence, or a
+substitute for domain review.
+
 ### 5. ChemBERTa chemical-space embeddings
 
 [ChemBERTa](https://arxiv.org/abs/2010.09885) uses transformer-based
@@ -163,6 +183,7 @@ python scripts/cache_optional_models.py --models dmis-lab/biobert-base-cased-v1.
 - Exact public chemical-name identification with PubChem, ChEMBL evidence, and
   an optional systematic-name fallback
 - Morgan fingerprint and Tanimoto similarity against a public reference panel
+- Descriptor/rule fallback ADMET triage outputs kept separate from scoring
 - Conservative public biomedical context with similarity-gated annotations
 - Local molecule-to-text evidence matching
 - Optional ChemBERTa embeddings and UMAP/PCA visualization
@@ -285,7 +306,8 @@ The command-line pipeline creates artifacts in the same logical order:
 1. `standardized.csv`
 2. `chemical_identity.csv`
 3. `public_lookup.csv` and `surechembl_evidence.csv`
-4. `descriptors.csv` plus local reference-similarity outputs
+4. `descriptors.csv`, `admet_predictions.csv`, `admet_summary.csv`, plus local
+   reference-similarity outputs
 5. `chemberta_embeddings.csv` and `visualization_coordinates.csv` when enabled
 6. `compound_context.csv`, legacy-compatible `text_nlp.csv`, and molecule-level
    `biomedical_evidence.csv`

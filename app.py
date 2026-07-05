@@ -85,12 +85,16 @@ from src.surechembl_lookup import (
     lookup_online_rows,
     write_output_csv as write_surechembl_output_csv,
 )
+from src.admet import admet_csv
+from src.admet.admet_model_registry import ADMET_MODEL_REGISTRY
 from src.text_nlp import text_nlp_csv
 
 
 OUTPUT_FILES = {
     "prioritization": "prioritization_results.csv",
     "descriptors": "descriptors.csv",
+    "admet_predictions": "admet_predictions.csv",
+    "admet_summary": "admet_summary.csv",
     "similarity": "similarity.csv",
     "public_lookup": "public_lookup.csv",
     "chemical_identity": "chemical_identity.csv",
@@ -533,6 +537,7 @@ STEP_NAVIGATION_LABELS = (
     "Chemical identity",
     "Public evidence",
     "Descriptors",
+    "ADMET Prediction",
     "Chemical-space map",
     "Biomedical evidence",
     "Patent/IP-context evidence",
@@ -562,7 +567,13 @@ STEP_OUTPUT_KEYS = {
     1: ("standardized",),
     2: ("chemical_identity",),
     3: ("public_lookup", "surechembl"),
-    4: ("descriptors", "similarity", "similarity_top_hits"),
+    4: (
+        "descriptors",
+        "admet_predictions",
+        "admet_summary",
+        "similarity",
+        "similarity_top_hits",
+    ),
     5: ("chemberta_embeddings", "visualization"),
     6: ("compound_context", "text_nlp", "biomedical_evidence"),
     7: ("patent_evidence_embeddings",),
@@ -3252,6 +3263,100 @@ def render_druglikeness_views(
     return render_molecule_selector(plot, key=key, plot_event=event)
 
 
+def render_admet_prediction_page(output_dir: Path) -> None:
+    """Render descriptor/rule fallback ADMET outputs as separate triage evidence."""
+    st.subheader("ADMET Prediction")
+    st.warning(
+        "Current ADMET output uses RDKit descriptor/rule fallback only. It is "
+        "research triage, not validated ADMET prediction, experimental ADMET, "
+        "toxicity, safety, or clinical evidence."
+    )
+    st.caption(
+        "Endpoint-specific fine-tuned ADMET models are required before this app "
+        "can claim model-based ADMET prediction. ChemBERTa embeddings alone are "
+        "not treated as endpoint ADMET predictors."
+    )
+    loaded = load_output_directory(output_dir)
+    predictions = loaded.tables["admet_predictions"]
+    summary = loaded.tables["admet_summary"]
+    predictions_path = loaded.paths["admet_predictions"]
+    summary_path = loaded.paths["admet_summary"]
+    if summary.empty and not summary_path.exists() and loaded.paths["descriptors"].exists():
+        if st.button("Generate ADMET descriptor fallback", key="generate_admet_fallback"):
+            admet_csv(
+                descriptors_path=loaded.paths["descriptors"],
+                standardized_path=loaded.paths["standardized"],
+                predictions_path=predictions_path,
+                summary_path=summary_path,
+            )
+            st.rerun()
+    if summary.empty:
+        st.info(
+            "ADMET outputs are not available yet. Run the descriptor step first "
+            "or generate the descriptor fallback from existing descriptors."
+        )
+        return
+
+    labels = summary.get("admet_readiness_category", pd.Series(dtype=str)).fillna("")
+    columns = st.columns(4)
+    render_modern_metric_card("Molecules", len(summary), container=columns[0])
+    render_modern_metric_card(
+        "Favorable",
+        int(labels.astype(str).eq("favorable").sum()),
+        container=columns[1],
+    )
+    render_modern_metric_card(
+        "Moderate",
+        int(labels.astype(str).eq("moderate").sum()),
+        container=columns[2],
+    )
+    render_modern_metric_card(
+        "Caution",
+        int(labels.astype(str).eq("caution").sum()),
+        container=columns[3],
+    )
+
+    st.markdown("#### ADMET summary")
+    st.dataframe(display_dataframe(summary), width="stretch", hide_index=True)
+    if summary_path.exists():
+        st.download_button(
+            "Download admet_summary.csv",
+            data=summary_path.read_bytes(),
+            file_name="admet_summary.csv",
+            mime="text/csv",
+            key="download_admet_summary",
+        )
+
+    st.markdown("#### Endpoint-level ADMET fallback outputs")
+    if predictions.empty:
+        st.info("admet_predictions.csv is not available.")
+    else:
+        st.dataframe(display_dataframe(predictions), width="stretch", hide_index=True)
+        if predictions_path.exists():
+            st.download_button(
+                "Download admet_predictions.csv",
+                data=predictions_path.read_bytes(),
+                file_name="admet_predictions.csv",
+                mime="text/csv",
+                key="download_admet_predictions",
+            )
+
+    st.markdown("#### Model/status information")
+    registry_rows = [
+        {
+            "endpoint": entry.endpoint,
+            "model_id": entry.model_id,
+            "backend": entry.backend,
+            "cache_required": entry.cache_required,
+            "training_dataset": entry.training_dataset,
+            "enabled": entry.enabled,
+            "notes": entry.notes,
+        }
+        for entry in ADMET_MODEL_REGISTRY
+    ]
+    st.dataframe(pd.DataFrame(registry_rows), width="stretch", hide_index=True)
+
+
 def render_text_evidence_view(
     text_nlp: pd.DataFrame,
     molecule_ids: Iterable[str],
@@ -5012,6 +5117,12 @@ def run_public_demo_step(
         run_public_demo_step3(paths)
     elif step_number == 4:
         descriptor_csv(paths.standardized, paths.descriptors)
+        admet_csv(
+            descriptors_path=paths.descriptors,
+            standardized_path=paths.standardized,
+            predictions_path=paths.admet_predictions,
+            summary_path=paths.admet_summary,
+        )
         similarity_csv(paths.descriptors, paths.references, paths.similarity)
         top_hits_csv(
             paths.descriptors,
@@ -6433,7 +6544,13 @@ def active_run_step_output_paths(
     if step_number == 3:
         return [paths.public_lookup, paths.surechembl_lookup]
     if step_number == 4:
-        return [paths.descriptors, paths.similarity, paths.similarity_top_hits]
+        return [
+            paths.descriptors,
+            paths.admet_predictions,
+            paths.admet_summary,
+            paths.similarity,
+            paths.similarity_top_hits,
+        ]
     if step_number == 5:
         return [paths.chemberta_embeddings, paths.visualization_coordinates]
     if step_number == 6:
@@ -6769,6 +6886,8 @@ def render_step_navigation_context(
         render_active_run_input_data(output_dir)
     elif selected_page == "Downloads":
         render_active_run_downloads(output_dir)
+    elif selected_page == "ADMET Prediction":
+        render_admet_prediction_page(output_dir)
     elif selected_page == "Model and Data Sources":
         render_model_and_data_sources_page(output_dir)
     elif selected_page == "Settings":

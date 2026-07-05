@@ -102,6 +102,7 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert "Chemical identity" in app.STEP_NAVIGATION_LABELS
     assert "Public evidence" in app.STEP_NAVIGATION_LABELS
     assert "Descriptors" in app.STEP_NAVIGATION_LABELS
+    assert "ADMET Prediction" in app.STEP_NAVIGATION_LABELS
     assert "Chemical-space map" in app.STEP_NAVIGATION_LABELS
     assert "Biomedical evidence" in app.STEP_NAVIGATION_LABELS
     assert "Patent/IP-context evidence" in app.STEP_NAVIGATION_LABELS
@@ -1586,7 +1587,14 @@ def test_sidebar_special_pages_render_without_workflow_step_body(
     navigation = next(
         item for item in app_test.radio if item.label == "Step navigation"
     )
-    for page in ("Overview", "Input data", "Downloads", "Model and Data Sources", "Settings"):
+    for page in (
+        "Overview",
+        "Input data",
+        "ADMET Prediction",
+        "Downloads",
+        "Model and Data Sources",
+        "Settings",
+    ):
         app_test = navigation.set_value(navigation_option_for(app_test, page)).run(
             timeout=10
         )
@@ -3203,6 +3211,20 @@ def write_minimal_step_outputs(output_dir: Path) -> None:
         "public_lookup.csv": "molecule_id,pubchem_status,chembl_status\nmol_a,no_match,no_match\n",
         "surechembl_evidence.csv": "molecule_id,lookup_status\nmol_a,no_match\n",
         "descriptors.csv": "molecule_id,molecular_weight,logp,tpsa,qed,druglikeness_category\nmol_a,46.0,0.1,20.2,0.5,favorable\n",
+        "admet_predictions.csv": (
+            "molecule_id,smiles,admet_endpoint,prediction_value,prediction_probability,"
+            "prediction_label,model_id,model_backend,model_status,model_cache_status,"
+            "training_dataset,evidence_note\n"
+            "mol_a,CCO,lipophilicity_logp,LogP=0.10,,favorable,rdkit,"
+            "RDKit descriptor/rule baseline,fallback_descriptor_rule,not_required,"
+            "not_applicable_descriptor_rules,Heuristic baseline.\n"
+        ),
+        "admet_summary.csv": (
+            "molecule_id,smiles,bbb_prediction_label,cns_property_flag,"
+            "toxicity_risk_flag,admet_readiness_category,model_status,evidence_note\n"
+            "mol_a,CCO,moderate,moderate,favorable,moderate,"
+            "fallback_descriptor_rule,Heuristic baseline.\n"
+        ),
         "similarity.csv": "molecule_id,best_reference_name,tanimoto_similarity\nmol_a,ref_a,0.42\n",
         "similarity_top_hits.csv": "molecule_id,reference_id,reference_name,tanimoto_similarity\nmol_a,ref_a,Reference A,0.42\n",
         "chemberta_embeddings.csv": "molecule_id,embedding_status\nmol_a,available\n",
@@ -3335,6 +3357,8 @@ def test_downloads_page_still_lists_all_available_artifacts(
     assert "standardized.csv" in names
     assert "chemical_identity.csv" in names
     assert "similarity.csv" in names
+    assert "admet_predictions.csv" in names
+    assert "admet_summary.csv" in names
     assert "biomedical_evidence.csv" in names
     assert "patent_evidence_embeddings.csv" in names
     assert "reports" in names

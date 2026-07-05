@@ -24,6 +24,7 @@ from src.chemical_identity import IdentityClient, chemical_identity_csv
 from src.compound_context import compound_context_csv
 from src.compound_qa import compound_qa
 from src.compound_search import top_hits_csv
+from src.admet import admet_csv
 from src.descriptors import descriptor_csv
 from src.patent_evidence_embeddings import (
     DEFAULT_PATENT_MODEL,
@@ -59,6 +60,8 @@ class PipelinePaths:
     surechembl_compounds: Path = DEFAULT_SURECHEMBL_COMPOUNDS
     standardized: Path = Path("outputs/standardized.csv")
     descriptors: Path = Path("outputs/descriptors.csv")
+    admet_predictions: Path = Path("outputs/admet_predictions.csv")
+    admet_summary: Path = Path("outputs/admet_summary.csv")
     similarity: Path = Path("outputs/similarity.csv")
     similarity_top_hits: Path = Path("outputs/similarity_top_hits.csv")
     text_nlp: Path = Path("outputs/text_nlp.csv")
@@ -91,6 +94,8 @@ def build_paths(
         surechembl_compounds=surechembl_compounds_path,
         standardized=output_dir / "standardized.csv",
         descriptors=output_dir / "descriptors.csv",
+        admet_predictions=output_dir / "admet_predictions.csv",
+        admet_summary=output_dir / "admet_summary.csv",
         similarity=output_dir / "similarity.csv",
         similarity_top_hits=output_dir / "similarity_top_hits.csv",
         text_nlp=output_dir / "text_nlp.csv",
@@ -397,6 +402,12 @@ def run_pipeline(
 
     print("Step 4/9: Calculating RDKit properties and reference similarity")
     descriptor_csv(active_paths.standardized, active_paths.descriptors)
+    admet_csv(
+        descriptors_path=active_paths.descriptors,
+        standardized_path=active_paths.standardized,
+        predictions_path=active_paths.admet_predictions,
+        summary_path=active_paths.admet_summary,
+    )
     similarity_csv(
         active_paths.descriptors,
         active_paths.references,
