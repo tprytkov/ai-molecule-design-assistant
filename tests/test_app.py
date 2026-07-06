@@ -1,6 +1,7 @@
 import ast
 import builtins
 import http.client
+import re
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
@@ -43,6 +44,14 @@ class MetricColumn:
 def test_app_imports_without_crashing() -> None:
     assert hasattr(app, "run_app")
     assert hasattr(app, "load_output_directory")
+
+
+def test_streamlit_requirement_matches_app_api_usage() -> None:
+    requirements = Path("requirements.txt").read_text(encoding="utf-8")
+    match = re.search(r"^streamlit>=([0-9.]+)", requirements, flags=re.MULTILINE)
+
+    assert match is not None
+    assert tuple(int(part) for part in match.group(1).split(".")) >= (1, 58, 0)
 
 
 def test_readme_project_motivation_section_exists() -> None:
