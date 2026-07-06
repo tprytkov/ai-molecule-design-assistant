@@ -74,6 +74,32 @@ def test_app_uses_molecule_design_title_and_subtitle() -> None:
     assert not hasattr(app, "APP_SUBTITLE")
 
 
+def test_landing_text_uses_current_demo_framing() -> None:
+    landing = app.WELCOME_TEXT
+
+    assert "general molecule-processing demos" in landing
+    assert "ADORA2A / xanthine target-specific structural demo" in landing
+    assert "chemical-space" in landing
+    assert "chemical-pace" not in landing
+    assert "Alzheimer" not in landing
+    assert "alpha7" not in landing
+    assert "nAChR" not in landing
+
+
+def test_readme_does_not_mislabel_general_demo_as_target_specific() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "General molecule-processing demo" in readme
+    assert "Target-specific structural demo" in readme
+    assert "ADORA2A/xanthine package" in readme
+    assert "It is not target-specific docking evidence." in readme
+    assert "chemical-space" in readme
+    assert "chemical-pace" not in readme
+    assert "Alzheimer" not in readme
+    assert "alpha7" not in readme
+    assert "nAChR" not in readme
+
+
 def test_app_startup_does_not_auto_load_output_folder() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
@@ -3453,7 +3479,7 @@ def write_minimal_step_outputs(output_dir: Path) -> None:
             "public_database_differentiation_signal,reference_neighbor_similarity,"
             "biomedical_context_signal,patent_associated_structure_crowding,"
             "admet_signal,translational_positioning_summary,disclaimer\n"
-            "mol_a,CCO,Alzheimer's disease,alpha7 nicotinic receptor PAM,"
+            "mol_a,CCO,selected molecule set / target context,user-provided or demo target context,"
             "biomedical_evidence_support,available,moderate,available,"
             "available,moderate,Demo summary,Research triage only.\n"
         ),
@@ -3467,17 +3493,17 @@ def write_minimal_step_outputs(output_dir: Path) -> None:
         ),
         "mock_rwe_cohort_summary.csv": (
             "cohort_name,n_mock_patients,age_mean,diagnosis_group,"
-            "medication_exposure_example,cognitive_endpoint_available,"
+            "medication_exposure_example,endpoint_signal_available,"
             "biomarker_available,note\n"
-            "synthetic_ad_demo,10,72.1,synthetic Alzheimer's disease cohort,"
+            "synthetic_translational_demo,10,52.1,synthetic target-context cohort,"
             "synthetic standard of care,yes,no,Mock/synthetic data only; "
             "not real patient data.\n"
         ),
         "trial_endpoint_map.csv": (
             "molecule_id,indication,target_context,endpoint_name,endpoint_type,"
             "conceptual_use,mapping_note,disclaimer\n"
-            "mol_a,Alzheimer's disease,alpha7 nicotinic receptor PAM,ADAS-Cog,"
-            "cognitive scale,Conceptual endpoint,Demo mapping,"
+            "mol_a,selected molecule set / target context,user-provided or demo target context,Target engagement,"
+            "preclinical pharmacodynamic,Conceptual endpoint,Demo mapping,"
             "Conceptual mapping only.\n"
         ),
         "prioritization_results.csv": "molecule_id,prioritization_score,known_public_match\nmol_a,0.750,False\n",

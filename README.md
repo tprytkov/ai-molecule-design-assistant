@@ -8,12 +8,13 @@ semantic biomedical evidence similarity, patent/IP-context evidence triage, and
 a biopharma analytics / translational positioning demo.
 
 The app includes multiple public-safe demo modes. The general molecule demo is
-for app mechanics and molecule-processing workflow review. The biopharma
-analytics demo uses Alzheimer's disease / alpha7 nicotinic acetylcholine
-receptor positioning language as synthetic translational framing. A separate
+for app mechanics and molecule-processing workflow review. A separate
 target-specific structural demo uses an ADORA2A/xanthine package to exercise
-docking-aware structural prioritization. None of these demos are clinical,
-safety, legal, patentability, or biological-validation systems.
+docking-aware structural prioritization with illustrative docking values.
+Biopharma analytics outputs use target-aware generic translational positioning
+language unless a user-provided target package supplies more specific context.
+None of these demos are clinical, safety, legal, patentability, or
+biological-validation systems.
 
 ## Project Motivation
 
@@ -241,8 +242,10 @@ Generated artifacts:
 - `trial_endpoint_map.csv`
 - `biopharma_summary_report.md`
 
-The demo framing is Alzheimer's disease / alpha7 nAChR positive allosteric
-modulation. Demo files live under `data/demo_biopharma/`.
+The demo framing is target-aware and generic by default. Demo files live under
+`data/demo_biopharma/` and describe translational positioning outputs for the
+selected molecule set and target context. The separate ADORA2A/xanthine package
+in `data/demo_target_specific/` is the bundled target-specific structural demo.
 
 The mock OMOP/RWE-style cohort file is synthetic demonstration data only. It is
 not real patient data and is not patient-level RWE. Trial endpoint mapping is

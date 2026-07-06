@@ -1,3 +1,0 @@
-cohort_name,n_mock_patients,age_mean,diagnosis_group,medication_exposure_example,cognitive_endpoint_available,biomarker_available,note
-synthetic_ad_memory_clinic_demo,250,73.4,synthetic Alzheimer's disease cohort,synthetic cholinesterase inhibitor exposure,yes,no,Mock/synthetic OMOP-style demonstration data only; not real patient data and not patient-level RWE.
-synthetic_mci_progression_demo,180,69.2,synthetic mild cognitive impairment cohort,synthetic standard-of-care exposure,yes,yes,Mock/synthetic OMOP-style demonstration data only; not real patient data and not patient-level RWE.

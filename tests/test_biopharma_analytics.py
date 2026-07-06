@@ -83,8 +83,8 @@ def test_biopharma_outputs_are_generated_from_existing_artifacts(tmp_path: Path)
         assert (output_dir / filename).exists()
 
     positioning = read_rows(output_dir / "biopharma_positioning.csv")
-    assert positioning[0]["indication"] == "Alzheimer's disease"
-    assert "alpha7" in positioning[0]["target_context"]
+    assert positioning[0]["indication"] == "selected molecule set / target context"
+    assert "target context" in positioning[0]["target_context"]
     assert "biomedical_evidence_support" in positioning[0]["positioning_category"]
 
 

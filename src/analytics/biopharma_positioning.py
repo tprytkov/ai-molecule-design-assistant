@@ -89,9 +89,9 @@ def read_indication_metadata(path: Path) -> dict[str, str]:
     rows = read_csv_rows(path)
     if not rows:
         return {
-            "indication": "Alzheimer's disease",
-            "target_context": "alpha7 nicotinic acetylcholine receptor PAM",
-            "demo_framing": "Public-safe translational research-positioning demo.",
+            "indication": "selected molecule set / target context",
+            "target_context": "user-provided or demo target context",
+            "demo_framing": "Public-safe translational positioning demo.",
         }
     return rows[0]
 
@@ -220,8 +220,9 @@ def build_positioning_rows(
                 "positioning_category": category,
                 **signals,
                 "translational_positioning_summary": (
-                    "Alzheimer's disease / alpha7 nAChR PAM research-positioning "
-                    "summary based on existing public-safe computational outputs."
+                    "Translational positioning summary for the selected molecule "
+                    "set and target context based on existing public-safe "
+                    "computational outputs."
                 ),
                 "disclaimer": DISCLAIMER,
             }
@@ -304,9 +305,9 @@ def generate_biopharma_outputs(
     admet_summary = read_csv_rows(admet_summary_path or output_dir / "admet_summary.csv")
     molecules = molecule_rows_from_sources(standardized, prioritization, descriptors)
     metadata = read_indication_metadata(demo_data_dir / "indication_metadata.csv")
-    indication = str(metadata.get("indication", "Alzheimer's disease")).strip()
+    indication = str(metadata.get("indication", "selected molecule set / target context")).strip()
     target_context = str(
-        metadata.get("target_context", "alpha7 nicotinic acetylcholine receptor PAM")
+        metadata.get("target_context", "user-provided or demo target context")
     ).strip()
     positioning_rows = build_positioning_rows(
         molecule_rows=molecules,
@@ -327,7 +328,7 @@ def generate_biopharma_outputs(
         admet_summary=admet_summary,
     )
     mock_rwe_rows = build_mock_rwe_summary(
-        read_mock_omop_rows(demo_data_dir / "mock_alzheimer_omop_cohort.csv")
+        read_mock_omop_rows(demo_data_dir / "mock_translational_omop_cohort.csv")
     )
     endpoint_rows = build_trial_endpoint_map(
         molecule_rows=molecules,

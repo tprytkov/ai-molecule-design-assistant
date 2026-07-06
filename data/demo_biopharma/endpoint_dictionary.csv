@@ -1,5 +1,5 @@
 endpoint_name,endpoint_type,conceptual_use,mapping_note
-ADAS-Cog,cognitive scale,Conceptual cognitive efficacy endpoint context,Public-safe endpoint mapping for translational framing only.
-Clinical Dementia Rating Sum of Boxes,functional/cognitive scale,Conceptual functional progression endpoint context,Public-safe endpoint mapping for translational framing only.
-CSF amyloid or tau biomarker,biomarker,Conceptual disease-biology stratification context,Public-safe endpoint mapping for translational framing only.
-Exploratory attention or electrophysiology marker,exploratory pharmacodynamic,Conceptual alpha7 nicotinic receptor pharmacodynamic follow-up,Public-safe endpoint mapping for translational framing only.
+Target-engagement assay,preclinical pharmacodynamic,Conceptual target-engagement follow-up context,Public-safe endpoint mapping for translational framing only.
+Cellular functional assay,preclinical functional,Conceptual cell-based activity follow-up context,Public-safe endpoint mapping for translational framing only.
+Selectivity panel,preclinical selectivity,Conceptual off-target and selectivity follow-up context,Public-safe endpoint mapping for translational framing only.
+Exposure or stability readout,preclinical developability,Conceptual exposure stability or formulation follow-up context,Public-safe endpoint mapping for translational framing only.

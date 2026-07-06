@@ -1,0 +1,3 @@
+cohort_name,n_mock_patients,age_mean,diagnosis_group,medication_exposure_example,endpoint_signal_available,biomarker_available,note
+synthetic_discovery_followup_demo,250,54.2,synthetic target-context review cohort,synthetic standard-of-care comparator exposure,yes,no,Mock/synthetic OMOP-style demonstration data only; not real patient data and not patient-level RWE.
+synthetic_translational_readiness_demo,180,49.7,synthetic translational readiness cohort,synthetic background therapy exposure,yes,yes,Mock/synthetic OMOP-style demonstration data only; not real patient data and not patient-level RWE.

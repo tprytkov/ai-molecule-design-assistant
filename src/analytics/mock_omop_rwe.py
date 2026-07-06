@@ -13,7 +13,7 @@ MOCK_RWE_COLUMNS = (
     "age_mean",
     "diagnosis_group",
     "medication_exposure_example",
-    "cognitive_endpoint_available",
+    "endpoint_signal_available",
     "biomarker_available",
     "note",
 )
@@ -45,8 +45,11 @@ def build_mock_rwe_summary(rows: Iterable[Mapping[str, str]]) -> list[dict[str, 
                 "medication_exposure_example": str(
                     row.get("medication_exposure_example", "")
                 ).strip(),
-                "cognitive_endpoint_available": str(
-                    row.get("cognitive_endpoint_available", "")
+                "endpoint_signal_available": str(
+                    row.get(
+                        "endpoint_signal_available",
+                        row.get("cognitive_endpoint_available", ""),
+                    )
                 ).strip(),
                 "biomarker_available": str(row.get("biomarker_available", "")).strip(),
                 "note": str(row.get("note", "")).strip() or MOCK_RWE_NOTE,
