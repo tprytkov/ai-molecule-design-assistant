@@ -14,6 +14,7 @@ from src.target.target_schema import (
 from src.target.target_profile import TargetProfile, target_profile_csv
 
 STRUCTURAL_PROPERTIES_COLUMNS = (
+    "molecule",
     "molecule_id",
     "smiles",
     "molecular_weight",
@@ -34,14 +35,21 @@ STRUCTURAL_PROPERTIES_COLUMNS = (
     "docking_score",
     "docking_rank",
     "docking_program",
+    "docking_units",
+    "docking_score_direction",
+    "docking_status",
+    "docking_available",
     "binding_site",
     "docking_priority_label",
+    "structural_priority_note",
     "target_id",
     "target_name",
     "pdb_id",
     "target_context_note",
 )
 STRUCTURAL_PRIORITIZATION_COLUMNS = (
+    "molecule",
+    "smiles",
     "molecule_id",
     "descriptor_available",
     "admet_available",
@@ -50,6 +58,14 @@ STRUCTURAL_PRIORITIZATION_COLUMNS = (
     "public_lookup_available",
     "target_available",
     "target_docking_match",
+    "docking_score",
+    "docking_rank",
+    "docking_program",
+    "docking_units",
+    "docking_score_direction",
+    "docking_status",
+    "docking_priority_label",
+    "structural_priority_note",
     "evidence_note",
 )
 DOCKING_CONTEXT_COLUMNS = (
@@ -58,6 +74,9 @@ DOCKING_CONTEXT_COLUMNS = (
     "docking_available",
     "docking_score",
     "docking_rank",
+    "docking_program",
+    "docking_units",
+    "docking_score_direction",
     "docking_priority_label",
     "structural_priority_note",
 )
@@ -120,6 +139,11 @@ def structural_summary_csv(
     public_lookup_path: Path | None = None,
     docking_input_path: Path | None = None,
     docking_output_path: Path | None = None,
+    docking_merge_report_path: Path | None = None,
+    docking_program: str = "External docking",
+    docking_units: str = "kcal/mol",
+    docking_score_direction: str = "lower/more negative is better",
+    docking_source: str = "user_provided",
     target_source_path: Path | None = None,
     standardized_path: Path | None = None,
 ) -> dict[str, int]:
@@ -131,6 +155,11 @@ def structural_summary_csv(
             docking_output_path,
             standardized_path=standardized_path,
             selected_target_id=profile.target_id,
+            merge_report_path=docking_merge_report_path,
+            docking_program=docking_program,
+            docking_units=docking_units,
+            docking_score_direction=docking_score_direction,
+            docking_source=docking_source,
         )
 
     descriptors = _read_csv(descriptors_path)
@@ -150,8 +179,13 @@ def structural_summary_csv(
         docking_label = docking_priority_label(docking_row)
         docking_available = docking_label not in {"docking_unavailable", "target_mismatch"}
         target_match = _clean((docking_row or {}).get("target_docking_match"))
+        structural_note = (
+            "Docking context is shown separately; existing prioritization scores are unchanged. "
+            + DOCKING_DISCLAIMER
+        )
         properties.append(
             {
+                "molecule": _clean(descriptor.get("molecule")) or molecule_id,
                 "molecule_id": molecule_id,
                 "smiles": _clean(descriptor.get("canonical_smiles")),
                 "molecular_weight": _clean(descriptor.get("molecular_weight")),
@@ -172,8 +206,13 @@ def structural_summary_csv(
                 "docking_score": _clean((docking_row or {}).get("docking_score")),
                 "docking_rank": _clean((docking_row or {}).get("docking_rank")),
                 "docking_program": _clean((docking_row or {}).get("docking_program")),
+                "docking_units": _clean((docking_row or {}).get("docking_units")),
+                "docking_score_direction": _clean((docking_row or {}).get("docking_score_direction")),
+                "docking_status": _clean((docking_row or {}).get("docking_status")) or "docking_unavailable",
+                "docking_available": str(docking_available),
                 "binding_site": _clean((docking_row or {}).get("binding_site")),
                 "docking_priority_label": docking_label,
+                "structural_priority_note": structural_note,
                 "target_id": profile.target_id,
                 "target_name": profile.target_name,
                 "pdb_id": profile.pdb_id,
@@ -187,6 +226,8 @@ def structural_summary_csv(
             notes.append("Docking evidence was unavailable or unmatched.")
         inputs.append(
             {
+                "molecule": _clean(descriptor.get("molecule")) or molecule_id,
+                "smiles": _clean(descriptor.get("canonical_smiles")),
                 "molecule_id": molecule_id,
                 "descriptor_available": str(bool(_clean(descriptor.get("molecular_weight")))),
                 "admet_available": str(bool(admet_row)),
@@ -195,6 +236,14 @@ def structural_summary_csv(
                 "public_lookup_available": str(molecule_id in public),
                 "target_available": str(has_target),
                 "target_docking_match": target_match or "False",
+                "docking_score": _clean((docking_row or {}).get("docking_score")),
+                "docking_rank": _clean((docking_row or {}).get("docking_rank")),
+                "docking_program": _clean((docking_row or {}).get("docking_program")),
+                "docking_units": _clean((docking_row or {}).get("docking_units")),
+                "docking_score_direction": _clean((docking_row or {}).get("docking_score_direction")),
+                "docking_status": _clean((docking_row or {}).get("docking_status")) or "docking_unavailable",
+                "docking_priority_label": docking_label,
+                "structural_priority_note": structural_note,
                 "evidence_note": " ".join(notes),
             }
         )
@@ -237,6 +286,9 @@ def add_structural_context_to_prioritization(
                 "docking_available": str(docking_label not in {"docking_unavailable", "target_mismatch"}),
                 "docking_score": _clean(structural_row.get("docking_score")),
                 "docking_rank": _clean(structural_row.get("docking_rank")),
+                "docking_program": _clean(structural_row.get("docking_program")),
+                "docking_units": _clean(structural_row.get("docking_units")),
+                "docking_score_direction": _clean(structural_row.get("docking_score_direction")),
                 "docking_priority_label": docking_label,
                 "structural_priority_note": (
                     "Docking context is shown separately; existing prioritization scores are unchanged. "

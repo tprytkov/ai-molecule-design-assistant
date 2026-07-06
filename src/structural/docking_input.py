@@ -6,6 +6,12 @@ import csv
 from pathlib import Path
 from typing import Mapping
 
+from src.structural.simple_docking_input import (
+    DOCKING_MERGE_REPORT_COLUMNS,
+    SIMPLE_DOCKING_OUTPUT_COLUMNS,
+    write_simple_docking_outputs,
+)
+
 DOCKING_REQUIRED_COLUMNS = (
     "molecule_id",
     "target_id",
@@ -16,6 +22,8 @@ DOCKING_REQUIRED_COLUMNS = (
     "docking_note",
 )
 DOCKING_OUTPUT_COLUMNS = (
+    "molecule",
+    "molecule_normalized",
     "molecule_id",
     "standardized_smiles",
     "target_id",
@@ -24,7 +32,10 @@ DOCKING_OUTPUT_COLUMNS = (
     "binding_site",
     "pose_file",
     "docking_program",
+    "docking_units",
+    "docking_score_direction",
     "docking_note",
+    "docking_source",
     "docking_available",
     "target_docking_match",
     "docking_status",
@@ -55,11 +66,29 @@ def _standardized_indexes(standardized_path: Path) -> tuple[dict[str, Mapping[st
     return by_id, by_smiles
 
 
+def _standardized_rows(standardized_path: Path) -> list[dict[str, str]]:
+    return _read_csv(standardized_path)
+
+
+def _write_merge_report(path: Path | None, rows: list[dict[str, str]]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=DOCKING_MERGE_REPORT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def normalize_docking_rows(
     docking_rows: list[Mapping[str, str]],
     *,
     standardized_path: Path,
     selected_target_id: str = "",
+    docking_program: str = "",
+    docking_units: str = "",
+    docking_score_direction: str = "",
+    docking_source: str = "user_provided",
 ) -> list[dict[str, str]]:
     """Normalize docking rows and validate target consistency."""
     by_id, by_smiles = _standardized_indexes(standardized_path)
@@ -97,6 +126,8 @@ def normalize_docking_rows(
 
         normalized.append(
             {
+                "molecule": molecule_id,
+                "molecule_normalized": molecule_id.strip().lower(),
                 "molecule_id": molecule_id,
                 "standardized_smiles": standardized_smiles,
                 "target_id": target_id,
@@ -104,8 +135,11 @@ def normalize_docking_rows(
                 "docking_rank": _clean(row.get("docking_rank")),
                 "binding_site": _clean(row.get("binding_site")),
                 "pose_file": _clean(row.get("pose_file")),
-                "docking_program": _clean(row.get("docking_program")),
+                "docking_program": _clean(row.get("docking_program")) or docking_program,
+                "docking_units": _clean(row.get("docking_units")) or docking_units,
+                "docking_score_direction": _clean(row.get("docking_score_direction")) or docking_score_direction,
                 "docking_note": _clean(row.get("docking_note")),
+                "docking_source": _clean(row.get("docking_source")) or docking_source,
                 "docking_available": str(status == "available"),
                 "target_docking_match": str(target_match),
                 "docking_status": status,
@@ -121,11 +155,39 @@ def normalize_docking_csv(
     *,
     standardized_path: Path,
     selected_target_id: str = "",
+    merge_report_path: Path | None = None,
+    docking_program: str = "External docking",
+    docking_units: str = "kcal/mol",
+    docking_score_direction: str = "lower/more negative is better",
+    docking_source: str = "user_provided",
 ) -> int:
     """Normalize an optional docking CSV into app-managed output schema."""
     with docking_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = set(reader.fieldnames or ())
+        lower_fieldnames = {field.lower() for field in fieldnames}
+        if lower_fieldnames.intersection(
+            {
+                "affinity",
+                "score",
+                "vina_score",
+                "binding_affinity",
+                "binding_energy",
+            }
+        ):
+            rows = [dict(row) for row in reader]
+            counts = write_simple_docking_outputs(
+                molecule_rows=_standardized_rows(standardized_path),
+                docking_rows=rows,
+                docking_output_path=output_path,
+                merge_report_path=merge_report_path or output_path.with_name("docking_merge_report.csv"),
+                docking_program=docking_program,
+                docking_units=docking_units,
+                docking_score_direction=docking_score_direction,
+                selected_target_id=selected_target_id,
+                docking_source=docking_source,
+            )
+            return counts["docking_results_normalized"]
         if "smiles" not in fieldnames and "standardized_smiles" not in fieldnames:
             raise ValueError("Docking CSV must contain smiles or standardized_smiles.")
         missing = set(DOCKING_REQUIRED_COLUMNS) - fieldnames
@@ -139,10 +201,28 @@ def normalize_docking_csv(
         rows,
         standardized_path=standardized_path,
         selected_target_id=selected_target_id,
+        docking_program=docking_program,
+        docking_units=docking_units,
+        docking_score_direction=docking_score_direction,
+        docking_source=docking_source,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=DOCKING_OUTPUT_COLUMNS)
         writer.writeheader()
         writer.writerows(normalized)
+    _write_merge_report(
+        merge_report_path,
+        [
+            {
+                "report_type": "matched_rows" if row["docking_status"] == "available" else row["docking_status"],
+                "molecule": row["molecule"],
+                "molecule_normalized": row["molecule_normalized"],
+                "count": "1",
+                "status": row["docking_status"],
+                "note": row["evidence_note"],
+            }
+            for row in normalized
+        ],
+    )
     return len(normalized)

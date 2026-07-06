@@ -84,6 +84,7 @@ from src.public_lookup import (
     source_failure_result,
     write_output_csv as write_public_lookup_csv,
 )
+from src.io.molecule_table_input import normalize_molecule_rows
 from src.scoring import scoring_csv
 from src.similarity import similarity_csv
 from src.standardize import standardize_csv
@@ -118,6 +119,7 @@ OUTPUT_FILES = {
     "prioritization": "prioritization_results.csv",
     "target_profile": "target_profile.csv",
     "docking_results_normalized": "docking_results_normalized.csv",
+    "docking_merge_report": "docking_merge_report.csv",
     "structural_properties": "structural_properties.csv",
     "structural_prioritization_inputs": "structural_prioritization_inputs.csv",
     "descriptors": "descriptors.csv",
@@ -255,6 +257,10 @@ DISPLAY_LABELS = {
     "docking_score": "Docking score",
     "docking_rank": "Docking rank",
     "docking_program": "Docking program",
+    "docking_units": "Docking units",
+    "docking_score_direction": "Docking score direction",
+    "docking_status": "Docking status",
+    "docking_source": "Docking source",
     "binding_site": "Binding site",
     "docking_available": "Docking available",
     "docking_priority_label": "Docking priority label",
@@ -683,6 +689,7 @@ STEP_OUTPUT_KEYS = {
         "structural_properties",
         "structural_prioritization_inputs",
         "docking_results_normalized",
+        "docking_merge_report",
         "similarity",
         "similarity_top_hits",
     ),
@@ -922,6 +929,8 @@ class UploadedRunPaths:
     generated_smiles: Path
     references: Path
     text_evidence: Path
+    target_profile: Path
+    docking_input: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -995,7 +1004,7 @@ def read_uploaded_csv(uploaded_file: object, label: str) -> pd.DataFrame:
 
 def validate_generated_smiles(df: pd.DataFrame) -> None:
     """Validate generated SMILES upload columns."""
-    validate_required_columns(df, GENERATED_REQUIRED_COLUMNS, "Generated SMILES CSV")
+    normalize_molecule_rows(df.fillna("").to_dict(orient="records"))
 
 
 def validate_reference_csv(df: pd.DataFrame) -> None:
@@ -1064,6 +1073,8 @@ def prepare_app_run_inputs(
     generated_upload: object,
     reference_upload: object | None = None,
     text_upload: object | None = None,
+    target_profile_upload: object | None = None,
+    docking_upload: object | None = None,
     app_runs_dir: Path = APP_RUNS_DIR,
 ) -> UploadedRunPaths:
     """Save uploaded files and normalized pipeline inputs under app_runs."""
@@ -1079,7 +1090,10 @@ def prepare_app_run_inputs(
     generated_df = pd.read_csv(generated_raw)
     validate_generated_smiles(generated_df)
     generated_path = input_dir / "generated_smiles.csv"
-    generated_df.to_csv(generated_path, index=False)
+    normalized_generated = pd.DataFrame(
+        normalize_molecule_rows(generated_df.fillna("").to_dict(orient="records"))
+    )
+    normalized_generated[["molecule_id", "smiles"]].to_csv(generated_path, index=False)
 
     reference_raw = input_dir / "uploaded_references.csv"
     if reference_upload is not None:
@@ -1099,6 +1113,17 @@ def prepare_app_run_inputs(
     text_path = input_dir / "text_evidence.csv"
     text_df.to_csv(text_path, index=False)
 
+    target_profile_path = input_dir / "target_profile.csv"
+    if target_profile_upload is not None:
+        save_uploaded_file(target_profile_upload, target_profile_path)
+    else:
+        target_profile_path = Path("data/demo_target/target_profile.csv")
+
+    docking_path: Path | None = None
+    if docking_upload is not None:
+        docking_path = input_dir / "docking_results_simple.csv"
+        save_uploaded_file(docking_upload, docking_path)
+
     return UploadedRunPaths(
         run_dir=run_dir,
         input_dir=input_dir,
@@ -1106,6 +1131,8 @@ def prepare_app_run_inputs(
         generated_smiles=generated_path,
         references=reference_path,
         text_evidence=text_path,
+        target_profile=target_profile_path,
+        docking_input=docking_path,
     )
 
 
@@ -1140,6 +1167,9 @@ def run_uploaded_analysis(
     report_top_n: int | None = 5,
     report_only_fully_analyzed: bool = False,
     max_molecules: int | None = None,
+    docking_program: str = "External docking",
+    docking_units: str = "kcal/mol",
+    docking_score_direction: str = "lower/more negative is better",
 ) -> Path:
     """Run the local pipeline for uploaded app inputs."""
     pipeline_paths = build_paths(
@@ -1147,6 +1177,8 @@ def run_uploaded_analysis(
         references_path=paths.references,
         text_evidence_path=paths.text_evidence,
         output_dir=paths.output_dir,
+        target_profile_path=paths.target_profile,
+        docking_input_path=paths.docking_input,
     )
     return run_pipeline(
         paths=pipeline_paths,
@@ -1160,6 +1192,10 @@ def run_uploaded_analysis(
         report_only_fully_analyzed=report_only_fully_analyzed,
         report_dir=paths.output_dir / "reports",
         clean_report_dir=True,
+        docking_program=docking_program,
+        docking_units=docking_units,
+        docking_score_direction=docking_score_direction,
+        docking_source="user_provided",
     )
 
 
@@ -3786,6 +3822,7 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
     structural = loaded.tables["structural_properties"]
     structural_inputs = loaded.tables["structural_prioritization_inputs"]
     docking = loaded.tables["docking_results_normalized"]
+    docking_merge = loaded.tables["docking_merge_report"]
     descriptors = loaded.tables["descriptors"]
     admet = loaded.tables["admet_summary"]
     similarity = loaded.tables["similarity"]
@@ -3856,8 +3893,11 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
                 "target_id",
                 "docking_score",
                 "docking_rank",
-                "binding_site",
                 "docking_program",
+                "docking_units",
+                "docking_score_direction",
+                "docking_source",
+                "binding_site",
                 "docking_available",
                 "target_docking_match",
                 "docking_status",
@@ -3868,6 +3908,9 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
             width="stretch",
             hide_index=True,
         )
+    if not docking_merge.empty:
+        st.markdown("#### Docking merge report")
+        st.dataframe(dataframe_display_safe(docking_merge), width="stretch", hide_index=True)
 
     st.markdown("#### Structural properties")
     if structural.empty:
@@ -3888,6 +3931,10 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
                 "tanimoto_similarity",
                 "docking_score",
                 "docking_rank",
+                "docking_program",
+                "docking_units",
+                "docking_score_direction",
+                "docking_status",
                 "docking_priority_label",
                 "target_name",
             ),
@@ -4763,11 +4810,34 @@ def render_new_analysis_form() -> Path | None:
     st.header("Input Data / Run New Analysis")
     st.info(ONLINE_LOOKUP_NOTE)
     st.caption("Uploads and generated results are saved locally under app_runs.")
+    template_columns = st.columns(2)
+    molecule_template = Path("data/templates/molecule_smiles_template.csv")
+    if molecule_template.exists():
+        template_columns[0].download_button(
+            "Download molecule table template",
+            molecule_template.read_bytes(),
+            file_name="molecule_smiles_template.csv",
+            mime="text/csv",
+            key="download_molecule_smiles_template",
+        )
+    docking_template = Path("data/templates/docking_results_simple_template.csv")
+    if docking_template.exists():
+        template_columns[1].download_button(
+            "Download docking table template",
+            docking_template.read_bytes(),
+            file_name="docking_results_simple_template.csv",
+            mime="text/csv",
+            key="download_docking_results_simple_template",
+        )
     with st.form("run_new_analysis"):
         run_name = st.text_input("Run name", value="")
         generated_upload = st.file_uploader(
-            "Generated SMILES CSV (required: molecule_id, smiles)",
+            "Molecule table CSV (required: molecule, smiles)",
             type=["csv"],
+        )
+        st.caption(
+            "Minimal molecule table format: `molecule, smiles`. Accepted name columns: "
+            "molecule, molecule_id, molecule_name, ligand, compound, name."
         )
         reference_upload = st.file_uploader(
             "Reference CSV (optional; smiles column required if uploaded)",
@@ -4776,6 +4846,25 @@ def render_new_analysis_form() -> Path | None:
         text_upload = st.file_uploader(
             "Text evidence CSV (optional)",
             type=["csv"],
+        )
+        target_profile_upload = st.file_uploader(
+            "Target profile CSV (optional)",
+            type=["csv"],
+        )
+        docking_upload = st.file_uploader(
+            "Simple docking table CSV (optional: molecule, affinity)",
+            type=["csv"],
+        )
+        st.caption(
+            "Docking can be generated externally with any program. The app only "
+            "merges final molecule/affinity rows; it does not run docking."
+        )
+        docking_program = st.text_input("Docking program", value="External docking")
+        docking_units = st.text_input("Docking score units", value="kcal/mol")
+        docking_score_direction = st.selectbox(
+            "Docking score direction",
+            ("lower/more negative is better", "higher is better"),
+            index=0,
         )
 
         st.markdown("#### Workflow options")
@@ -4819,7 +4908,7 @@ def render_new_analysis_form() -> Path | None:
     if not submitted:
         return None
     if generated_upload is None:
-        st.error("Please upload a generated SMILES CSV with molecule_id and smiles columns.")
+        st.error("Please upload a molecule table CSV with molecule and smiles columns.")
         return None
 
     try:
@@ -4828,6 +4917,8 @@ def render_new_analysis_form() -> Path | None:
             generated_upload=generated_upload,
             reference_upload=reference_upload,
             text_upload=text_upload,
+            target_profile_upload=target_profile_upload,
+            docking_upload=docking_upload,
         )
         output_path = run_uploaded_analysis(
             paths,
@@ -4839,6 +4930,9 @@ def render_new_analysis_form() -> Path | None:
             max_molecules=(
                 int(max_molecules_value) if int(max_molecules_value) > 0 else None
             ),
+            docking_program=docking_program,
+            docking_units=docking_units,
+            docking_score_direction=docking_score_direction,
         )
     except Exception as exc:
         st.error(f"Analysis failed: {exc}")
@@ -6135,8 +6229,14 @@ def run_public_demo_step(
             public_lookup_path=paths.public_lookup,
             docking_input_path=paths.docking_input,
             docking_output_path=paths.docking_results_normalized,
+            docking_merge_report_path=paths.docking_merge_report,
             target_source_path=paths.target_profile_input,
             standardized_path=paths.standardized,
+            docking_source=(
+                "illustrative_demo"
+                if paths.docking_input == TARGET_SPECIFIC_DEMO_DOCKING_PATH
+                else "user_provided"
+            ),
         )
     elif step_number == 5:
         admet_csv(
@@ -6155,8 +6255,14 @@ def run_public_demo_step(
             public_lookup_path=paths.public_lookup,
             docking_input_path=paths.docking_input,
             docking_output_path=paths.docking_results_normalized,
+            docking_merge_report_path=paths.docking_merge_report,
             target_source_path=paths.target_profile_input,
             standardized_path=paths.standardized,
+            docking_source=(
+                "illustrative_demo"
+                if paths.docking_input == TARGET_SPECIFIC_DEMO_DOCKING_PATH
+                else "user_provided"
+            ),
         )
     elif step_number == 6:
         chemberta_embeddings_csv(
@@ -8240,6 +8346,14 @@ def render_active_run_downloads(output_dir: Path) -> None:
     st.subheader("Downloads")
     loaded = load_output_directory(output_dir)
     artifacts = [path for path in loaded.paths.values() if path.exists()]
+    artifacts.extend(
+        path
+        for path in (
+            Path("data/templates/molecule_smiles_template.csv"),
+            Path("data/templates/docking_results_simple_template.csv"),
+        )
+        if path.exists()
+    )
     if loaded.reports_dir.exists():
         artifacts.append(loaded.reports_dir)
     if not artifacts:

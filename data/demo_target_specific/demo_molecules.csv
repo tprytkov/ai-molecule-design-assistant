@@ -1,4 +1,4 @@
-molecule_id,smiles,compound_description
-adora2a_demo_caffeine,Cn1c(=O)c2c(ncn2C)n(C)c1=O,Caffeine-like xanthine ligand example for the ADORA2A target-specific structural demo.
-adora2a_demo_theophylline,Cn1c(=O)c2[nH]cnc2n(C)c1=O,Theophylline-like xanthine scaffold example for the ADORA2A target-specific structural demo.
-adora2a_demo_xanthine,O=c1[nH]c(=O)c2[nH]cnc2[nH]1,Parent xanthine scaffold example for the ADORA2A target-specific structural demo.
+molecule,smiles
+adora2a_demo_caffeine,Cn1c(=O)c2c(ncn2C)n(C)c1=O
+adora2a_demo_theophylline,Cn1c(=O)c2[nH]cnc2n(C)c1=O
+adora2a_demo_xanthine,O=c1[nH]c(=O)c2[nH]cnc2[nH]1

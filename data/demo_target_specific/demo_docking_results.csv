@@ -1,4 +1,4 @@
-molecule_id,smiles,target_id,docking_score,docking_rank,binding_site,pose_file,docking_program,docking_note
-adora2a_demo_caffeine,Cn1c(=O)c2c(ncn2C)n(C)c1=O,adora2a_xanthine_demo,-8.4,1,ADORA2A orthosteric xanthine/caffeine pocket,,illustrative_demo_rank,Illustrative docking-style row for workflow validation; not a real docking calculation and not experimental binding affinity.
-adora2a_demo_theophylline,Cn1c(=O)c2[nH]cnc2n(C)c1=O,adora2a_xanthine_demo,-7.8,2,ADORA2A orthosteric xanthine/caffeine pocket,,illustrative_demo_rank,Illustrative docking-style row for workflow validation; not a real docking calculation and not experimental binding affinity.
-adora2a_demo_xanthine,O=c1[nH]c(=O)c2[nH]cnc2[nH]1,adora2a_xanthine_demo,-6.6,3,ADORA2A orthosteric xanthine/caffeine pocket,,illustrative_demo_rank,Illustrative docking-style row for workflow validation; not a real docking calculation and not experimental binding affinity.
+molecule,affinity,note
+adora2a_demo_caffeine,-8.4,Illustrative docking-style row for workflow validation; not a real docking calculation and not experimental binding affinity.
+adora2a_demo_theophylline,-7.8,Illustrative docking-style row for workflow validation; not a real docking calculation and not experimental binding affinity.
+adora2a_demo_xanthine,-6.6,Illustrative docking-style row for workflow validation; not a real docking calculation and not experimental binding affinity.

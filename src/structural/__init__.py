@@ -4,6 +4,12 @@ from src.structural.docking_input import (
     DOCKING_OUTPUT_COLUMNS,
     normalize_docking_csv,
 )
+from src.structural.simple_docking_input import (
+    DOCKING_MERGE_REPORT_COLUMNS,
+    SIMPLE_DOCKING_OUTPUT_COLUMNS,
+    build_docking_merge,
+    write_simple_docking_outputs_from_csv,
+)
 from src.structural.structural_summary import (
     STRUCTURAL_PRIORITIZATION_COLUMNS,
     STRUCTURAL_PROPERTIES_COLUMNS,
@@ -14,10 +20,14 @@ from src.structural.structural_summary import (
 
 __all__ = [
     "DOCKING_OUTPUT_COLUMNS",
+    "DOCKING_MERGE_REPORT_COLUMNS",
+    "SIMPLE_DOCKING_OUTPUT_COLUMNS",
     "STRUCTURAL_PRIORITIZATION_COLUMNS",
     "STRUCTURAL_PROPERTIES_COLUMNS",
     "add_structural_context_to_prioritization",
+    "build_docking_merge",
     "docking_priority_label",
     "normalize_docking_csv",
     "structural_summary_csv",
+    "write_simple_docking_outputs_from_csv",
 ]

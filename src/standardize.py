@@ -11,6 +11,8 @@ from typing import Iterable, Mapping, Sequence
 from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors
 
+from src.io.molecule_table_input import normalize_molecule_rows
+
 
 INPUT_COLUMNS = ("molecule_id", "smiles")
 OUTPUT_COLUMNS = (
@@ -103,12 +105,11 @@ def read_input_csv(input_path: Path) -> list[dict[str, str]]:
     """Read and validate the required columns from an input CSV."""
     with input_path.open("r", encoding="utf-8-sig", newline="") as input_file:
         reader = csv.DictReader(input_file)
-        fieldnames = set(reader.fieldnames or [])
-        missing_columns = set(INPUT_COLUMNS) - fieldnames
-        if missing_columns:
-            missing = ", ".join(sorted(missing_columns))
-            raise ValueError(f"Input CSV is missing required columns: {missing}")
-        return [dict(row) for row in reader]
+        rows = [dict(row) for row in reader]
+    return [
+        {"molecule_id": row["molecule_id"], "smiles": row["smiles"]}
+        for row in normalize_molecule_rows(rows)
+    ]
 
 
 def write_output_csv(

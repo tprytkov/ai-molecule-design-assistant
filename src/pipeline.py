@@ -69,6 +69,7 @@ class PipelinePaths:
     surechembl_compounds: Path = DEFAULT_SURECHEMBL_COMPOUNDS
     target_profile: Path = Path("outputs/target_profile.csv")
     docking_results_normalized: Path = Path("outputs/docking_results_normalized.csv")
+    docking_merge_report: Path = Path("outputs/docking_merge_report.csv")
     structural_properties: Path = Path("outputs/structural_properties.csv")
     structural_prioritization_inputs: Path = Path(
         "outputs/structural_prioritization_inputs.csv"
@@ -118,6 +119,7 @@ def build_paths(
         surechembl_compounds=surechembl_compounds_path,
         target_profile=output_dir / "target_profile.csv",
         docking_results_normalized=output_dir / "docking_results_normalized.csv",
+        docking_merge_report=output_dir / "docking_merge_report.csv",
         structural_properties=output_dir / "structural_properties.csv",
         structural_prioritization_inputs=output_dir / "structural_prioritization_inputs.csv",
         standardized=output_dir / "standardized.csv",
@@ -364,6 +366,10 @@ def run_pipeline(
     chemberta_model: str = DEFAULT_CHEMBERTA_MODEL,
     refresh_chemberta: bool = False,
     chemberta_embedder: ChembertaEmbedder | None = None,
+    docking_program: str = "External docking",
+    docking_units: str = "kcal/mol",
+    docking_score_direction: str = "lower/more negative is better",
+    docking_source: str = "user_provided",
 ) -> Path:
     """Run every demo stage in order and return the final output path."""
     active_paths = paths or PipelinePaths()
@@ -462,6 +468,11 @@ def run_pipeline(
         public_lookup_path=active_paths.public_lookup,
         docking_input_path=active_paths.docking_input,
         docking_output_path=active_paths.docking_results_normalized,
+        docking_merge_report_path=active_paths.docking_merge_report,
+        docking_program=docking_program,
+        docking_units=docking_units,
+        docking_score_direction=docking_score_direction,
+        docking_source=docking_source,
         target_source_path=active_paths.target_profile_input,
         standardized_path=active_paths.standardized,
     )

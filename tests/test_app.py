@@ -100,6 +100,16 @@ def test_readme_does_not_mislabel_general_demo_as_target_specific() -> None:
     assert "nAChR" not in readme
 
 
+def test_readme_documents_external_two_table_docking_workflow() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "molecule,smiles" in readme
+    assert "molecule,affinity" in readme
+    assert "The app does not run docking" in readme
+    assert "not required app runtime code" in readme
+    assert "should not be compared directly" in readme
+
+
 def test_app_startup_does_not_auto_load_output_folder() -> None:
     app_test = AppTest.from_file("app.py").run(timeout=10)
 
@@ -1042,10 +1052,9 @@ def test_analyze_my_molecules_mode_shows_upload_workflow() -> None:
     app_test = workflow_mode.set_value("Analyze my molecules").run(timeout=10)
 
     assert any(button.label == "Run analysis" for button in app_test.button)
-    assert any(
-        uploader.label == "Generated SMILES CSV (required: molecule_id, smiles)"
-        for uploader in app_test.file_uploader
-    )
+    labels = [uploader.label for uploader in app_test.file_uploader]
+    assert "Molecule table CSV (required: molecule, smiles)" in labels
+    assert "Simple docking table CSV (optional: molecule, affinity)" in labels
     assert not any(
         heading.value in app.WORKFLOW_STEP_NAMES for heading in app_test.header
     )
@@ -4860,7 +4869,7 @@ def test_safe_run_name_sanitizes_and_uses_timestamp() -> None:
 
 
 def test_generated_input_validation_accepts_required_columns() -> None:
-    df = pd.DataFrame({"molecule_id": ["mol_a"], "smiles": ["CCO"]})
+    df = pd.DataFrame({"molecule": ["mol_a"], "smiles": ["CCO"]})
 
     app.validate_generated_smiles(df)
 
@@ -4873,14 +4882,16 @@ def test_generated_input_validation_rejects_missing_smiles() -> None:
 
 
 def test_uploaded_files_are_saved_to_app_runs(tmp_path: Path) -> None:
-    generated = BytesIO(b"molecule_id,smiles\nmol_a,CCO\n")
+    generated = BytesIO(b"molecule,smiles\nmol_a,CCO\n")
     reference = BytesIO(b"reference_name,smiles,reference_role,target,notes\nethanol,CCO,control,demo,note\n")
+    docking = BytesIO(b"molecule,affinity\nmol_a,-8.4\n")
 
     paths = app.prepare_app_run_inputs(
         run_name="User Upload",
         generated_upload=generated,
         reference_upload=reference,
         text_upload=None,
+        docking_upload=docking,
         app_runs_dir=tmp_path / "app_runs",
     )
 
@@ -4888,7 +4899,12 @@ def test_uploaded_files_are_saved_to_app_runs(tmp_path: Path) -> None:
     assert paths.generated_smiles.exists()
     assert paths.references.exists()
     assert paths.text_evidence.exists()
+    assert paths.docking_input is not None
+    assert paths.docking_input.exists()
     assert paths.output_dir.exists()
+    generated_rows = pd.read_csv(paths.generated_smiles)
+    assert generated_rows.columns.tolist() == ["molecule_id", "smiles"]
+    assert generated_rows.loc[0, "molecule_id"] == "mol_a"
     references = pd.read_csv(paths.references)
     assert references.columns.tolist() == list(app.REFERENCE_OUTPUT_COLUMNS)
     assert references.loc[0, "reference_name"] == "ethanol"

@@ -69,8 +69,9 @@ artifacts at each stage.
    Writes `descriptors.csv`, `similarity.csv`, `similarity_top_hits.csv`,
    `target_profile.csv`, `structural_properties.csv`, and
    `structural_prioritization_inputs.csv`. Optional uploaded docking results are
-   normalized to `docking_results_normalized.csv`. These are computational
-   design heuristics, not evidence of activity or safety.
+   normalized to `docking_results_normalized.csv` with a
+   `docking_merge_report.csv`. These are computational design heuristics, not
+   evidence of activity or safety.
 
 5. **ADMET Prediction**
    Writes `admet_predictions.csv` and `admet_summary.csv`. This is
@@ -123,17 +124,68 @@ mechanics. It is not target-specific docking evidence.
 
 The separate package in `data/demo_target_specific/` uses human ADORA2A
 metadata, PDB 3RFM caffeine/xanthine context, matched xanthine-like reference
-ligands, matched demo molecules, and `demo_docking_results.csv`. The docking
-rows are illustrative computational triage values for validating the workflow;
-they are not real docking calculations, experimental binding affinity,
-biological activity, efficacy, safety, or clinical evidence.
+ligands, a simple `molecule,smiles` molecule table, and a simple
+`molecule,affinity` docking table. The docking rows are illustrative
+computational triage values for validating the workflow; they are not real
+docking calculations, experimental binding affinity, biological activity,
+efficacy, safety, or clinical evidence.
 
 **User-provided target and docking workflow**
 
 Users can provide their own molecule CSV, reference ligand CSV, target profile,
-and optional docking CSV. The app normalizes docking rows, checks whether
-`target_id` matches the selected target profile, and keeps docking context
-separate from the existing prioritization score.
+and optional docking CSV. The simplest molecule table has `molecule,smiles`.
+The simplest docking table has `molecule,affinity`. The app merges them by
+trimmed, case-insensitive molecule name and keeps docking context separate from
+the existing prioritization score.
+
+## Simple Molecule And Docking Tables
+
+The app accepts a two-table workflow for users who do docking outside the app.
+
+Molecule table:
+
+```csv
+molecule,smiles
+compound_1,CCO
+compound_2,c1ccccc1
+```
+
+Accepted molecule-name columns are `molecule`, `molecule_id`,
+`molecule_name`, `ligand`, `compound`, and `name`. Accepted SMILES columns are
+`smiles`, `smile`, `canonical_smiles`, and `generated_smiles`.
+
+Docking table:
+
+```csv
+molecule,affinity
+compound_1,-8.4
+compound_2,-7.1
+```
+
+Accepted affinity columns are `affinity`, `docking_score`, `score`,
+`vina_score`, `binding_affinity`, and `binding_energy`. Optional columns are
+`rank` and `note`. Docking program, score units, score direction, and target
+profile are selected in the app or pipeline configuration; they are not
+required in the uploaded docking CSV.
+
+Docking can be performed externally with AutoDock Vina, Glide, GOLD, MOE,
+DOCK, DiffDock, manual one-by-one docking, batch docking, or another method.
+The app does not run docking and does not require batch docking. A
+`batch_docking_Vina.py` script, if used separately, is only an external example
+or template and is not required app runtime code.
+
+The merge writes `docking_results_normalized.csv` and
+`docking_merge_report.csv`. Duplicate molecule names are marked ambiguous;
+unmatched docking rows, molecules without docking rows, and invalid affinity
+values are retained in the merge report. Missing ranks are computed from
+affinity using the selected score direction. For Vina-like values, the default
+is lower/more negative is better.
+
+Docking scores from different programs, targets, receptors, protocols, or
+scoring functions should not be compared directly as equivalent quantities.
+Docking values are computational triage context only. They are not experimental
+binding affinity, biological activity, efficacy, safety, or clinical
+validation.
 
 ## Optional embedding models
 
@@ -262,6 +314,7 @@ Important workflow outputs include:
 - `descriptors.csv`
 - `target_profile.csv`
 - `docking_results_normalized.csv`
+- `docking_merge_report.csv`
 - `structural_properties.csv`
 - `structural_prioritization_inputs.csv`
 - `admet_predictions.csv`
