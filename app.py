@@ -2422,7 +2422,10 @@ def render_modern_badge(
 ) -> None:
     """Render a shadcn badge with a native fallback."""
     if shadcn_ui_available():
-        shadcn_ui.badges([(label, variant)], key=key)
+        try:
+            shadcn_ui.badges([(label, variant)], key=key)
+        except TypeError:
+            pass
     render_status_badge(label, status=status)
 
 def render_modern_card(
@@ -2436,14 +2439,17 @@ def render_modern_card(
     """Render a shadcn card with a native card fallback companion."""
     badge_list = list(badges)
     if shadcn_ui_available():
-        shadcn_ui.card(
-            title=title,
-            content=body,
-            description=description,
-            key=key,
-        )
-        if badge_list:
-            shadcn_ui.badges(badge_list, key=f"{key}_badges" if key else None)
+        try:
+            shadcn_ui.card(
+                title=title,
+                content=body,
+                description=description,
+                key=key,
+            )
+            if badge_list:
+                shadcn_ui.badges(badge_list, key=f"{key}_badges" if key else None)
+        except TypeError:
+            pass
     render_info_card(title, body if description is None else f"{description} {body}")
     for badge, variant in badge_list:
         render_status_badge(
@@ -2462,12 +2468,15 @@ def render_modern_metric_card(
     """Render a shadcn metric card with native metric fallback."""
     target = container or st
     if shadcn_ui_available() and container is None:
-        shadcn_ui.metric_card(
-            title=title,
-            content=str(value),
-            description=description,
-            key=key,
-        )
+        try:
+            shadcn_ui.metric_card(
+                title=title,
+                content=str(value),
+                description=description,
+                key=key,
+            )
+        except TypeError:
+            pass
     render_metric_card(title, value, help_text=description, container=target)
 def render_modern_step_card(
     title: str,
@@ -4127,15 +4136,15 @@ def target_run_mode_note(mode: str) -> str:
 
 def render_target_run_mode(target: pd.DataFrame) -> None:
     """Render the target/demo mode for the current run."""
-    mode = target_run_mode(target)
+    mode = safe_text(target_run_mode(target), default=TARGET_SOURCE_MISSING)
     render_modern_evidence_card(
         "Target workflow mode",
         {
-            "Mode": mode,
-            "Target ID": latest_column_value(target, "target_id", "not_provided"),
-            "PDB ID": latest_column_value(target, "pdb_id", "not_provided"),
+            "Mode": safe_text(mode),
+            "Target ID": safe_text(latest_column_value(target, "target_id", "not_provided")),
+            "PDB ID": safe_text(latest_column_value(target, "pdb_id", "not_provided")),
         },
-        description=target_run_mode_note(mode),
+        description=safe_text(target_run_mode_note(mode)),
         key=f"target_run_mode_{slugify_key(mode)}",
     )
 

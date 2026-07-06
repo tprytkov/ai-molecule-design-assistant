@@ -4519,6 +4519,42 @@ def test_target_run_mode_card_accepts_description_and_none_fields(
     assert "Demo placeholder / user-configurable target profile" in rendered
 
 
+def test_target_run_mode_uses_native_fallback_when_shadcn_card_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = pd.DataFrame(
+        [
+            {
+                "target_id": "demo_target_placeholder",
+                "target_name": "Demo target placeholder",
+                "protein_structure_source": "demo_placeholder",
+                "pdb_id": None,
+            }
+        ]
+    )
+    markdown: list[str] = []
+
+    class BrokenShadcn:
+        @staticmethod
+        def card(*args, **kwargs):
+            raise TypeError("component signature mismatch")
+
+    fake_streamlit = SimpleNamespace(
+        markdown=lambda value, **kwargs: markdown.append(value),
+        __name__="streamlit",
+    )
+
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(app, "shadcn_ui", BrokenShadcn())
+
+    app.render_target_run_mode(target)
+
+    rendered = " ".join(markdown)
+    assert "Target workflow mode" in rendered
+    assert "general_demo_not_target_specific" in rendered
+    assert "Demo placeholder / user-configurable target profile" in rendered
+
+
 def test_target_setup_page_renders_placeholder_metadata_safely(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
