@@ -3464,16 +3464,17 @@ def write_minimal_step_outputs(output_dir: Path) -> None:
         "admet_predictions.csv": (
             "molecule_id,smiles,admet_endpoint,prediction_value,prediction_probability,"
             "prediction_label,model_id,model_backend,model_status,model_cache_status,"
-            "training_dataset,evidence_note\n"
+            "validation_status,fallback_used,training_dataset,evidence_note\n"
             "mol_a,CCO,lipophilicity_logp,LogP=0.10,,favorable,rdkit,"
             "RDKit descriptor/rule baseline,fallback_descriptor_rule,not_required,"
-            "not_applicable_descriptor_rules,Heuristic baseline.\n"
+            "not_evaluated,yes,not_applicable_descriptor_rules,Heuristic baseline.\n"
         ),
         "admet_summary.csv": (
             "molecule_id,smiles,bbb_prediction_label,cns_property_flag,"
-            "toxicity_risk_flag,admet_readiness_category,model_status,evidence_note\n"
+            "toxicity_risk_flag,admet_readiness_category,model_status,"
+            "validation_status,fallback_used,evidence_note\n"
             "mol_a,CCO,moderate,moderate,favorable,moderate,"
-            "fallback_descriptor_rule,Heuristic baseline.\n"
+            "fallback_descriptor_rule,not_evaluated,yes,Heuristic baseline.\n"
         ),
         "similarity.csv": "molecule_id,best_reference_name,tanimoto_similarity\nmol_a,ref_a,0.42\n",
         "similarity_top_hits.csv": "molecule_id,reference_id,reference_name,tanimoto_similarity\nmol_a,ref_a,Reference A,0.42\n",
@@ -3581,6 +3582,8 @@ def test_admet_page_uses_compact_interpretation_tables(
         "Toxicity risk flag",
         "ADMET readiness category",
         "Model status",
+        "Validation Status",
+        "Fallback used",
     ]
     assert "Evidence note" not in endpoint.columns
     assert list(endpoint.columns) == [
@@ -3592,9 +3595,13 @@ def test_admet_page_uses_compact_interpretation_tables(
         "Model backend",
         "Model status",
         "Model cache status",
+        "Validation Status",
+        "Fallback used",
     ]
     assert model_status.loc[0, "Fallback used"] == "yes"
-    assert model_status.loc[0, "Tuned ChemBERTa BBB model cached"] == "no"
+    assert model_status.loc[0, "Cached"] == "no"
+    assert model_status.loc[0, "Validation Status"] == "not_evaluated"
+    assert "ChemBERTa embeddings are not treated as endpoint ADMET predictors" in " ".join(markdown)
 
 
 def rendered_step_output_names(

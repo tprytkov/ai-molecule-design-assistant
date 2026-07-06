@@ -30,6 +30,8 @@ def test_admet_schema_columns_are_fixed() -> None:
         "model_backend",
         "model_status",
         "model_cache_status",
+        "validation_status",
+        "fallback_used",
         "training_dataset",
         "evidence_note",
     )
@@ -41,6 +43,8 @@ def test_admet_schema_columns_are_fixed() -> None:
         "toxicity_risk_flag",
         "admet_readiness_category",
         "model_status",
+        "validation_status",
+        "fallback_used",
         "evidence_note",
     )
 
@@ -157,8 +161,11 @@ def test_tuned_bbb_classifier_updates_only_bbb_model_metadata(tmp_path: Path) ->
     assert bbb["model_id"] == "Yousuf7/ChemBERT-BBB-Permeability"
     assert bbb["model_status"] == MODEL_STATUS_TUNED_BBB
     assert bbb["model_cache_status"] == "cached"
+    assert bbb["validation_status"] == "benchmark_passed"
+    assert bbb["fallback_used"] == "no"
     assert bbb["prediction_probability"] == "0.870"
     assert {row["model_status"] for row in non_bbb} == {MODEL_STATUS_FALLBACK}
+    assert {row["fallback_used"] for row in non_bbb} == {"yes"}
     assert summary[0]["model_status"] == "mixed_tuned_bbb_and_descriptor_rule"
 
 
@@ -183,6 +190,81 @@ def test_admet_falls_back_when_tuned_chemberta_missing(monkeypatch, tmp_path: Pa
     rows = list(csv.DictReader(predictions.open("r", encoding="utf-8", newline="")))
     assert {row["model_status"] for row in rows} == {MODEL_STATUS_FALLBACK}
     assert {row["model_cache_status"] for row in rows} == {"not_required"}
+    assert {row["fallback_used"] for row in rows} == {"yes"}
+
+
+def test_admet_uses_cached_tuned_bbb_only_after_benchmark_passed(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("src.admet.admet_predictor.model_is_cached", lambda model_id: True)
+
+    class LocalFakeBBBClassifier(FakeBBBClassifier):
+        pass
+
+    monkeypatch.setattr(
+        "src.admet.admet_predictor.TunedChembertaBBBClassifier",
+        lambda: LocalFakeBBBClassifier(),
+    )
+    descriptors = tmp_path / "descriptors.csv"
+    predictions = tmp_path / "admet_predictions.csv"
+    summary = tmp_path / "admet_summary.csv"
+    evaluation = tmp_path / "admet_model_evaluation_summary.csv"
+    descriptors.write_text(
+        "molecule_id,canonical_smiles,valid_smiles,molecular_weight,logp,tpsa,"
+        "hbd,hba,rotatable_bonds,aromatic_rings,qed\n"
+        "mol_a,CCO,True,46.069,-0.001,20.23,1,1,0,0,0.4\n",
+        encoding="utf-8",
+    )
+    evaluation.write_text(
+        "endpoint_name,model_id,benchmark_dataset,split,task_type,metric_primary,"
+        "metric_primary_value,auroc,auprc,accuracy,balanced_accuracy,f1,rmse,mae,"
+        "r2,spearman,n_train,n_valid,n_test,n_failed_smiles,baseline_method,"
+        "baseline_metric_primary_value,validation_status,limitation_note\n"
+        "bbb_permeability,Yousuf7/ChemBERT-BBB-Permeability,local,test,"
+        "binary_classification,balanced_accuracy,0.750,0.800,0.700,0.750,"
+        "0.750,0.750,,,,,0,0,4,0,RDKit descriptor/rule baseline,0.500,"
+        "benchmark_passed,computational benchmark only\n",
+        encoding="utf-8",
+    )
+
+    admet_csv(
+        descriptors_path=descriptors,
+        predictions_path=predictions,
+        summary_path=summary,
+        admet_evaluation_summary_path=evaluation,
+    )
+
+    rows = list(csv.DictReader(predictions.open("r", encoding="utf-8", newline="")))
+    bbb = next(row for row in rows if row["admet_endpoint"] == ENDPOINT_BBB)
+    assert bbb["model_status"] == MODEL_STATUS_TUNED_BBB
+    assert bbb["validation_status"] == "benchmark_passed"
+    assert bbb["fallback_used"] == "no"
+
+
+def test_cached_tuned_bbb_falls_back_without_validation(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("src.admet.admet_predictor.model_is_cached", lambda model_id: True)
+    monkeypatch.setattr(
+        "src.admet.admet_predictor.TunedChembertaBBBClassifier",
+        lambda: FakeBBBClassifier(),
+    )
+    descriptors = tmp_path / "descriptors.csv"
+    predictions = tmp_path / "admet_predictions.csv"
+    summary = tmp_path / "admet_summary.csv"
+    descriptors.write_text(
+        "molecule_id,canonical_smiles,valid_smiles,molecular_weight,logp,tpsa,"
+        "hbd,hba,rotatable_bonds,aromatic_rings,qed\n"
+        "mol_a,CCO,True,46.069,-0.001,20.23,1,1,0,0,0.4\n",
+        encoding="utf-8",
+    )
+
+    admet_csv(
+        descriptors_path=descriptors,
+        predictions_path=predictions,
+        summary_path=summary,
+    )
+
+    rows = list(csv.DictReader(predictions.open("r", encoding="utf-8", newline="")))
+    assert {row["model_status"] for row in rows} == {MODEL_STATUS_FALLBACK}
+    assert {row["validation_status"] for row in rows} == {"not_evaluated"}
+    assert {row["fallback_used"] for row in rows} == {"yes"}
 
 
 def test_admet_outputs_do_not_change_scoring_columns(tmp_path: Path) -> None:

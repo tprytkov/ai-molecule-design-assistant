@@ -65,3 +65,8 @@ app_data/manifests/*_local.json
 *.ckpt
 *.parquet
 *.arrow
+admet_model_evaluation_summary.csv
+admet_model_evaluation_details.csv
+data/admet_benchmarks/*.csv
+data/admet_benchmarks/*.tsv
+!data/admet_benchmarks/README.md

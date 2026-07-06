@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from src import optional_domain_models as odm
+from scripts import cache_optional_models
 import src.biomedical_evidence as biomedical_evidence_module
 import src.patent_evidence_embeddings as patent_evidence_module
 from src.biomedical_evidence import OUTPUT_COLUMNS as BIOMEDICAL_OUTPUT_COLUMNS
@@ -55,6 +56,22 @@ def test_cache_huggingface_model_blocked_when_download_gate_unset(monkeypatch):
     assert model_id == "demo/model"
     assert ok is False
     assert "ALLOW_LOCAL_MODEL_DOWNLOADS=1" in message
+
+
+def test_cache_optional_models_cli_blocks_download_and_redacts_token(monkeypatch, capsys):
+    token = "hf_private_token_for_cli_test"
+    monkeypatch.delenv(odm.ALLOW_LOCAL_MODEL_DOWNLOADS_ENV, raising=False)
+    monkeypatch.setenv("HF_TOKEN", token)
+    monkeypatch.setattr(cache_optional_models, "update_model_manifest", lambda records: {})
+
+    exit_code = cache_optional_models.main(["--models", odm.CHEMBERTA_BBB_MODEL_ID])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "FAILED" in captured.out
+    assert odm.CHEMBERTA_BBB_MODEL_ID in captured.out
+    assert "ALLOW_LOCAL_MODEL_DOWNLOADS=1" in captured.out
+    assert token not in captured.out
 
 
 def test_cache_huggingface_model_redacts_token_on_failure(monkeypatch):

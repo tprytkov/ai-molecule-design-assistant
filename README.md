@@ -218,9 +218,10 @@ Configured model candidates include:
   candidate without detailed app validation
 
 `DeepChem/ChemBERTa-77M-MLM` is an embedding/pretraining model and is not a
-validated ADMET endpoint predictor. Tuned ChemBERTa endpoint candidates are used
-only when explicitly cached and clearly labeled experimental unless separate app
-validation is added.
+validated ADMET endpoint predictor. Tuned ChemBERTa endpoint candidates are
+endpoint-specific; the app records their endpoint, expected task, benchmark
+dataset, cache status, and validation status separately from generic molecular
+embedding models.
 
 ## Model And Cache Transparency
 
@@ -265,19 +266,56 @@ The ADMET Prediction page writes:
 
 - `admet_predictions.csv`
 - `admet_summary.csv`
+- optional generated benchmark files: `admet_model_evaluation_summary.csv` and
+  `admet_model_evaluation_details.csv`
 
 The default implementation is a descriptor/rule fallback layer using RDKit
 properties and conservative rules for BBB/CNS likeness, solubility, LogP,
 hERG/cardiotoxicity triage, CYP inhibition triage, and general toxicity triage.
-If `Yousuf7/ChemBERT-BBB-Permeability` is cached locally, the BBB endpoint may
-use that experimental public Hugging Face tuned classifier. If it is missing or
-unavailable, BBB falls back to descriptor rules. The app does not claim
-validated ADMET prediction.
+The initial endpoint-specific tuned-model candidate is
+`Yousuf7/ChemBERT-BBB-Permeability` for BBB permeability. It is loaded only from
+the app-managed Hugging Face cache and only for the BBB endpoint.
+
+Normal Streamlit runs do not download model weights and keep local cache-safe
+loading enabled. To cache a selected model for local testing, run an explicit
+download command with the gate enabled:
+
+```powershell
+$env:ALLOW_LOCAL_MODEL_DOWNLOADS="1"
+python scripts/cache_optional_models.py --models Yousuf7/ChemBERT-BBB-Permeability --backend transformers-sequence-classification
+```
+
+Before using a tuned endpoint model as an app prediction backend, evaluate it
+against a public benchmark such as TDC ADMET BBB Martins or a local
+TDC/MoleculeNet-style CSV with `molecule_id`, `smiles`, `label`, and `split`:
+
+```powershell
+python scripts/evaluate_admet_models.py `
+  --benchmark-csv data/admet_benchmarks/bbb_martins_local.csv `
+  --output-dir app_data/manifests `
+  --endpoint-name bbb_permeability `
+  --model-id Yousuf7/ChemBERT-BBB-Permeability `
+  --benchmark-dataset tdc_admet_bbb_martins `
+  --task-type binary_classification
+```
+
+The evaluator reports AUROC, AUPRC, accuracy, balanced accuracy, F1, failed
+SMILES count, and an RDKit descriptor/rule baseline comparison for
+classification tasks. Regression endpoints use RMSE, MAE, R2, and Spearman
+correlation. If the model is missing, incompatible, or benchmark validation does
+not pass, the ADMET page keeps using the RDKit descriptor/rule fallback and
+records `fallback_used=yes`.
+
+`ALLOW_EXPERIMENTAL_ADMET_MODEL_USE=1` can explicitly allow an experimental
+cached endpoint model before benchmark pass status, but the app labels that path
+as experimental. This is intended for local investigation only, not scientific
+claims.
 
 These outputs are computational research triage only. They are not experimental
 ADMET evidence, toxicity evidence, safety evidence, clinical evidence, or a
 substitute for domain review. Validated model-based ADMET work would require
-endpoint-specific fine-tuned models and documented training data.
+endpoint-specific fine-tuned models, documented training data, benchmark
+performance, and domain review. SwissADME is not used, scraped, or required.
 
 ## Biopharma Analytics Layer
 

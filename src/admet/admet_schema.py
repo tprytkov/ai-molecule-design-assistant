@@ -11,6 +11,8 @@ ADMET_PREDICTION_COLUMNS = (
     "model_backend",
     "model_status",
     "model_cache_status",
+    "validation_status",
+    "fallback_used",
     "training_dataset",
     "evidence_note",
 )
@@ -23,6 +25,8 @@ ADMET_SUMMARY_COLUMNS = (
     "toxicity_risk_flag",
     "admet_readiness_category",
     "model_status",
+    "validation_status",
+    "fallback_used",
     "evidence_note",
 )
 

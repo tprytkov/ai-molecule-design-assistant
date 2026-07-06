@@ -112,6 +112,12 @@ from src.surechembl_lookup import (
 )
 from src.admet import admet_csv
 from src.admet.admet_model_registry import ADMET_MODEL_REGISTRY
+from src.admet.admet_model_selection import (
+    ALLOW_EXPERIMENTAL_ADMET_MODEL_USE_ENV,
+    VALIDATION_STATUS_BENCHMARK_PASSED,
+    VALIDATION_STATUS_EXPERIMENTAL,
+    validation_status_for_model,
+)
 from src.text_nlp import text_nlp_csv
 
 
@@ -125,6 +131,8 @@ OUTPUT_FILES = {
     "descriptors": "descriptors.csv",
     "admet_predictions": "admet_predictions.csv",
     "admet_summary": "admet_summary.csv",
+    "admet_model_evaluation_summary": "admet_model_evaluation_summary.csv",
+    "admet_model_evaluation_details": "admet_model_evaluation_details.csv",
     "similarity": "similarity.csv",
     "public_lookup": "public_lookup.csv",
     "chemical_identity": "chemical_identity.csv",
@@ -3635,8 +3643,10 @@ def render_admet_prediction_page(output_dir: Path) -> None:
     loaded = load_output_directory(output_dir)
     predictions = loaded.tables["admet_predictions"]
     summary = loaded.tables["admet_summary"]
+    evaluation_summary = loaded.tables["admet_model_evaluation_summary"]
     predictions_path = loaded.paths["admet_predictions"]
     summary_path = loaded.paths["admet_summary"]
+    evaluation_summary_path = loaded.paths["admet_model_evaluation_summary"]
     if summary.empty and not summary_path.exists() and loaded.paths["descriptors"].exists():
         if st.button("Generate ADMET descriptor fallback", key="generate_admet_fallback"):
             admet_csv(
@@ -3644,6 +3654,9 @@ def render_admet_prediction_page(output_dir: Path) -> None:
                 standardized_path=loaded.paths["standardized"],
                 predictions_path=predictions_path,
                 summary_path=summary_path,
+                admet_evaluation_summary_path=(
+                    evaluation_summary_path if evaluation_summary_path.exists() else None
+                ),
             )
             st.rerun()
     if summary.empty:
@@ -3663,9 +3676,37 @@ def render_admet_prediction_page(output_dir: Path) -> None:
     bbb_cache = latest_column_value(bbb_rows, "model_cache_status", "not available")
     bbb_model = latest_column_value(bbb_rows, "model_id", "not available")
     bbb_backend = latest_column_value(bbb_rows, "model_backend", "not available")
+    bbb_validation_status = latest_column_value(
+        bbb_rows,
+        "validation_status",
+        validation_status_for_model(
+            model_id=CHEMBERTA_BBB_MODEL_ID,
+            endpoint_name="bbb_permeability",
+            summary_path=evaluation_summary_path if evaluation_summary_path.exists() else None,
+        ),
+    )
+    bbb_fallback_used = latest_column_value(bbb_rows, "fallback_used", "yes")
     tuned_bbb_cached = model_is_cached(CHEMBERTA_BBB_MODEL_ID)
     tuned_bbb_active = bbb_status == "experimental_public_hf_model"
-    fallback_used = not tuned_bbb_active
+    fallback_used = str(bbb_fallback_used).strip().lower() != "no" or not tuned_bbb_active
+    evaluated = bbb_validation_status in {"benchmark_passed", "benchmark_failed"}
+    experimental_override_visible = bbb_validation_status == VALIDATION_STATUS_EXPERIMENTAL
+    bbb_eval_rows = (
+        evaluation_summary[
+            evaluation_summary.get("model_id", pd.Series(dtype=str)).astype(str).eq(CHEMBERTA_BBB_MODEL_ID)
+            & evaluation_summary.get("endpoint_name", pd.Series(dtype=str)).astype(str).eq("bbb_permeability")
+        ]
+        if not evaluation_summary.empty
+        and {"model_id", "endpoint_name"}.issubset(set(evaluation_summary.columns))
+        else pd.DataFrame()
+    )
+    bbb_primary_metric = latest_column_value(bbb_eval_rows, "metric_primary", "not available")
+    bbb_primary_value = latest_column_value(bbb_eval_rows, "metric_primary_value", "not available")
+    bbb_baseline_value = latest_column_value(
+        bbb_eval_rows,
+        "baseline_metric_primary_value",
+        "not available",
+    )
 
     columns = st.columns(4)
     render_modern_metric_card("Molecules", len(summary), container=columns[0])
@@ -3695,6 +3736,13 @@ def render_admet_prediction_page(output_dir: Path) -> None:
         yes_no_status(tuned_bbb_cached),
         container=status_columns[1],
     )
+    if tuned_bbb_cached and not tuned_bbb_active:
+        st.caption(
+            "A tuned BBB model may be cached, but app predictions keep using the "
+            "RDKit descriptor/rule fallback until benchmark validation passes or "
+            f"`{ALLOW_EXPERIMENTAL_ADMET_MODEL_USE_ENV}=1` explicitly enables "
+            "experimental endpoint-model use."
+        )
 
     st.markdown("#### Model status")
     st.dataframe(
@@ -3702,12 +3750,36 @@ def render_admet_prediction_page(output_dir: Path) -> None:
             pd.DataFrame(
                 [
                     {
-                        "bbb_cns_backend_used": bbb_backend,
-                        "tuned_chemberta_bbb_model_cached": yes_no_status(tuned_bbb_cached),
+                        "endpoint": "bbb_permeability",
+                        "configured_model": CHEMBERTA_BBB_MODEL_ID,
+                        "cached": yes_no_status(tuned_bbb_cached),
+                        "evaluated": yes_no_status(evaluated),
+                        "validation_status": bbb_validation_status,
+                        "benchmark_dataset": latest_column_value(
+                            bbb_eval_rows,
+                            "benchmark_dataset",
+                            "tdc_admet_bbb_martins or local benchmark CSV",
+                        ),
+                        "primary_performance_metric": (
+                            f"{bbb_primary_metric}={bbb_primary_value}"
+                            if bbb_primary_metric != "not available"
+                            else "not available"
+                        ),
                         "fallback_used": yes_no_status(fallback_used),
-                        "model_id": bbb_model,
+                        "rdkit_fallback_comparison": bbb_baseline_value,
+                        "limitation_note": (
+                            "Experimental override active; benchmark before trusting."
+                            if experimental_override_visible
+                            else (
+                                "Benchmark passed for app prediction use."
+                                if bbb_validation_status == VALIDATION_STATUS_BENCHMARK_PASSED
+                                else "RDKit descriptor/rule fallback remains active."
+                            )
+                        ),
+                        "actual_model_id": bbb_model,
                         "model_status": bbb_status,
                         "model_cache_status": bbb_cache,
+                        "backend_used": bbb_backend,
                     }
                 ]
             )
@@ -3734,6 +3806,8 @@ def render_admet_prediction_page(output_dir: Path) -> None:
             "toxicity_risk_flag",
             "admet_readiness_category",
             "model_status",
+            "validation_status",
+            "fallback_used",
         ),
     )
     st.dataframe(
@@ -3765,6 +3839,8 @@ def render_admet_prediction_page(output_dir: Path) -> None:
                 "model_backend",
                 "model_status",
                 "model_cache_status",
+                "validation_status",
+                "fallback_used",
             ),
         )
         st.dataframe(
@@ -3786,7 +3862,15 @@ def render_admet_prediction_page(output_dir: Path) -> None:
     with st.expander("Detailed ADMET evidence notes"):
         note_columns = existing_columns(
             predictions,
-            ("molecule_id", "admet_endpoint", "evidence_note", "training_dataset", "model_id"),
+            (
+                "molecule_id",
+                "admet_endpoint",
+                "evidence_note",
+                "training_dataset",
+                "model_id",
+                "validation_status",
+                "fallback_used",
+            ),
         )
         if note_columns:
             st.dataframe(
@@ -3801,13 +3885,25 @@ def render_admet_prediction_page(output_dir: Path) -> None:
                 "backend": entry.backend,
                 "cache_required": entry.cache_required,
                 "training_dataset": entry.training_dataset,
+                "endpoint_name": entry.endpoint_name,
+                "model_family": entry.model_family,
+                "task_type": entry.task_type,
+                "expected_input": entry.expected_input,
+                "expected_output": entry.expected_output,
+                "label_mapping": entry.label_mapping,
+                "benchmark_dataset": entry.benchmark_dataset,
+                "model_status": entry.model_status,
+                "validation_status": entry.validation_status,
                 "enabled": entry.enabled,
-                "notes": entry.notes,
+                "scientific_note": entry.scientific_note or entry.notes,
             }
             for entry in ADMET_MODEL_REGISTRY
         ]
         st.markdown("##### ADMET model registry")
         st.dataframe(pd.DataFrame(registry_rows), width="stretch", hide_index=True)
+        if not evaluation_summary.empty:
+            st.markdown("##### ADMET model evaluation summary")
+            st.dataframe(display_dataframe(evaluation_summary), width="stretch", hide_index=True)
         st.markdown("##### Raw ADMET summary")
         st.dataframe(display_dataframe(summary), width="stretch", hide_index=True)
         if not predictions.empty:

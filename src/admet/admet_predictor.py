@@ -21,6 +21,14 @@ from src.admet.admet_schema import (
     MODEL_STATUS_FALLBACK,
     TRAINING_DATASET_FALLBACK,
 )
+from src.admet.admet_model_selection import (
+    VALIDATION_STATUS_BENCHMARK_PASSED,
+    VALIDATION_STATUS_EXPERIMENTAL,
+    VALIDATION_STATUS_NOT_EVALUATED,
+    allow_experimental_admet_model_use,
+    validation_status_allows_prediction,
+    validation_status_for_model,
+)
 from src.model_source_status import HUGGINGFACE_CACHE_DIR, model_is_cached
 from src.optional_domain_models import CHEMBERTA_BBB_MODEL_ID
 
@@ -419,6 +427,7 @@ def prediction_row(
     endpoint: str,
     *,
     bbb_classifier: TunedChembertaBBBClassifier | None = None,
+    bbb_validation_status: str = VALIDATION_STATUS_NOT_EVALUATED,
 ) -> dict[str, str]:
     """Build one admet_predictions.csv row."""
     label, value = endpoint_label(record, endpoint)
@@ -427,6 +436,8 @@ def prediction_row(
     model_backend = MODEL_BACKEND_FALLBACK
     model_status = MODEL_STATUS_FALLBACK
     model_cache_status = MODEL_CACHE_STATUS_FALLBACK
+    validation_status = VALIDATION_STATUS_NOT_EVALUATED
+    fallback_used = "yes"
     training_dataset = TRAINING_DATASET_FALLBACK
     evidence_note = ADMET_EVIDENCE_NOTE
     if endpoint == ENDPOINT_BBB and bbb_classifier is not None and record.valid:
@@ -437,6 +448,8 @@ def prediction_row(
             model_backend = MODEL_BACKEND_TUNED_BBB
             model_status = MODEL_STATUS_TUNED_BBB
             model_cache_status = MODEL_CACHE_STATUS_CACHED
+            validation_status = bbb_validation_status
+            fallback_used = "no"
             training_dataset = TRAINING_DATASET_TUNED_BBB
             evidence_note = TUNED_BBB_EVIDENCE_NOTE
         except Exception:
@@ -452,6 +465,8 @@ def prediction_row(
         "model_backend": model_backend,
         "model_status": model_status,
         "model_cache_status": model_cache_status,
+        "validation_status": validation_status,
+        "fallback_used": fallback_used,
         "training_dataset": training_dataset,
         "evidence_note": evidence_note,
     }
@@ -494,6 +509,24 @@ def summary_row(
             if any(row.get("model_status") == MODEL_STATUS_TUNED_BBB for row in predictions)
             else MODEL_STATUS_FALLBACK
         ),
+        "validation_status": (
+            VALIDATION_STATUS_BENCHMARK_PASSED
+            if any(
+                row.get("validation_status") == VALIDATION_STATUS_BENCHMARK_PASSED
+                for row in predictions
+            )
+            else (
+                VALIDATION_STATUS_EXPERIMENTAL
+                if any(
+                    row.get("validation_status") == VALIDATION_STATUS_EXPERIMENTAL
+                    for row in predictions
+                )
+                else VALIDATION_STATUS_NOT_EVALUATED
+            )
+        ),
+        "fallback_used": (
+            "yes" if any(row.get("fallback_used", "yes") == "yes" for row in predictions) else "no"
+        ),
         "evidence_note": ADMET_EVIDENCE_NOTE,
     }
 
@@ -502,13 +535,19 @@ def build_admet_outputs(
     records: Iterable[ADMETDescriptorRecord],
     *,
     bbb_classifier: TunedChembertaBBBClassifier | None = None,
+    bbb_validation_status: str = VALIDATION_STATUS_BENCHMARK_PASSED,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Build ADMET prediction and summary rows."""
     prediction_rows: list[dict[str, str]] = []
     summary_rows: list[dict[str, str]] = []
     for record in records:
         molecule_predictions = [
-            prediction_row(record, endpoint, bbb_classifier=bbb_classifier)
+            prediction_row(
+                record,
+                endpoint,
+                bbb_classifier=bbb_classifier,
+                bbb_validation_status=bbb_validation_status,
+            )
             for endpoint in ENDPOINTS
         ]
         prediction_rows.extend(molecule_predictions)
@@ -534,16 +573,38 @@ def admet_csv(
     predictions_path: Path,
     summary_path: Path,
     use_tuned_bbb_if_cached: bool = True,
+    admet_evaluation_summary_path: Path | None = None,
+    allow_experimental_tuned_bbb: bool | None = None,
 ) -> dict[str, int]:
     """Generate ADMET descriptor/rule fallback CSV outputs."""
     records = descriptor_records(
         descriptors_path=descriptors_path,
         standardized_path=standardized_path,
     )
-    bbb_classifier = load_tuned_bbb_classifier() if use_tuned_bbb_if_cached else None
+    bbb_validation_status = validation_status_for_model(
+        model_id=CHEMBERTA_BBB_MODEL_ID,
+        endpoint_name="bbb_permeability",
+        summary_path=admet_evaluation_summary_path,
+    )
+    experimental_allowed = (
+        allow_experimental_admet_model_use()
+        if allow_experimental_tuned_bbb is None
+        else allow_experimental_tuned_bbb
+    )
+    if experimental_allowed and bbb_validation_status == VALIDATION_STATUS_NOT_EVALUATED:
+        bbb_validation_status = VALIDATION_STATUS_EXPERIMENTAL
+    bbb_allowed = (
+        use_tuned_bbb_if_cached
+        and validation_status_allows_prediction(
+            bbb_validation_status,
+            allow_experimental=experimental_allowed,
+        )
+    )
+    bbb_classifier = load_tuned_bbb_classifier() if bbb_allowed else None
     predictions, summaries = build_admet_outputs(
         records,
         bbb_classifier=bbb_classifier,
+        bbb_validation_status=bbb_validation_status,
     )
     return {
         "predictions": write_csv(
