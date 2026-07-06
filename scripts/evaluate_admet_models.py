@@ -13,7 +13,7 @@ from src.admet.admet_model_evaluation import (
     evaluate_regression_model,
     write_evaluation_outputs,
 )
-from src.model_source_status import HUGGINGFACE_CACHE_DIR
+from src.model_source_status import HUGGINGFACE_CACHE_DIR, huggingface_model_cache_candidates
 from src.optional_domain_models import CHEMBERTA_BBB_MODEL_ID
 
 
@@ -27,18 +27,31 @@ class LocalSequenceClassificationPredictor:
         except ImportError as exc:
             raise RuntimeError("transformers and torch are required for model evaluation.") from exc
         self._torch = torch
+        model_source = local_model_source(model_id)
         self.positive_label = positive_label.strip().lower()
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
+            model_source,
             cache_dir=str(HUGGINGFACE_CACHE_DIR),
             local_files_only=True,
         )
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            model_id,
+            model_source,
             cache_dir=str(HUGGINGFACE_CACHE_DIR),
             local_files_only=True,
         )
         self.model.eval()
+        labels = {
+            int(index): str(label).lower()
+            for index, label in getattr(self.model.config, "id2label", {}).items()
+        }
+        self.id2label = labels
+        self.positive_label_index = self._resolve_positive_label_index(labels)
+        self.label_mapping_status = (
+            "documented"
+            if self.positive_label
+            and any(self.positive_label in label for label in labels.values())
+            else "metadata_incomplete"
+        )
 
     def predict_proba(self, smiles: str) -> float:
         """Return probability for the configured positive class."""
@@ -52,17 +65,22 @@ class LocalSequenceClassificationPredictor:
         with self._torch.no_grad():
             logits = self.model(**encoded).logits
             probabilities = self._torch.nn.functional.softmax(logits, dim=-1)[0]
-        labels = {
-            int(index): str(label).lower()
-            for index, label in getattr(self.model.config, "id2label", {}).items()
-        }
+        if self.positive_label_index is not None:
+            return float(probabilities[self.positive_label_index].item())
         if self.positive_label:
-            for index, label in labels.items():
+            for index, label in self.id2label.items():
                 if self.positive_label in label:
                     return float(probabilities[index].item())
         if len(probabilities) > 1:
             return float(probabilities[1].item())
         return float(probabilities[0].item())
+
+    def _resolve_positive_label_index(self, labels: dict[int, str]) -> int | None:
+        if self.positive_label:
+            for index, label in labels.items():
+                if self.positive_label in label:
+                    return index
+        return 1 if 1 in labels else None
 
 
 class LocalRegressionPredictor:
@@ -75,13 +93,14 @@ class LocalRegressionPredictor:
         except ImportError as exc:
             raise RuntimeError("transformers and torch are required for model evaluation.") from exc
         self._torch = torch
+        model_source = local_model_source(model_id)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
+            model_source,
             cache_dir=str(HUGGINGFACE_CACHE_DIR),
             local_files_only=True,
         )
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            model_id,
+            model_source,
             cache_dir=str(HUGGINGFACE_CACHE_DIR),
             local_files_only=True,
         )
@@ -99,6 +118,19 @@ class LocalRegressionPredictor:
         with self._torch.no_grad():
             logits = self.model(**encoded).logits
         return float(logits.reshape(-1)[0].item())
+
+
+def local_model_source(model_id: str) -> str:
+    """Return a local directory source when a non-symlink cache copy exists."""
+    for path in huggingface_model_cache_candidates(model_id):
+        if (path / "config.json").exists():
+            return str(path)
+        snapshots = path / "snapshots"
+        if snapshots.exists():
+            for snapshot in sorted(snapshots.iterdir(), reverse=True):
+                if (snapshot / "config.json").exists():
+                    return str(snapshot)
+    return model_id
 
 
 def unavailable_result(
@@ -156,6 +188,18 @@ def unavailable_result(
     return EvaluationResult([summary], [detail])
 
 
+def mark_metadata_incomplete(result: EvaluationResult, note: str) -> EvaluationResult:
+    """Return result rows with honest metadata-incomplete validation status."""
+    summary_rows = []
+    for row in result.summary_rows:
+        updated = dict(row)
+        updated["validation_status"] = "metadata_incomplete"
+        existing_note = str(updated.get("limitation_note", "")).strip()
+        updated["limitation_note"] = f"{existing_note} {note}".strip()
+        summary_rows.append(updated)
+    return EvaluationResult(summary_rows, result.detail_rows)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build CLI parser."""
     parser = argparse.ArgumentParser(
@@ -184,19 +228,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     rows = read_local_benchmark_csv(args.benchmark_csv)
     try:
         if args.task_type == "binary_classification":
+            predictor = LocalSequenceClassificationPredictor(
+                args.model_id,
+                positive_label=args.positive_label,
+            )
             result = evaluate_classification_model(
                 endpoint_name=args.endpoint_name,
                 model_id=args.model_id,
                 benchmark_dataset=args.benchmark_dataset,
                 rows=rows,
-                predictor=LocalSequenceClassificationPredictor(
-                    args.model_id,
-                    positive_label=args.positive_label,
-                ),
+                predictor=predictor,
                 split=args.split,
                 baseline_endpoint="bbb_permeability_cns_likeness",
                 validation_threshold=args.classification_threshold,
             )
+            if predictor.label_mapping_status == "metadata_incomplete":
+                result = mark_metadata_incomplete(
+                    result,
+                    "Model config uses generic LABEL_0/LABEL_1 labels; metrics were "
+                    "computed with class index 1 treated as BBB-permeable, but the "
+                    "model is not marked benchmark_passed until label mapping is documented.",
+                )
         else:
             result = evaluate_regression_model(
                 endpoint_name=args.endpoint_name,

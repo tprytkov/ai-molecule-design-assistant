@@ -14,6 +14,7 @@ from src.model_source_status import (
     HUGGINGFACE_CACHE_DIR,
     configure_huggingface_cache_env,
     ensure_app_data_dirs,
+    huggingface_model_cache_candidates,
 )
 
 configure_huggingface_cache_env()
@@ -310,11 +311,29 @@ def cache_huggingface_model(
         except ImportError:
             snapshot_download = None
         if snapshot_download is not None:
-            snapshot_download(
-                repo_id=model_id,
-                cache_dir=str(HUGGINGFACE_CACHE_DIR),
-                token=hf_token or None,
-            )
+            try:
+                snapshot_download(
+                    repo_id=model_id,
+                    cache_dir=str(HUGGINGFACE_CACHE_DIR),
+                    token=hf_token or None,
+                )
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != 1314:
+                    raise
+                local_dir = next(
+                    (
+                        path
+                        for path in huggingface_model_cache_candidates(model_id)
+                        if path.name == model_id.replace("/", "_")
+                    ),
+                    HUGGINGFACE_CACHE_DIR / model_id.replace("/", "_"),
+                )
+                snapshot_download(
+                    repo_id=model_id,
+                    local_dir=str(local_dir),
+                    local_dir_use_symlinks=False,
+                    token=hf_token or None,
+                )
         elif backend == SENTENCE_TRANSFORMERS_BACKEND:
             from sentence_transformers import SentenceTransformer
 

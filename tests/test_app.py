@@ -3558,6 +3558,7 @@ def test_admet_page_uses_compact_interpretation_tables(
     )
     monkeypatch.setattr(app, "st", fake_streamlit)
     monkeypatch.setattr(app, "model_is_cached", lambda model_id: False)
+    monkeypatch.setattr(app, "validation_status_for_model", lambda **kwargs: "not_evaluated")
 
     app.render_admet_prediction_page(output_dir)
 

@@ -78,13 +78,17 @@ ADMET_MODEL_REGISTRY = (
         model_family="ChemBERTa-like sequence classifier",
         task_type="binary_classification",
         expected_output="BBB permeable vs non-permeable class probability",
-        label_mapping="model id2label; must be verified during evaluation",
+        label_mapping=(
+            "model config exposes generic LABEL_0/LABEL_1; positive-class "
+            "mapping must be documented before validation"
+        ),
         benchmark_dataset="tdc_admet_bbb_martins",
         model_status="experimental_public_model",
-        validation_status="not_evaluated",
+        validation_status="metadata_incomplete",
         scientific_note=(
-            "Endpoint-specific public model candidate. Use app predictions only "
-            "after benchmark_passed or explicit experimental override."
+            "Endpoint-specific public model candidate. A local BBBP evaluation "
+            "computed metrics, but the model is not marked benchmark_passed "
+            "because class-label mapping is generic in config metadata."
         ),
     ),
     ADMETModelRegistryEntry(
