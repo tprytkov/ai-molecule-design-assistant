@@ -1,0 +1,4 @@
+reference_id,reference_name,smiles,reference_source,reference_source_id,evidence_note
+adora2a_ref_caffeine,caffeine,Cn1c(=O)c2c(ncn2C)n(C)c1=O,RCSB_PDB,3RFM,Caffeine is the co-crystallized xanthine ligand in PDB 3RFM for the thermostabilized adenosine A2A receptor.
+adora2a_ref_theophylline,theophylline,Cn1c(=O)c2[nH]cnc2n(C)c1=O,public_xanthine_reference,THEOPHYLLINE,Public xanthine scaffold reference included for target-specific structural comparison.
+adora2a_ref_xanthine,xanthine,O=c1[nH]c(=O)c2[nH]cnc2[nH]1,public_xanthine_reference,XANTHINE,Parent xanthine scaffold reference included for target-specific structural comparison.

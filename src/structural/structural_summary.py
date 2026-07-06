@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from src.structural.docking_input import normalize_docking_csv
+from src.target.target_schema import (
+    TARGET_SOURCE_TARGET_SPECIFIC_DEMO,
+    TARGET_SOURCE_USER,
+)
 from src.target.target_profile import TargetProfile, target_profile_csv
 
 STRUCTURAL_PROPERTIES_COLUMNS = (
@@ -99,7 +103,10 @@ def docking_priority_label(row: Mapping[str, str] | None) -> str:
 
 
 def _target_available(profile: TargetProfile) -> bool:
-    return profile.target_id not in {"", "target_missing"} and profile.target_source != "missing"
+    return (
+        profile.target_id not in {"", "target_missing"}
+        and profile.target_source in {TARGET_SOURCE_TARGET_SPECIFIC_DEMO, TARGET_SOURCE_USER}
+    )
 
 
 def structural_summary_csv(

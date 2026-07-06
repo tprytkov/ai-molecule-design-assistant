@@ -18,8 +18,10 @@ TARGET_PROFILE_COLUMNS = (
 )
 
 TARGET_SOURCE_DEMO = "demo_provided"
-TARGET_SOURCE_USER = "user_provided"
-TARGET_SOURCE_MISSING = "missing"
+TARGET_SOURCE_GENERAL_DEMO = "general_demo_not_target_specific"
+TARGET_SOURCE_TARGET_SPECIFIC_DEMO = "target_specific_demo"
+TARGET_SOURCE_USER = "user_configured_target"
+TARGET_SOURCE_MISSING = "target_missing"
 
 TARGET_DISCLAIMER = (
     "Target metadata is project setup context for computational triage only; "

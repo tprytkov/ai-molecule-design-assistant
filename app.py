@@ -90,6 +90,18 @@ from src.structural import (
     add_structural_context_to_prioritization,
     structural_summary_csv,
 )
+from src.target import (
+    TARGET_SPECIFIC_DEMO_DOCKING_PATH,
+    TARGET_SPECIFIC_DEMO_MOLECULES_PATH,
+    TARGET_SPECIFIC_DEMO_PROFILE_PATH,
+    TARGET_SPECIFIC_DEMO_REFERENCES_PATH,
+)
+from src.target.target_schema import (
+    TARGET_SOURCE_GENERAL_DEMO,
+    TARGET_SOURCE_MISSING,
+    TARGET_SOURCE_TARGET_SPECIFIC_DEMO,
+    TARGET_SOURCE_USER,
+)
 from src.surechembl_lookup import (
     UrllibSurechemblClient,
     lookup_online_rows,
@@ -717,6 +729,7 @@ FINAL_RANKING_EXPLANATION = (
 DEMO_INPUT = Path("data/examples/druglike_candidate_demo.csv")
 DEMO_REFERENCES = Path("data/examples/druglike_reference_panel.csv")
 DEMO_TEXT_EVIDENCE = Path("data/examples/text_evidence_demo.csv")
+TARGET_SPECIFIC_DEMO_MODE = "target_specific_demo"
 EXAMPLE_FILE_NOTES = {
     DEMO_INPUT: (
         "Candidate file",
@@ -764,6 +777,33 @@ EXAMPLE_FILE_NOTES = {
         (
             "This file supplies short text evidence that the workflow compares "
             "against molecule context during the text-evidence stage."
+        ),
+    ),
+    TARGET_SPECIFIC_DEMO_MOLECULES_PATH: (
+        "Target-specific demo molecules",
+        {
+            "molecule_id": "unique molecule identifier for the target-specific package",
+            "smiles": "xanthine-like molecule SMILES",
+            "compound_description": "target-demo context for the example molecule",
+        },
+        (
+            "This file supplies matched example molecules for the separate "
+            "ADORA2A/xanthine target-specific structural demo."
+        ),
+    ),
+    TARGET_SPECIFIC_DEMO_REFERENCES_PATH: (
+        "Target-specific reference ligands",
+        {
+            "reference_id": "reference ligand identifier",
+            "reference_name": "known xanthine or caffeine-like reference ligand",
+            "smiles": "reference ligand SMILES",
+            "reference_source": "public source category",
+            "reference_source_id": "public source identifier",
+            "evidence_note": "why the ligand is relevant to this target package",
+        },
+        (
+            "This file supplies target-matched reference ligands for the separate "
+            "ADORA2A/xanthine target-specific structural demo."
         ),
     ),
 }
@@ -3618,6 +3658,7 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
             width="stretch",
             hide_index=True,
         )
+        render_target_run_mode(target)
 
     st.markdown("#### Docking status")
     if structural_inputs.empty:
@@ -3724,6 +3765,7 @@ def render_target_setup_page(output_dir: Path) -> None:
     if target.empty:
         st.info("target_profile.csv is not available yet. Run structural/property analysis or provide a target profile.")
         return
+    render_target_run_mode(target)
     columns = existing_columns(
         target,
         (
@@ -3747,6 +3789,53 @@ def render_target_setup_page(output_dir: Path) -> None:
         display_dataframe(target[columns] if columns else target),
         width="stretch",
         hide_index=True,
+    )
+
+
+def target_run_mode(target: pd.DataFrame) -> str:
+    """Infer target/demo mode from visible target metadata."""
+    if target.empty:
+        return TARGET_SOURCE_MISSING
+    target_id = latest_column_value(target, "target_id", "")
+    source = latest_column_value(target, "protein_structure_source", "")
+    if target_id == "adora2a_xanthine_demo":
+        return TARGET_SOURCE_TARGET_SPECIFIC_DEMO
+    if target_id in {"", "target_missing"}:
+        return TARGET_SOURCE_MISSING
+    if target_id == "demo_target_placeholder" or source == "demo_placeholder":
+        return TARGET_SOURCE_GENERAL_DEMO
+    return TARGET_SOURCE_USER
+
+
+def target_run_mode_note(mode: str) -> str:
+    """Return concise user-facing target-mode guidance."""
+    if mode == TARGET_SOURCE_TARGET_SPECIFIC_DEMO:
+        return (
+            "Target-specific demo package: target metadata, reference ligands, "
+            "demo molecules, and docking rows are internally matched."
+        )
+    if mode == TARGET_SOURCE_GENERAL_DEMO:
+        return (
+            "General molecule-processing demo: the default aspirin/caffeine/etc. "
+            "demo is not target-specific docking evidence."
+        )
+    if mode == TARGET_SOURCE_USER:
+        return "User-configured target: review target and docking provenance before interpreting structural context."
+    return "Target metadata is missing; docking-aware interpretation is unavailable."
+
+
+def render_target_run_mode(target: pd.DataFrame) -> None:
+    """Render the target/demo mode for the current run."""
+    mode = target_run_mode(target)
+    render_modern_evidence_card(
+        "Target workflow mode",
+        {
+            "Mode": mode,
+            "Target ID": latest_column_value(target, "target_id", "not available"),
+            "PDB ID": latest_column_value(target, "pdb_id", "not available"),
+        },
+        description=target_run_mode_note(mode),
+        key=f"target_run_mode_{slugify_key(mode)}",
     )
 
 
@@ -4610,6 +4699,17 @@ def public_demo_input_paths() -> tuple[Path, Path, Path]:
     return DEMO_INPUT, DEMO_REFERENCES, DEMO_TEXT_EVIDENCE
 
 
+def target_specific_demo_input_paths() -> tuple[Path, Path, Path, Path, Path]:
+    """Return target-specific structural demo inputs."""
+    return (
+        TARGET_SPECIFIC_DEMO_MOLECULES_PATH,
+        TARGET_SPECIFIC_DEMO_REFERENCES_PATH,
+        DEMO_TEXT_EVIDENCE,
+        TARGET_SPECIFIC_DEMO_PROFILE_PATH,
+        TARGET_SPECIFIC_DEMO_DOCKING_PATH,
+    )
+
+
 def input_paths_for_active_run(
     output_dir: Path,
     workflow_mode: str,
@@ -4617,6 +4717,9 @@ def input_paths_for_active_run(
     """Return expected generated/reference/text input paths for an active run."""
     if workflow_mode == "public_demo":
         return public_demo_input_paths()
+    if workflow_mode == TARGET_SPECIFIC_DEMO_MODE:
+        generated, references, text_evidence, _, _ = target_specific_demo_input_paths()
+        return generated, references, text_evidence
     input_dir = output_dir.parent / "inputs"
     return (
         input_dir / "generated_smiles.csv",
@@ -4651,23 +4754,34 @@ def resolve_active_run_paths(
         root,
         mode,
     )
+    target_profile_path = None
+    docking_input_path = None
+    if mode == TARGET_SPECIFIC_DEMO_MODE:
+        _, _, _, target_profile_path, docking_input_path = target_specific_demo_input_paths()
     pipeline_paths = build_paths(
         input_path=generated_path,
         references_path=references_path,
         text_evidence_path=text_evidence_path,
         output_dir=root,
+        target_profile_path=target_profile_path or Path("data/demo_target/target_profile.csv"),
+        docking_input_path=docking_input_path,
     )
     input_labels = {
         "generated_smiles": generated_path,
         "references": references_path,
         "text_evidence": text_evidence_path,
     }
+    if mode == TARGET_SPECIFIC_DEMO_MODE:
+        input_labels["target_profile"] = target_profile_path or Path()
+        input_labels["docking_input"] = docking_input_path or Path()
     missing_inputs = tuple(
         label for label, path in input_labels.items() if not path.exists()
     )
     existing_outputs = existing_output_artifacts(root)
     if mode == "public_demo":
         run_type = "public_demo"
+    elif mode == TARGET_SPECIFIC_DEMO_MODE:
+        run_type = TARGET_SPECIFIC_DEMO_MODE
     elif mode in {"completed_run", "uploaded", "custom"}:
         run_type = "uploaded"
     elif mode == "existing_results":
@@ -4875,6 +4989,28 @@ def create_public_demo_workflow(
     )
 
 
+def create_target_specific_demo_workflow(
+    *,
+    timestamp: datetime | None = None,
+) -> PipelinePaths:
+    """Create a fresh target-specific demo workspace without running calculations."""
+    active_time = timestamp or datetime.now()
+    run_dir = APP_RUNS_DIR / active_time.strftime("target_specific_demo_%Y%m%d_%H%M%S")
+    output_dir = run_dir / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated, references, text_evidence, target_profile, docking_input = (
+        target_specific_demo_input_paths()
+    )
+    return build_paths(
+        input_path=generated,
+        references_path=references,
+        text_evidence_path=text_evidence,
+        output_dir=output_dir,
+        target_profile_path=target_profile,
+        docking_input_path=docking_input,
+    )
+
+
 def pubchem_preflight(
     *,
     client: object | None = None,
@@ -4995,8 +5131,20 @@ def render_pubchem_preflight_result(result: OnlineLookupPreflight) -> None:
     st.info(ONLINE_LOOKUP_RESTART_MESSAGE)
 
 
-def demo_paths_from_output(output_dir: Path) -> PipelinePaths:
-    """Rebuild public-demo pipeline paths for a tutorial workspace."""
+def demo_paths_from_output(output_dir: Path, workflow_mode: str = "public_demo") -> PipelinePaths:
+    """Rebuild guided-demo pipeline paths for a tutorial workspace."""
+    if workflow_mode == TARGET_SPECIFIC_DEMO_MODE:
+        generated, references, text_evidence, target_profile, docking_input = (
+            target_specific_demo_input_paths()
+        )
+        return build_paths(
+            input_path=generated,
+            references_path=references,
+            text_evidence_path=text_evidence,
+            output_dir=output_dir,
+            target_profile_path=target_profile,
+            docking_input_path=docking_input,
+        )
     return build_paths(
         input_path=DEMO_INPUT,
         references_path=DEMO_REFERENCES,
@@ -5946,12 +6094,39 @@ def render_public_demo_choice() -> Path | None:
         "Learn the evaluation process one stage at a time. Each step explains "
         "what is calculated, why it matters, and what evidence it produces."
     )
+    demo_options = (
+        "General molecule-processing demo",
+        "Target-specific structural demo",
+    )
+    if hasattr(st, "radio"):
+        demo_mode = st.radio("Demo mode", demo_options, key="guided_demo_mode")
+    else:
+        demo_mode = demo_options[0]
+    if demo_mode == "Target-specific structural demo":
+        st.write(
+            "This separate package uses ADORA2A/xanthine target metadata, matched "
+            "reference ligands, matched demo molecules, and illustrative docking "
+            "rows for target-aware structural prioritization. Docking values are "
+            "computational triage examples, not experimental binding affinity."
+        )
+        render_artifact_name_list(target_specific_demo_input_paths())
+    else:
+        st.write(
+            "The default public molecule demo is for SMILES processing, lookup, "
+            "descriptors, ADMET fallback, and app mechanics. It is not "
+            "target-specific docking evidence."
+        )
     render_section_header(
         "Public example files",
         "Use these files as templates for preparing your own generated SMILES input.",
         level=3,
     )
-    for path in public_demo_input_paths():
+    preview_paths = (
+        target_specific_demo_input_paths()[:2]
+        if demo_mode == "Target-specific structural demo"
+        else public_demo_input_paths()
+    )
+    for path in preview_paths:
         render_example_file_preview(path)
     environment_rows = []
     if st.button("Run environment checks"):
@@ -5970,7 +6145,12 @@ def render_public_demo_choice() -> Path | None:
     if not preflight.available:
         render_pubchem_preflight_result(preflight)
     try:
-        paths = create_public_demo_workflow()
+        if demo_mode == "Target-specific structural demo":
+            paths = create_target_specific_demo_workflow()
+            workflow_mode = TARGET_SPECIFIC_DEMO_MODE
+        else:
+            paths = create_public_demo_workflow()
+            workflow_mode = "public_demo"
     except Exception as exc:
         st.error(f"Could not start the guided example: {exc}")
         return None
@@ -5978,7 +6158,7 @@ def render_public_demo_choice() -> Path | None:
     st.session_state["active_output_dir"] = str(output_dir)
     st.session_state["workflow_step"] = 1
     st.session_state["completed_workflow_steps"] = []
-    st.session_state["workflow_mode"] = "public_demo"
+    st.session_state["workflow_mode"] = workflow_mode
     st.success("Guided example ready. Step 1 has not run yet.")
     return output_dir
 
@@ -6859,10 +7039,14 @@ def render_step_workflow(output_dir: Path) -> None:
             required = ", ".join(f"Step {step}" for step in missing_previous)
             st.warning(f"Run required previous step first: {required}.")
             return
-        if workflow_mode != "public_demo":
+        if workflow_mode not in {"public_demo", TARGET_SPECIFIC_DEMO_MODE}:
             st.warning("This workflow step has not been run for the selected output.")
             return
-        paths = demo_paths_from_output(output_dir)
+        paths = (
+            demo_paths_from_output(output_dir, str(workflow_mode))
+            if workflow_mode == TARGET_SPECIFIC_DEMO_MODE
+            else demo_paths_from_output(output_dir)
+        )
         if current == 3 and step3_outputs_exist(paths):
             if st.button(
                 "Use existing Step 3 results",
@@ -6874,7 +7058,12 @@ def render_step_workflow(output_dir: Path) -> None:
                 st.rerun()
             return
 
-        run_label = f"Run Step {current} on public example"
+        demo_label = (
+            "target-specific structural demo"
+            if workflow_mode == TARGET_SPECIFIC_DEMO_MODE
+            else "public example"
+        )
+        run_label = f"Run Step {current} on {demo_label}"
         button_slot = st.empty()
         run_clicked = button_slot.button(
             run_label,
@@ -6930,7 +7119,7 @@ def render_step_workflow(output_dir: Path) -> None:
         else:
             st.info(
                 "No calculation has run for this step yet. Review the explanation "
-                "above, then run the public example when you are ready."
+                f"above, then run the {demo_label} when you are ready."
             )
         return
 
@@ -7582,7 +7771,7 @@ def render_custom_analysis_planner(output_dir: Path) -> None:
             "Start a new analysis to run selected steps."
         )
         return
-    can_run_selected = workflow_mode == "public_demo" or (
+    can_run_selected = workflow_mode in {"public_demo", TARGET_SPECIFIC_DEMO_MODE} or (
         path_status.run_type == "uploaded" and path_status.paths_resolved
     )
     if missing_inputs:
@@ -7807,8 +7996,18 @@ def render_active_run_input_data(output_dir: Path) -> None:
     st.subheader("Input data")
     workflow_mode = str(st.session_state.get("workflow_mode", ""))
     if workflow_mode == "public_demo":
-        st.write("This active run uses the bundled public-safe demo inputs.")
+        st.write(
+            "This active run uses the bundled public-safe general molecule-processing "
+            "demo inputs. It is not target-specific docking evidence."
+        )
         render_artifact_name_list(public_demo_input_paths())
+        return
+    if workflow_mode == TARGET_SPECIFIC_DEMO_MODE:
+        st.write(
+            "This active run uses the separate target-specific structural demo "
+            "package with ADORA2A/xanthine target metadata and illustrative docking rows."
+        )
+        render_artifact_name_list(target_specific_demo_input_paths())
         return
     run_dir = output_dir.parent
     input_dir = run_dir / "inputs"

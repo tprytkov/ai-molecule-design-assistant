@@ -2,13 +2,27 @@ import csv
 from pathlib import Path
 
 from src.scoring import scoring_csv
+from src.standardize import standardize_csv
 from src.structural import (
     add_structural_context_to_prioritization,
     docking_priority_label,
     normalize_docking_csv,
     structural_summary_csv,
 )
-from src.target import load_target_profile, target_profile_csv
+from src.target import (
+    DEMO_TARGET_PROFILE_PATH,
+    TARGET_SPECIFIC_DEMO_DOCKING_PATH,
+    TARGET_SPECIFIC_DEMO_MOLECULES_PATH,
+    TARGET_SPECIFIC_DEMO_PROFILE_PATH,
+    TARGET_SPECIFIC_DEMO_REFERENCES_PATH,
+    load_target_profile,
+    target_profile_csv,
+)
+from src.target.target_schema import (
+    TARGET_SOURCE_GENERAL_DEMO,
+    TARGET_SOURCE_TARGET_SPECIFIC_DEMO,
+    TARGET_SOURCE_USER,
+)
 
 
 def write_structural_inputs(root: Path) -> dict[str, Path]:
@@ -87,9 +101,58 @@ def test_target_profile_loading_and_output_generation(tmp_path: Path) -> None:
     profile = target_profile_csv(output, source_path=paths["target"])
 
     assert profile.target_id == "target_a"
-    assert profile.target_source == "user_provided"
+    assert profile.target_source == TARGET_SOURCE_USER
     rows = read_rows(output)
     assert rows[0]["target_name"] == "Demo kinase target"
+
+
+def test_general_demo_target_profile_is_not_target_specific() -> None:
+    profile = load_target_profile(DEMO_TARGET_PROFILE_PATH)
+
+    assert profile.target_id == "demo_target_placeholder"
+    assert profile.target_source == TARGET_SOURCE_GENERAL_DEMO
+    assert "placeholder" in profile.target_name.lower()
+
+
+def test_target_specific_demo_package_files_load_and_match(tmp_path: Path) -> None:
+    profile = load_target_profile(TARGET_SPECIFIC_DEMO_PROFILE_PATH)
+    standardized = tmp_path / "standardized.csv"
+    docking = tmp_path / "docking_results_normalized.csv"
+
+    standardize_csv(TARGET_SPECIFIC_DEMO_MOLECULES_PATH, standardized)
+    count = normalize_docking_csv(
+        TARGET_SPECIFIC_DEMO_DOCKING_PATH,
+        docking,
+        standardized_path=standardized,
+        selected_target_id=profile.target_id,
+    )
+
+    references = read_rows(TARGET_SPECIFIC_DEMO_REFERENCES_PATH)
+    docking_rows = read_rows(docking)
+    assert profile.target_id == "adora2a_xanthine_demo"
+    assert profile.target_source == TARGET_SOURCE_TARGET_SPECIFIC_DEMO
+    assert profile.gene_symbol == "ADORA2A"
+    assert profile.pdb_id == "3RFM"
+    assert {row["reference_name"] for row in references} >= {"caffeine", "theophylline", "xanthine"}
+    assert count == 3
+    assert all(row["target_id"] == profile.target_id for row in docking_rows)
+    assert all(row["target_docking_match"] == "True" for row in docking_rows)
+    assert all(row["docking_status"] == "available" for row in docking_rows)
+
+
+def test_general_demo_structural_output_is_not_target_available(tmp_path: Path) -> None:
+    paths = write_structural_inputs(tmp_path)
+    structural_summary_csv(
+        target_output_path=tmp_path / "target_profile.csv",
+        structural_properties_path=tmp_path / "structural_properties.csv",
+        structural_prioritization_path=tmp_path / "structural_prioritization_inputs.csv",
+        descriptors_path=paths["descriptors"],
+        target_source_path=DEMO_TARGET_PROFILE_PATH,
+        standardized_path=paths["standardized"],
+    )
+
+    rows = read_rows(tmp_path / "structural_prioritization_inputs.csv")
+    assert rows[0]["target_available"] == "False"
 
 
 def test_docking_normalization_matches_by_id_and_standardized_smiles(tmp_path: Path) -> None:

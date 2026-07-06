@@ -7,11 +7,13 @@ public-source lookup, reference similarity, descriptor-based ADMET triage,
 semantic biomedical evidence similarity, patent/IP-context evidence triage, and
 a biopharma analytics / translational positioning demo.
 
-The current scientific demo is framed around Alzheimer's disease and alpha7
-nicotinic acetylcholine receptor positive allosteric modulation. It is intended
-for public-safe portfolio review, recruiter-facing demonstration, and scientific
-collaboration discussions. It is not a clinical, safety, legal, or
-patentability decision system.
+The app includes multiple public-safe demo modes. The general molecule demo is
+for app mechanics and molecule-processing workflow review. The biopharma
+analytics demo uses Alzheimer's disease / alpha7 nicotinic acetylcholine
+receptor positioning language as synthetic translational framing. A separate
+target-specific structural demo uses an ADORA2A/xanthine package to exercise
+docking-aware structural prioritization. None of these demos are clinical,
+safety, legal, patentability, or biological-validation systems.
 
 ## Project Motivation
 
@@ -102,6 +104,35 @@ artifacts at each stage.
 11. **Reports**
    Writes selected Markdown reports and 2D molecule images under `reports/` and
    `report_images/`.
+
+## Demo Modes
+
+The demos are intentionally separated so the target-aware workflow is not
+overstated.
+
+**General molecule-processing demo**
+
+The default guided demo uses public-safe molecule examples such as aspirin,
+caffeine, benzene, acetaminophen, and ibuprofen/reference molecules. Its
+purpose is SMILES standardization, public lookup, descriptors,
+descriptor-based ADMET fallback, chemical-space visualization, and app
+mechanics. It is not target-specific docking evidence.
+
+**Target-specific structural demo**
+
+The separate package in `data/demo_target_specific/` uses human ADORA2A
+metadata, PDB 3RFM caffeine/xanthine context, matched xanthine-like reference
+ligands, matched demo molecules, and `demo_docking_results.csv`. The docking
+rows are illustrative computational triage values for validating the workflow;
+they are not real docking calculations, experimental binding affinity,
+biological activity, efficacy, safety, or clinical evidence.
+
+**User-provided target and docking workflow**
+
+Users can provide their own molecule CSV, reference ligand CSV, target profile,
+and optional docking CSV. The app normalizes docking rows, checks whether
+`target_id` matches the selected target profile, and keeps docking context
+separate from the existing prioritization score.
 
 ## Optional embedding models
 
@@ -252,6 +283,10 @@ Important workflow outputs include:
 Docking scores are optional target-aware structural triage context only. They
 are not experimental binding affinity, activity, selectivity, safety, or
 efficacy, and they do not replace the existing prioritization score.
+
+The general public molecule demo does not include target-specific docking
+evidence. Use `data/demo_target_specific/` or user-provided target/docking
+inputs to demonstrate target-aware structural prioritization.
 
 Generated `outputs/` and `app_runs/` folders are intentionally excluded from
 Git to keep the repository small and prevent local uploads or generated

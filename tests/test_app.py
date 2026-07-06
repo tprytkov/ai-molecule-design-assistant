@@ -4352,6 +4352,35 @@ def test_artifact_display_name_hides_local_directories() -> None:
     assert app.artifact_display_name("uploaded SMILES CSV") == "uploaded SMILES CSV"
 
 
+def test_target_run_mode_distinguishes_general_and_target_specific_demo() -> None:
+    general = pd.DataFrame(
+        [
+            {
+                "target_id": "demo_target_placeholder",
+                "target_name": "Demo target placeholder",
+                "protein_structure_source": "demo_placeholder",
+            }
+        ]
+    )
+    target_specific = pd.DataFrame(
+        [
+            {
+                "target_id": "adora2a_xanthine_demo",
+                "target_name": "Adenosine A2A receptor xanthine-binding demo",
+                "protein_structure_source": "RCSB PDB 3RFM",
+            }
+        ]
+    )
+    user_target = pd.DataFrame(
+        [{"target_id": "user_target", "protein_structure_source": "user_provided"}]
+    )
+
+    assert app.target_run_mode(general) == "general_demo_not_target_specific"
+    assert app.target_run_mode(target_specific) == "target_specific_demo"
+    assert app.target_run_mode(user_target) == "user_configured_target"
+    assert app.target_run_mode(pd.DataFrame()) == "target_missing"
+
+
 def test_make_widget_key_is_unique_by_section_and_index(tmp_path: Path) -> None:
     first = tmp_path / "section_a" / "biopharma_positioning.csv"
     second = tmp_path / "section_b" / "biopharma_positioning.csv"
