@@ -2325,8 +2325,11 @@ def test_public_demo_step_seven_handles_unavailable_nlp_model(
     biomedical = pd.read_csv(paths.biomedical_evidence)
     assert text_nlp.loc[0, "nlp_status"] == "model_unavailable"
     assert text_nlp.loc[0, "nlp_relevance_category"] == "not_run"
-    assert biomedical.loc[0, "biomedical_model_status"] == "model_unavailable"
-    assert biomedical.loc[0, "biomedical_evidence_status"] == "skipped"
+    assert biomedical.loc[0, "biomedical_model_status"] == "lexical_fallback_used"
+    assert biomedical.loc[0, "biomedical_evidence_status"] == "available"
+    assert biomedical.loc[0, "model_backend"] == "lexical_token_overlap"
+    assert biomedical.loc[0, "model_cache_status"] == "not_required"
+    assert biomedical.loc[0, "fallback_used"] == "yes"
 
 
 def test_public_demo_step_eight_fallback_allows_step_nine(
@@ -2417,8 +2420,11 @@ def test_public_demo_step_eight_fallback_allows_step_nine(
 
     patent = pd.read_csv(paths.patent_evidence_embeddings)
     prioritization = pd.read_csv(paths.prioritized)
-    assert patent.loc[0, "patent_model_status"] == "model_unavailable"
-    assert patent.loc[0, "patent_evidence_status"] == "skipped"
+    assert patent.loc[0, "patent_model_status"] == "lexical_fallback_used"
+    assert patent.loc[0, "patent_evidence_status"] == "available"
+    assert patent.loc[0, "model_backend"] == "lexical_token_overlap"
+    assert patent.loc[0, "model_cache_status"] == "not_required"
+    assert patent.loc[0, "fallback_used"] == "yes"
     assert prioritization.loc[0, "molecule_id"] == "mol_1"
 
 

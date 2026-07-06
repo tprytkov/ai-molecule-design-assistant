@@ -13,6 +13,7 @@ from src.text_nlp import (
     encode_sentences,
     read_input_csv,
 )
+from src.lexical_similarity import lexical_similarity
 from src.optional_domain_models import (
     DomainModelUnavailableError,
     encoder_metadata,
@@ -28,6 +29,10 @@ BIOMEDICAL_MODEL_UNAVAILABLE_NOTE = (
 BIOMEDICAL_MODEL_AVAILABLE_NOTE = (
     "Biomedical evidence matched with a local embedding model."
 )
+BIOMEDICAL_LEXICAL_FALLBACK_NOTE = (
+    "Lexical fallback text-similarity triage only; embedding model unavailable. "
+    "This is not biological activity, efficacy, safety, or clinical prediction."
+)
 OUTPUT_COLUMNS = (
     "molecule_id",
     "biomedical_model_name",
@@ -39,6 +44,10 @@ OUTPUT_COLUMNS = (
     "top_biomedical_evidence_id",
     "top_biomedical_evidence_text",
     "evidence_note",
+    "model_backend",
+    "model_status",
+    "model_cache_status",
+    "fallback_used",
     "embedding_backend",
     "pooling_method",
     "model_source",
@@ -80,6 +89,10 @@ class BiomedicalEvidenceResult:
     top_biomedical_evidence_id: str = ""
     top_biomedical_evidence_text: str = ""
     evidence_note: str = ""
+    model_backend: str = ""
+    model_status: str = ""
+    model_cache_status: str = ""
+    fallback_used: str = ""
     embedding_backend: str = ""
     pooling_method: str = ""
     model_source: str = ""
@@ -199,6 +212,23 @@ def applicable_evidence_rows(
     return rows
 
 
+def model_status_metadata(
+    metadata: dict[str, str] | None,
+    *,
+    model_status: str,
+    model_cache_status: str,
+    fallback_used: bool,
+    model_backend: str | None = None,
+) -> dict[str, str]:
+    """Return row metadata with explicit app-facing model status fields."""
+    values = dict(metadata or {})
+    values["model_backend"] = model_backend or values.get("embedding_backend", "embedding")
+    values["model_status"] = model_status
+    values["model_cache_status"] = model_cache_status
+    values["fallback_used"] = "yes" if fallback_used else "no"
+    return values
+
+
 def unavailable_results(
     molecule_rows: Iterable[dict[str, str]],
     model_name: str,
@@ -208,7 +238,12 @@ def unavailable_results(
     evidence_note: str = BIOMEDICAL_MODEL_UNAVAILABLE_NOTE,
 ) -> list[BiomedicalEvidenceResult]:
     """Create fallback rows when embeddings cannot be loaded."""
-    metadata = metadata or {}
+    metadata = model_status_metadata(
+        metadata,
+        model_status=model_status,
+        model_cache_status="not_cached",
+        fallback_used=False,
+    )
     return [
         BiomedicalEvidenceResult(
             molecule_id=row_molecule_id(row),
@@ -224,6 +259,93 @@ def unavailable_results(
         for row in molecule_rows
         if row_molecule_id(row)
     ]
+
+
+def score_biomedical_evidence_lexical(
+    molecule_rows: Iterable[dict[str, str]],
+    evidence_rows: Iterable[dict[str, str]],
+    *,
+    model_name: str,
+    model_status: str = "lexical_fallback_used",
+    evidence_note: str = BIOMEDICAL_LEXICAL_FALLBACK_NOTE,
+    metadata: dict[str, str] | None = None,
+) -> list[BiomedicalEvidenceResult]:
+    """Score biomedical evidence using local lexical text overlap."""
+    molecules = [
+        (row, molecule_context_text(row))
+        for row in molecule_rows
+        if row_molecule_id(row)
+    ]
+    metadata = model_status_metadata(
+        metadata,
+        model_status=model_status,
+        model_cache_status="not_required",
+        fallback_used=True,
+        model_backend="lexical_token_overlap",
+    )
+    evidence = [row for row in evidence_rows if str(row.get("text", "")).strip()]
+    if not molecules:
+        return []
+    if not evidence:
+        return [
+            BiomedicalEvidenceResult(
+                molecule_id=row_molecule_id(row),
+                biomedical_model_name=model_name,
+                biomedical_model_status=model_status,
+                biomedical_evidence_status="no_evidence",
+                biomedical_relevance_category="not_run",
+                evidence_note="No biomedical evidence text was available to match.",
+                **metadata,
+            )
+            for row, _ in molecules
+        ]
+
+    results: list[BiomedicalEvidenceResult] = []
+    for molecule, molecule_text in molecules:
+        molecule_id = row_molecule_id(molecule)
+        evidence_matches = applicable_evidence_rows(molecule_id, evidence)
+        if not evidence_matches:
+            results.append(
+                BiomedicalEvidenceResult(
+                    molecule_id=molecule_id,
+                    biomedical_model_name=model_name,
+                    biomedical_model_status=model_status,
+                    biomedical_evidence_status="no_match",
+                    biomedical_relevance_category="not_run",
+                    evidence_note="No biomedical evidence rows applied to this molecule.",
+                    **metadata,
+                )
+            )
+            continue
+
+        query = molecule_text or molecule_id
+        best_score: float | None = None
+        best_row: dict[str, str] | None = None
+        for evidence_row in evidence_matches:
+            similarity = lexical_similarity(query, str(evidence_row.get("text", "")))
+            if best_score is None or similarity > best_score:
+                best_score = similarity
+                best_row = evidence_row
+
+        assert best_score is not None
+        assert best_row is not None
+        results.append(
+            BiomedicalEvidenceResult(
+                molecule_id=molecule_id,
+                biomedical_model_name=model_name,
+                biomedical_model_status=model_status,
+                biomedical_evidence_status="available",
+                biomedical_similarity_score=f"{best_score:.3f}",
+                biomedical_relevance_category=categorize_biomedical_relevance(best_score),
+                biomedical_evidence_count=str(len(evidence_matches)),
+                top_biomedical_evidence_id=str(best_row.get("evidence_id", "")).strip(),
+                top_biomedical_evidence_text=str(best_row.get("text", "")).strip(),
+                evidence_note=evidence_note,
+                **metadata,
+            )
+        )
+    return results
+
 
 def score_biomedical_evidence(
     molecule_rows: Iterable[dict[str, str]],
@@ -241,7 +363,12 @@ def score_biomedical_evidence(
         for row in molecule_rows
         if row_molecule_id(row)
     ]
-    metadata = metadata or encoder_metadata(model, model_source=model_name)
+    metadata = model_status_metadata(
+        metadata or encoder_metadata(model, model_source=model_name),
+        model_status=model_status,
+        model_cache_status="cached",
+        fallback_used=model_status == "fallback_model_used",
+    )
     evidence = [row for row in evidence_rows if str(row.get("text", "")).strip()]
     if not molecules:
         return []
@@ -363,12 +490,13 @@ def biomedical_evidence_csv(
 
     if model is None and unavailable_metadata is not None:
         return write_results(
-            unavailable_results(
+            score_biomedical_evidence_lexical(
                 molecule_rows,
-                model_name,
-                model_status=unavailable_status,
+                evidence_rows,
+                model_name=model_name,
+                model_status="lexical_fallback_used",
                 metadata=unavailable_metadata,
-                evidence_note=unavailable_note,
+                evidence_note=f"{BIOMEDICAL_LEXICAL_FALLBACK_NOTE} {unavailable_note}",
             ),
             output_path,
         )
@@ -377,12 +505,13 @@ def biomedical_evidence_csv(
         active_model = model or load_model(model_name)
     except BiomedicalModelUnavailableError:
         return write_results(
-            unavailable_results(
+            score_biomedical_evidence_lexical(
                 molecule_rows,
-                model_name,
-                model_status=unavailable_status,
+                evidence_rows,
+                model_name=model_name,
+                model_status="lexical_fallback_used",
                 metadata=unavailable_metadata,
-                evidence_note=unavailable_note,
+                evidence_note=f"{BIOMEDICAL_LEXICAL_FALLBACK_NOTE} {unavailable_note}",
             ),
             output_path,
         )

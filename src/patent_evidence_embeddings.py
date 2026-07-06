@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Protocol, Sequence
 
+from src.lexical_similarity import lexical_similarity
 from src.text_nlp import cosine_similarity, encode_sentences
 from src.optional_domain_models import (
     DomainModelUnavailableError,
@@ -25,6 +26,11 @@ PATENT_MODEL_AVAILABLE_NOTE = (
     "Patent/IP-context evidence matched with a local embedding model. This is a "
     "research triage signal, not a legal conclusion."
 )
+PATENT_LEXICAL_FALLBACK_NOTE = (
+    "Lexical fallback text-similarity triage only; embedding model unavailable. "
+    "Patent/IP-context evidence is research triage only, not legal advice, "
+    "patentability, novelty, FTO, infringement, or ownership determination."
+)
 OUTPUT_COLUMNS = (
     "molecule_id",
     "patent_model_name",
@@ -38,6 +44,10 @@ OUTPUT_COLUMNS = (
     "surechembl_structure_status",
     "patent_document_metadata_status",
     "evidence_note",
+    "model_backend",
+    "model_status",
+    "model_cache_status",
+    "fallback_used",
     "embedding_backend",
     "pooling_method",
     "model_source",
@@ -81,6 +91,10 @@ class PatentEvidenceEmbeddingResult:
     surechembl_structure_status: str = "not_run"
     patent_document_metadata_status: str = "not_run"
     evidence_note: str = ""
+    model_backend: str = ""
+    model_status: str = ""
+    model_cache_status: str = ""
+    fallback_used: str = ""
     embedding_backend: str = ""
     pooling_method: str = ""
     model_source: str = ""
@@ -305,6 +319,23 @@ def applicable_evidence(
     return rows
 
 
+def model_status_metadata(
+    metadata: dict[str, str] | None,
+    *,
+    model_status: str,
+    model_cache_status: str,
+    fallback_used: bool,
+    model_backend: str | None = None,
+) -> dict[str, str]:
+    """Return row metadata with explicit app-facing model status fields."""
+    values = dict(metadata or {})
+    values["model_backend"] = model_backend or values.get("embedding_backend", "embedding")
+    values["model_status"] = model_status
+    values["model_cache_status"] = model_cache_status
+    values["fallback_used"] = "yes" if fallback_used else "no"
+    return values
+
+
 def fallback_results(
     molecule_ids: Iterable[str],
     *,
@@ -315,7 +346,12 @@ def fallback_results(
     evidence_note: str = PATENT_MODEL_UNAVAILABLE_NOTE,
 ) -> list[PatentEvidenceEmbeddingResult]:
     """Create model-unavailable fallback rows."""
-    metadata = metadata or {}
+    metadata = model_status_metadata(
+        metadata,
+        model_status=model_status,
+        model_cache_status="not_cached",
+        fallback_used=False,
+    )
     results = []
     for molecule_id in molecule_ids:
         surechembl_rows = surechembl_by_molecule.get(molecule_id, [])
@@ -339,6 +375,118 @@ def fallback_results(
         )
     return results
 
+
+def score_patent_evidence_lexical(
+    molecule_ids: Iterable[str],
+    evidence_rows: Iterable[dict[str, str]],
+    *,
+    model_name: str,
+    model_status: str = "lexical_fallback_used",
+    evidence_note: str = PATENT_LEXICAL_FALLBACK_NOTE,
+    metadata: dict[str, str] | None = None,
+    surechembl_rows: Iterable[dict[str, str]] = (),
+    public_rows: Iterable[dict[str, str]] = (),
+    identity_rows: Iterable[dict[str, str]] = (),
+    context_rows: Iterable[dict[str, str]] = (),
+) -> list[PatentEvidenceEmbeddingResult]:
+    """Score patent/IP-context evidence using local lexical text overlap."""
+    ids = list(molecule_ids)
+    metadata = model_status_metadata(
+        metadata,
+        model_status=model_status,
+        model_cache_status="not_required",
+        fallback_used=True,
+        model_backend="lexical_token_overlap",
+    )
+    evidence = [row for row in evidence_rows if str(row.get("text", "")).strip()]
+    surechembl_by_molecule = index_rows(surechembl_rows)
+    if not ids:
+        return []
+    if not evidence:
+        return [
+            PatentEvidenceEmbeddingResult(
+                molecule_id=molecule_id,
+                patent_model_name=model_name,
+                patent_model_status=model_status,
+                patent_evidence_status="no_evidence",
+                surechembl_structure_status=best_status(
+                    surechembl_by_molecule.get(molecule_id, []),
+                    "lookup_status",
+                    "not_run",
+                ),
+                patent_document_metadata_status=metadata_status_for_molecule(
+                    surechembl_by_molecule.get(molecule_id, [])
+                ),
+                evidence_note="No patent/IP-context text was available to match.",
+                **metadata,
+            )
+            for molecule_id in ids
+        ]
+
+    results: list[PatentEvidenceEmbeddingResult] = []
+    for molecule_id in ids:
+        matches = applicable_evidence(molecule_id, evidence)
+        surechembl_for_molecule = surechembl_by_molecule.get(molecule_id, [])
+        if not matches:
+            results.append(
+                PatentEvidenceEmbeddingResult(
+                    molecule_id=molecule_id,
+                    patent_model_name=model_name,
+                    patent_model_status=model_status,
+                    patent_evidence_status="no_match",
+                    surechembl_structure_status=best_status(
+                        surechembl_for_molecule, "lookup_status", "not_run"
+                    ),
+                    patent_document_metadata_status=metadata_status_for_molecule(
+                        surechembl_for_molecule
+                    ),
+                    evidence_note="No patent evidence rows applied to this molecule.",
+                    **metadata,
+                )
+            )
+            continue
+
+        query = context_text(
+            molecule_id,
+            surechembl_rows=surechembl_rows,
+            public_rows=public_rows,
+            identity_rows=identity_rows,
+            context_rows=context_rows,
+        )
+        best_score: float | None = None
+        best_row: dict[str, str] | None = None
+        for row in matches:
+            score = lexical_similarity(query, str(row.get("text", "")))
+            if best_score is None or score > best_score:
+                best_score = score
+                best_row = row
+
+        assert best_score is not None
+        assert best_row is not None
+        results.append(
+            PatentEvidenceEmbeddingResult(
+                molecule_id=molecule_id,
+                patent_model_name=model_name,
+                patent_model_status=model_status,
+                patent_evidence_status="available",
+                patent_similarity_score=f"{best_score:.3f}",
+                patent_relevance_category=categorize_patent_relevance(best_score),
+                patent_evidence_count=str(len(matches)),
+                top_patent_evidence_id=str(best_row.get("evidence_id", "")).strip(),
+                top_patent_evidence_text=str(best_row.get("text", "")).strip(),
+                surechembl_structure_status=best_status(
+                    surechembl_for_molecule, "lookup_status", "not_run"
+                ),
+                patent_document_metadata_status=metadata_status_for_molecule(
+                    surechembl_for_molecule
+                ),
+                evidence_note=evidence_note,
+                **metadata,
+            )
+        )
+    return results
+
+
 def score_patent_evidence(
     molecule_ids: Iterable[str],
     evidence_rows: Iterable[dict[str, str]],
@@ -355,7 +503,12 @@ def score_patent_evidence(
 ) -> list[PatentEvidenceEmbeddingResult]:
     """Score patent evidence against molecule IP context and aggregate by molecule."""
     ids = list(molecule_ids)
-    metadata = metadata or encoder_metadata(model, model_source=model_name)
+    metadata = model_status_metadata(
+        metadata or encoder_metadata(model, model_source=model_name),
+        model_status=model_status,
+        model_cache_status="cached",
+        fallback_used=model_status == "fallback_model_used",
+    )
     evidence = [row for row in evidence_rows if str(row.get("text", "")).strip()]
     surechembl_by_molecule = index_rows(surechembl_rows)
     if not ids:
@@ -507,13 +660,17 @@ def patent_evidence_embeddings_csv(
 
     if model is None and unavailable_metadata is not None:
         return write_results(
-            fallback_results(
+            score_patent_evidence_lexical(
                 molecule_ids,
                 model_name=model_name,
-                surechembl_by_molecule=surechembl_by_molecule,
-                model_status=unavailable_status,
+                evidence_rows=evidence_rows,
+                model_status="lexical_fallback_used",
                 metadata=unavailable_metadata,
-                evidence_note=unavailable_note,
+                evidence_note=f"{PATENT_LEXICAL_FALLBACK_NOTE} {unavailable_note}",
+                surechembl_rows=surechembl_rows,
+                public_rows=public_rows,
+                identity_rows=identity_rows,
+                context_rows=context_rows,
             ),
             output_path,
         )
@@ -522,13 +679,17 @@ def patent_evidence_embeddings_csv(
         active_model = model or load_model(model_name)
     except PatentModelUnavailableError:
         return write_results(
-            fallback_results(
+            score_patent_evidence_lexical(
                 molecule_ids,
                 model_name=model_name,
-                surechembl_by_molecule=surechembl_by_molecule,
-                model_status=unavailable_status,
+                evidence_rows=evidence_rows,
+                model_status="lexical_fallback_used",
                 metadata=unavailable_metadata,
-                evidence_note=unavailable_note,
+                evidence_note=f"{PATENT_LEXICAL_FALLBACK_NOTE} {unavailable_note}",
+                surechembl_rows=surechembl_rows,
+                public_rows=public_rows,
+                identity_rows=identity_rows,
+                context_rows=context_rows,
             ),
             output_path,
         )

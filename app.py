@@ -3718,8 +3718,8 @@ def render_target_setup_page(output_dir: Path) -> None:
     target = loaded.tables["target_profile"]
     st.subheader("Project / Target setup")
     st.caption(
-        "Target metadata makes docking interpretation explicit. Demo target rows "
-        "are placeholders unless replaced with user-provided target and docking data."
+        "This is a demo placeholder target profile and user-configurable target "
+        "profile until replaced with project-specific target and docking data."
     )
     if target.empty:
         st.info("target_profile.csv is not available yet. Run structural/property analysis or provide a target profile.")
@@ -3955,19 +3955,28 @@ def render_biomedical_evidence_view(
             "Biomedical evidence matching was skipped because the embedding "
             "model is unavailable in this cloud environment."
         )
+    biomedical_statuses = plot_df["biomedical_model_status"].astype(str).str.strip()
+    biomedical_fallback_flags = (
+        plot_df.get("fallback_used", pd.Series("", index=plot_df.index))
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    lexical_fallback_active = biomedical_statuses.eq("lexical_fallback_used").any()
+    if lexical_fallback_active:
+        st.warning(
+            "Embedding model unavailable; biomedical evidence used lexical text "
+            "similarity fallback. This is text-similarity triage only."
+        )
     st.caption(
         "Semantic evidence similarity is not biological activity, efficacy, safety, or clinical prediction."
     )
     configured_biomedical = preferred_model_selection("biomedical").model_id or preferred_model_selection("biomedical").label
     model_available_count = int(
-        plot_df["biomedical_model_status"].astype(str).str.strip().isin(["available", "preferred_model_used", "fallback_model_used"]).sum()
+        biomedical_statuses.isin(["available", "preferred_model_used", "fallback_model_used", "lexical_fallback_used"]).sum()
     )
     model_skipped_count = int(
-        plot_df["biomedical_model_status"]
-        .astype(str)
-        .str.strip()
-        .eq("model_unavailable")
-        .sum()
+        biomedical_statuses.isin(["model_unavailable", "downloads_disabled"]).sum()
     )
     evidence_matched_count = int(
         plot_df["biomedical_evidence_status"].astype(str).str.strip().eq("available").sum()
@@ -3981,7 +3990,10 @@ def render_biomedical_evidence_view(
                 "Evidence matched": evidence_matched_count,
                 "Evidence skipped": int(len(plot_df) - evidence_matched_count),
                 "Actual model used": latest_column_value(plot_df, "actual_model_used"),
-                "Fallback used": yes_no_status(plot_df["biomedical_model_status"].astype(str).str.strip().eq("fallback_model_used").any()),
+                "Fallback used": yes_no_status(
+                    biomedical_statuses.isin(["fallback_model_used", "lexical_fallback_used"]).any()
+                    or biomedical_fallback_flags.eq("yes").any()
+                ),
                 "Configured model cached": yes_no_status(model_is_cached(configured_biomedical)),
             },
             key=f"{key}_biomedical_summary_card",
@@ -3992,7 +4004,7 @@ def render_biomedical_evidence_view(
             {
                 "Model available": model_available_count,
                 "Model skipped": model_skipped_count,
-                "Fallback preserved": "yes",
+                "Lexical fallback active": yes_no_status(lexical_fallback_active),
             },
             key=f"{key}_biomedical_model_status_card",
         )
@@ -4044,6 +4056,10 @@ def render_biomedical_evidence_view(
             "biomedical_relevance_category",
             "biomedical_evidence_count",
             "top_biomedical_evidence_id",
+            "model_backend",
+            "model_status",
+            "model_cache_status",
+            "fallback_used",
             "preferred_model_name",
             "fallback_model_name",
             "actual_model_used",
@@ -4114,6 +4130,19 @@ def render_patent_evidence_view(
             "Patent/IP-context evidence matching was skipped because the "
             "embedding model is unavailable in this cloud environment."
         )
+    patent_statuses = plot_df["patent_model_status"].astype(str).str.strip()
+    patent_fallback_flags = (
+        plot_df.get("fallback_used", pd.Series("", index=plot_df.index))
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    lexical_fallback_active = patent_statuses.eq("lexical_fallback_used").any()
+    if lexical_fallback_active:
+        st.warning(
+            "Embedding model unavailable; patent/IP-context evidence used lexical "
+            "text similarity fallback. This is research triage only."
+        )
     st.caption(
         "These outputs separate public structure evidence, patent document "
         "metadata, and optional patent-text embedding evidence. Patent/IP-context "
@@ -4159,14 +4188,13 @@ def render_patent_evidence_view(
             {
                 "Patent-text evidence": int(embedding_available),
                 "Model unavailable": int(
-                    plot_df["patent_model_status"]
-                    .astype(str)
-                    .str.strip()
-                    .eq("model_unavailable")
-                    .sum()
+                    patent_statuses.isin(["model_unavailable", "downloads_disabled"]).sum()
                 ),
                 "Actual model used": latest_column_value(plot_df, "actual_model_used"),
-                "Fallback used": yes_no_status(plot_df["patent_model_status"].astype(str).str.strip().eq("fallback_model_used").any()),
+                "Fallback used": yes_no_status(
+                    patent_statuses.isin(["fallback_model_used", "lexical_fallback_used"]).any()
+                    or patent_fallback_flags.eq("yes").any()
+                ),
                 "Configured model cached": yes_no_status(model_is_cached(configured_patent)),
             },
             key=f"{key}_patent_model_status_card",
@@ -4202,6 +4230,10 @@ def render_patent_evidence_view(
             "patent_relevance_category",
             "patent_evidence_count",
             "top_patent_evidence_id",
+            "model_backend",
+            "model_status",
+            "model_cache_status",
+            "fallback_used",
             "preferred_model_name",
             "fallback_model_name",
             "actual_model_used",

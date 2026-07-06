@@ -204,6 +204,14 @@ def test_step_six_and_step_seven_required_columns_are_preserved():
 
     assert BIOMEDICAL_OUTPUT_COLUMNS[: len(biomedical_required)] == biomedical_required
     assert PATENT_OUTPUT_COLUMNS[: len(patent_required)] == patent_required
+    for required_status_column in (
+        "model_backend",
+        "model_status",
+        "model_cache_status",
+        "fallback_used",
+    ):
+        assert required_status_column in BIOMEDICAL_OUTPUT_COLUMNS
+        assert required_status_column in PATENT_OUTPUT_COLUMNS
     assert BIOMEDICAL_OUTPUT_COLUMNS[-6:] == (
         "embedding_backend",
         "pooling_method",
@@ -262,12 +270,18 @@ def test_downloads_disabled_biomedical_csv_does_not_load_model(monkeypatch, tmp_
     )
 
     frame = pd.read_csv(output)
-    assert frame.loc[0, "biomedical_model_status"] == "embeddings_disabled"
+    assert frame.loc[0, "biomedical_model_status"] == "lexical_fallback_used"
+    assert frame.loc[0, "biomedical_evidence_status"] == "available"
+    assert frame.loc[0, "model_backend"] == "lexical_token_overlap"
+    assert frame.loc[0, "model_status"] == "lexical_fallback_used"
+    assert frame.loc[0, "model_cache_status"] == "not_required"
+    assert frame.loc[0, "fallback_used"] == "yes"
     assert frame.loc[0, "embedding_backend"] == "transformers"
     assert frame.loc[0, "pooling_method"] == "mean_pooling"
     assert frame.loc[0, "model_source"] == "dmis-lab/biobert-base-cased-v1.1"
     assert frame.loc[0, "preferred_model_name"] == "dmis-lab/biobert-base-cased-v1.1"
     assert frame.loc[0, "fallback_model_name"] == odm.FALLBACK_MODEL_ID
+    assert "Lexical fallback text-similarity triage only" in frame.loc[0, "evidence_note"]
 
 
 def test_downloads_disabled_patent_csv_does_not_load_model(monkeypatch, tmp_path):
@@ -300,12 +314,18 @@ def test_downloads_disabled_patent_csv_does_not_load_model(monkeypatch, tmp_path
     )
 
     frame = pd.read_csv(output)
-    assert frame.loc[0, "patent_model_status"] == "embeddings_disabled"
+    assert frame.loc[0, "patent_model_status"] == "lexical_fallback_used"
+    assert frame.loc[0, "patent_evidence_status"] == "available"
+    assert frame.loc[0, "model_backend"] == "lexical_token_overlap"
+    assert frame.loc[0, "model_status"] == "lexical_fallback_used"
+    assert frame.loc[0, "model_cache_status"] == "not_required"
+    assert frame.loc[0, "fallback_used"] == "yes"
     assert frame.loc[0, "embedding_backend"] == "sentence-transformers"
     assert frame.loc[0, "pooling_method"] == "model_default"
     assert frame.loc[0, "model_source"] == "AI-Growth-Lab/PatentSBERTa"
     assert frame.loc[0, "preferred_model_name"] == "AI-Growth-Lab/PatentSBERTa"
     assert frame.loc[0, "fallback_model_name"] == odm.FALLBACK_MODEL_ID
+    assert "Lexical fallback text-similarity triage only" in frame.loc[0, "evidence_note"]
 
 def test_app_managed_huggingface_cache_is_used():
     assert str(odm.HUGGINGFACE_CACHE_DIR).endswith("app_data\\model_cache\\huggingface") or str(odm.HUGGINGFACE_CACHE_DIR).endswith("app_data/model_cache/huggingface")

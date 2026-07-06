@@ -6,7 +6,6 @@ import pytest
 import src.patent_evidence_embeddings as patent_module
 from src.patent_evidence_embeddings import (
     OUTPUT_COLUMNS,
-    PATENT_MODEL_UNAVAILABLE_NOTE,
     PatentModelUnavailableError,
     patent_evidence_embeddings_csv,
 )
@@ -109,13 +108,17 @@ def test_patent_evidence_fallback_writes_valid_csv_when_model_unavailable(
     assert count == 1
     assert tuple(reader.fieldnames or ()) == OUTPUT_COLUMNS
     assert rows[0]["molecule_id"] == "mol_1"
-    assert rows[0]["patent_model_status"] == "model_unavailable"
-    assert rows[0]["patent_evidence_status"] == "skipped"
-    assert rows[0]["patent_similarity_score"] == "0.000"
-    assert rows[0]["patent_relevance_category"] == "not_run"
+    assert rows[0]["patent_model_status"] == "lexical_fallback_used"
+    assert rows[0]["patent_evidence_status"] == "available"
+    assert float(rows[0]["patent_similarity_score"]) > 0
+    assert rows[0]["patent_relevance_category"] != "not_run"
     assert rows[0]["surechembl_structure_status"] == "match_found"
     assert rows[0]["patent_document_metadata_status"] == "available"
-    assert rows[0]["evidence_note"] == PATENT_MODEL_UNAVAILABLE_NOTE
+    assert rows[0]["model_backend"] == "lexical_token_overlap"
+    assert rows[0]["model_status"] == "lexical_fallback_used"
+    assert rows[0]["model_cache_status"] == "not_required"
+    assert rows[0]["fallback_used"] == "yes"
+    assert "Lexical fallback text-similarity triage only" in rows[0]["evidence_note"]
 
 
 def test_patent_evidence_scores_with_fake_encoder(tmp_path: Path) -> None:
