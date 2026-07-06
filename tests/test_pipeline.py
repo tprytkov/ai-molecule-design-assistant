@@ -161,6 +161,11 @@ def create_pipeline_inputs(root: Path) -> PipelinePaths:
         references=references,
         text_evidence=text_evidence,
         surechembl_compounds=surechembl,
+        target_profile_input=Path("data/demo_target/target_profile.csv"),
+        target_profile=output_dir / "target_profile.csv",
+        docking_results_normalized=output_dir / "docking_results_normalized.csv",
+        structural_properties=output_dir / "structural_properties.csv",
+        structural_prioritization_inputs=output_dir / "structural_prioritization_inputs.csv",
         standardized=output_dir / "standardized.csv",
         descriptors=output_dir / "descriptors.csv",
         admet_predictions=output_dir / "admet_predictions.csv",
@@ -221,6 +226,11 @@ def create_non_demo_inputs(root: Path) -> PipelinePaths:
         references=references,
         text_evidence=text_evidence,
         surechembl_compounds=custom_surechembl,
+        target_profile_input=Path("data/demo_target/target_profile.csv"),
+        target_profile=output_dir / "target_profile.csv",
+        docking_results_normalized=output_dir / "docking_results_normalized.csv",
+        structural_properties=output_dir / "structural_properties.csv",
+        structural_prioritization_inputs=output_dir / "structural_prioritization_inputs.csv",
         standardized=output_dir / "standardized.csv",
         descriptors=output_dir / "descriptors.csv",
         admet_predictions=output_dir / "admet_predictions.csv",
@@ -268,6 +278,9 @@ def test_pipeline_creates_expected_outputs(tmp_path: Path) -> None:
         paths.prioritized.parent / "chemical_identity.csv",
         paths.public_lookup,
         paths.surechembl_lookup,
+        paths.target_profile,
+        paths.structural_properties,
+        paths.structural_prioritization_inputs,
         paths.descriptors,
         paths.admet_predictions,
         paths.admet_summary,
@@ -300,6 +313,9 @@ def test_pipeline_creates_expected_outputs(tmp_path: Path) -> None:
     assert "chemical_identity_status" in rows[0]
     assert "chemical_identity_lookup_status" in rows[0]
     assert "context_status" in rows[0]
+    assert "target_id" in rows[0]
+    assert "docking_priority_label" in rows[0]
+    assert rows[0]["docking_priority_label"] == "docking_unavailable"
     assert lookup_client.calls == 0
     assert surechembl_client.calls == 0
     assert not paths.chemberta_embeddings.exists()

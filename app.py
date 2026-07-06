@@ -86,6 +86,10 @@ from src.public_lookup import (
 from src.scoring import scoring_csv
 from src.similarity import similarity_csv
 from src.standardize import standardize_csv
+from src.structural import (
+    add_structural_context_to_prioritization,
+    structural_summary_csv,
+)
 from src.surechembl_lookup import (
     UrllibSurechemblClient,
     lookup_online_rows,
@@ -98,6 +102,10 @@ from src.text_nlp import text_nlp_csv
 
 OUTPUT_FILES = {
     "prioritization": "prioritization_results.csv",
+    "target_profile": "target_profile.csv",
+    "docking_results_normalized": "docking_results_normalized.csv",
+    "structural_properties": "structural_properties.csv",
+    "structural_prioritization_inputs": "structural_prioritization_inputs.csv",
     "descriptors": "descriptors.csv",
     "admet_predictions": "admet_predictions.csv",
     "admet_summary": "admet_summary.csv",
@@ -217,6 +225,23 @@ DISPLAY_LABELS = {
     "model_cache_status": "Model cache status",
     "training_dataset": "Training dataset",
     "evidence_note": "Evidence note",
+    "target_id": "Target ID",
+    "target_name": "Target name",
+    "gene_symbol": "Gene symbol",
+    "organism": "Organism",
+    "uniprot_id": "UniProt ID",
+    "pdb_id": "PDB ID",
+    "protein_structure_source": "Protein structure source",
+    "binding_site_description": "Binding site description",
+    "docking_score": "Docking score",
+    "docking_rank": "Docking rank",
+    "docking_program": "Docking program",
+    "binding_site": "Binding site",
+    "docking_available": "Docking available",
+    "docking_priority_label": "Docking priority label",
+    "target_docking_match": "Target/docking match",
+    "structural_priority_note": "Structural priority note",
+    "target_context_note": "Target context note",
     "bbb_cns_backend_used": "BBB/CNS backend used",
     "tuned_chemberta_bbb_model_cached": "Tuned ChemBERTa BBB model cached",
     "fallback_used": "Fallback used",
@@ -594,6 +619,7 @@ WORKFLOW_MODE_OPTIONS = (
 STEP_NAVIGATION_LABELS = (
     "Overview",
     "Input data",
+    "Project / Target setup",
     "Standardization",
     "Chemical identity",
     "Public evidence",
@@ -632,7 +658,11 @@ STEP_OUTPUT_KEYS = {
     2: ("chemical_identity",),
     3: ("public_lookup", "surechembl"),
     4: (
+        "target_profile",
         "descriptors",
+        "structural_properties",
+        "structural_prioritization_inputs",
+        "docking_results_normalized",
         "similarity",
         "similarity_top_hits",
     ),
@@ -3137,6 +3167,11 @@ def render_score_similarity(
 ) -> str:
     """Render score versus local reference similarity."""
     st.caption(SCORE_SIMILARITY_EXPLANATION)
+    if "docking_priority_label" in prioritization.columns:
+        st.info(
+            "Docking context is shown as structural evidence only; the existing "
+            "prioritization score and ranking formula are unchanged."
+        )
     if prioritization.empty or "tanimoto_similarity" not in prioritization.columns:
         st.info("Reference similarity data is unavailable.")
         return ""
@@ -3169,6 +3204,10 @@ def render_score_similarity(
                 "surechembl_query_status",
                 "chemberta_status",
                 "nlp_status",
+                "target_name",
+                "docking_score",
+                "docking_rank",
+                "docking_priority_label",
             ),
         ),
         custom_data=["molecule_id"],
@@ -3541,6 +3580,174 @@ def render_admet_prediction_page(output_dir: Path) -> None:
         if not predictions.empty:
             st.markdown("##### Raw endpoint-level ADMET predictions")
             st.dataframe(display_dataframe(predictions), width="stretch", hide_index=True)
+
+
+def render_structural_property_analysis_page(output_dir: Path) -> None:
+    """Render target, docking, descriptor, ADMET, and similarity context."""
+    loaded = load_output_directory(output_dir)
+    target = loaded.tables["target_profile"]
+    structural = loaded.tables["structural_properties"]
+    structural_inputs = loaded.tables["structural_prioritization_inputs"]
+    docking = loaded.tables["docking_results_normalized"]
+    descriptors = loaded.tables["descriptors"]
+    admet = loaded.tables["admet_summary"]
+    similarity = loaded.tables["similarity"]
+
+    st.markdown("#### Target profile")
+    if target.empty:
+        st.info("target_profile.csv is not available yet.")
+    else:
+        target_columns = existing_columns(
+            target,
+            (
+                "target_id",
+                "target_name",
+                "gene_symbol",
+                "organism",
+                "uniprot_id",
+                "pdb_id",
+                "protein_structure_source",
+                "binding_site_description",
+                "docking_protocol_note",
+                "target_relevance_note",
+                "disclaimer",
+            ),
+        )
+        st.dataframe(
+            display_dataframe(target[target_columns] if target_columns else target),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.markdown("#### Docking status")
+    if structural_inputs.empty:
+        st.info("structural_prioritization_inputs.csv is not available yet.")
+    else:
+        status_columns = existing_columns(
+            structural_inputs,
+            (
+                "molecule_id",
+                "descriptor_available",
+                "admet_available",
+                "docking_available",
+                "similarity_available",
+                "public_lookup_available",
+                "target_available",
+                "target_docking_match",
+                "evidence_note",
+            ),
+        )
+        st.dataframe(
+            display_dataframe(
+                structural_inputs[status_columns] if status_columns else structural_inputs
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    st.caption(
+        "Docking scores are computational triage only and are not experimental "
+        "binding affinity, activity, selectivity, safety, or efficacy."
+    )
+    if docking.empty:
+        st.info("No normalized docking input is available for this run.")
+    else:
+        preview_columns = existing_columns(
+            docking,
+            (
+                "molecule_id",
+                "target_id",
+                "docking_score",
+                "docking_rank",
+                "binding_site",
+                "docking_program",
+                "docking_available",
+                "target_docking_match",
+                "docking_status",
+            ),
+        )
+        st.dataframe(
+            display_dataframe(docking[preview_columns] if preview_columns else docking),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.markdown("#### Structural properties")
+    if structural.empty:
+        st.info("structural_properties.csv is not available yet.")
+    else:
+        structural_columns = existing_columns(
+            structural,
+            (
+                "molecule_id",
+                "smiles",
+                "molecular_weight",
+                "logp",
+                "tpsa",
+                "qed",
+                "druglikeness_category",
+                "admet_readiness_category",
+                "best_reference_name",
+                "tanimoto_similarity",
+                "docking_score",
+                "docking_rank",
+                "docking_priority_label",
+                "target_name",
+            ),
+        )
+        st.dataframe(
+            display_dataframe(structural[structural_columns] if structural_columns else structural),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with st.expander("Underlying descriptor, ADMET, and similarity tables"):
+        if not descriptors.empty:
+            st.markdown("##### RDKit descriptors")
+            st.dataframe(display_dataframe(descriptors), width="stretch", hide_index=True)
+        if not admet.empty:
+            st.markdown("##### ADMET summary")
+            st.dataframe(display_dataframe(admet), width="stretch", hide_index=True)
+        if not similarity.empty:
+            st.markdown("##### Reference similarity")
+            st.dataframe(display_dataframe(similarity), width="stretch", hide_index=True)
+
+
+def render_target_setup_page(output_dir: Path) -> None:
+    """Render selected protein target metadata and setup status."""
+    loaded = load_output_directory(output_dir)
+    target = loaded.tables["target_profile"]
+    st.subheader("Project / Target setup")
+    st.caption(
+        "Target metadata makes docking interpretation explicit. Demo target rows "
+        "are placeholders unless replaced with user-provided target and docking data."
+    )
+    if target.empty:
+        st.info("target_profile.csv is not available yet. Run structural/property analysis or provide a target profile.")
+        return
+    columns = existing_columns(
+        target,
+        (
+            "target_id",
+            "target_name",
+            "gene_symbol",
+            "organism",
+            "uniprot_id",
+            "pdb_id",
+            "protein_structure_source",
+            "binding_site_description",
+            "disease_context",
+            "mechanism_context",
+            "reference_ligands",
+            "docking_protocol_note",
+            "target_relevance_note",
+            "disclaimer",
+        ),
+    )
+    st.dataframe(
+        display_dataframe(target[columns] if columns else target),
+        width="stretch",
+        hide_index=True,
+    )
 
 
 def render_biopharma_analytics_page(output_dir: Path) -> None:
@@ -5545,12 +5752,38 @@ def run_public_demo_step(
             paths.similarity_top_hits,
             5,
         )
+        structural_summary_csv(
+            target_output_path=paths.target_profile,
+            structural_properties_path=paths.structural_properties,
+            structural_prioritization_path=paths.structural_prioritization_inputs,
+            descriptors_path=paths.descriptors,
+            admet_summary_path=paths.admet_summary if paths.admet_summary.exists() else None,
+            similarity_path=paths.similarity,
+            public_lookup_path=paths.public_lookup,
+            docking_input_path=paths.docking_input,
+            docking_output_path=paths.docking_results_normalized,
+            target_source_path=paths.target_profile_input,
+            standardized_path=paths.standardized,
+        )
     elif step_number == 5:
         admet_csv(
             descriptors_path=paths.descriptors,
             standardized_path=paths.standardized,
             predictions_path=paths.admet_predictions,
             summary_path=paths.admet_summary,
+        )
+        structural_summary_csv(
+            target_output_path=paths.target_profile,
+            structural_properties_path=paths.structural_properties,
+            structural_prioritization_path=paths.structural_prioritization_inputs,
+            descriptors_path=paths.descriptors,
+            admet_summary_path=paths.admet_summary,
+            similarity_path=paths.similarity,
+            public_lookup_path=paths.public_lookup,
+            docking_input_path=paths.docking_input,
+            docking_output_path=paths.docking_results_normalized,
+            target_source_path=paths.target_profile_input,
+            standardized_path=paths.standardized,
         )
     elif step_number == 6:
         chemberta_embeddings_csv(
@@ -5631,6 +5864,10 @@ def run_public_demo_step(
             context_path=context_path,
             chemberta_path=paths.chemberta_embeddings,
             nlp_was_run=csv_has_data_rows(paths.text_evidence),
+        )
+        add_structural_context_to_prioritization(
+            paths.prioritized,
+            paths.structural_properties,
         )
         merge_chemberta_into_prioritized(
             paths.prioritized,
@@ -6409,6 +6646,7 @@ def render_workflow_step(
         if not results_available:
             return
         selected = render_druglikeness_views(frame, key="workflow_step_4")
+        render_structural_property_analysis_page(output_dir)
         render_detail_panel(loaded, selected)
     elif step_number == 5:
         render_step_header(
@@ -7086,20 +7324,31 @@ def active_run_step_output_paths(
     if step_number == 4:
         return [
             paths.descriptors,
-            paths.admet_predictions,
-            paths.admet_summary,
+            paths.target_profile,
+            paths.structural_properties,
+            paths.structural_prioritization_inputs,
             paths.similarity,
             paths.similarity_top_hits,
         ]
     if step_number == 5:
-        return [paths.chemberta_embeddings, paths.visualization_coordinates]
+        return [paths.admet_predictions, paths.admet_summary]
     if step_number == 6:
-        return [paths.biomedical_evidence]
+        return [paths.chemberta_embeddings, paths.visualization_coordinates]
     if step_number == 7:
-        return [paths.patent_evidence_embeddings]
+        return [paths.biomedical_evidence]
     if step_number == 8:
-        return [paths.prioritized]
+        return [paths.patent_evidence_embeddings]
     if step_number == 9:
+        return [paths.prioritized]
+    if step_number == 10:
+        return [
+            paths.biopharma_positioning,
+            paths.evidence_readiness,
+            paths.mock_rwe_cohort_summary,
+            paths.trial_endpoint_map,
+            paths.biopharma_summary_report,
+        ]
+    if step_number == 11:
         reports_dir = paths.prioritized.parent / "reports"
         return sorted(reports_dir.glob("compound_intelligence_report_*.md"))
     return []
@@ -7110,7 +7359,7 @@ def active_run_step_outputs_exist(
     step_number: int,
 ) -> bool:
     """Return whether expected active-run step outputs already exist."""
-    if step_number == 9:
+    if step_number == 11:
         return bool(active_run_step_output_paths(paths, step_number))
     expected = active_run_step_output_paths(paths, step_number)
     return bool(expected) and all(path.exists() for path in expected)
@@ -7424,6 +7673,8 @@ def render_step_navigation_context(
         render_active_run_overview(output_dir)
     elif selected_page == "Input data":
         render_active_run_input_data(output_dir)
+    elif selected_page == "Project / Target setup":
+        render_target_setup_page(output_dir)
     elif selected_page == "Downloads":
         render_active_run_downloads(output_dir)
     elif selected_page == "ADMET Prediction":

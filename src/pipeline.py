@@ -36,6 +36,10 @@ from src.public_lookup import JsonClient, public_lookup_csv
 from src.scoring import scoring_csv
 from src.similarity import similarity_csv
 from src.standardize import standardize_csv
+from src.structural import (
+    add_structural_context_to_prioritization,
+    structural_summary_csv,
+)
 from src.surechembl_lookup import (
     OUTPUT_COLUMNS as SURECHEMBL_OUTPUT_COLUMNS,
     SurechemblClient,
@@ -49,6 +53,7 @@ DEFAULT_TEXT_EVIDENCE = Path("data/demo_text_evidence.csv")
 DEFAULT_OUTPUT_DIR = Path("outputs")
 DEFAULT_SURECHEMBL_COMPOUNDS = Path("data/demo_surechembl_compounds.csv")
 DEFAULT_BIOPHARMA_DEMO_DIR = Path("data/demo_biopharma")
+DEFAULT_TARGET_PROFILE = Path("data/demo_target/target_profile.csv")
 
 
 @dataclass(frozen=True)
@@ -59,7 +64,15 @@ class PipelinePaths:
     references: Path = DEFAULT_REFERENCES
     text_evidence: Path = DEFAULT_TEXT_EVIDENCE
     patent_text_evidence: Path | None = None
+    target_profile_input: Path = DEFAULT_TARGET_PROFILE
+    docking_input: Path | None = None
     surechembl_compounds: Path = DEFAULT_SURECHEMBL_COMPOUNDS
+    target_profile: Path = Path("outputs/target_profile.csv")
+    docking_results_normalized: Path = Path("outputs/docking_results_normalized.csv")
+    structural_properties: Path = Path("outputs/structural_properties.csv")
+    structural_prioritization_inputs: Path = Path(
+        "outputs/structural_prioritization_inputs.csv"
+    )
     standardized: Path = Path("outputs/standardized.csv")
     descriptors: Path = Path("outputs/descriptors.csv")
     admet_predictions: Path = Path("outputs/admet_predictions.csv")
@@ -92,13 +105,21 @@ def build_paths(
     text_evidence_path: Path = DEFAULT_TEXT_EVIDENCE,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     surechembl_compounds_path: Path = DEFAULT_SURECHEMBL_COMPOUNDS,
+    target_profile_path: Path = DEFAULT_TARGET_PROFILE,
+    docking_input_path: Path | None = None,
 ) -> PipelinePaths:
     """Build pipeline paths for a chosen input set and output directory."""
     return PipelinePaths(
         generated_smiles=input_path,
         references=references_path,
         text_evidence=text_evidence_path,
+        target_profile_input=target_profile_path,
+        docking_input=docking_input_path,
         surechembl_compounds=surechembl_compounds_path,
+        target_profile=output_dir / "target_profile.csv",
+        docking_results_normalized=output_dir / "docking_results_normalized.csv",
+        structural_properties=output_dir / "structural_properties.csv",
+        structural_prioritization_inputs=output_dir / "structural_prioritization_inputs.csv",
         standardized=output_dir / "standardized.csv",
         descriptors=output_dir / "descriptors.csv",
         admet_predictions=output_dir / "admet_predictions.csv",
@@ -431,6 +452,19 @@ def run_pipeline(
         active_paths.similarity_top_hits,
         top_k,
     )
+    structural_summary_csv(
+        target_output_path=active_paths.target_profile,
+        structural_properties_path=active_paths.structural_properties,
+        structural_prioritization_path=active_paths.structural_prioritization_inputs,
+        descriptors_path=active_paths.descriptors,
+        admet_summary_path=active_paths.admet_summary,
+        similarity_path=active_paths.similarity,
+        public_lookup_path=active_paths.public_lookup,
+        docking_input_path=active_paths.docking_input,
+        docking_output_path=active_paths.docking_results_normalized,
+        target_source_path=active_paths.target_profile_input,
+        standardized_path=active_paths.standardized,
+    )
 
     print("Step 5/9: Generating ChemBERTa chemical-space outputs")
     if use_chemberta:
@@ -515,6 +549,10 @@ def run_pipeline(
             active_paths.chemberta_embeddings if use_chemberta else None
         ),
         nlp_was_run=nlp_was_run,
+    )
+    add_structural_context_to_prioritization(
+        active_paths.prioritized,
+        active_paths.structural_properties,
     )
 
     if use_chemberta:
@@ -635,6 +673,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional patent/IP-context text evidence CSV for Step 7 embeddings.",
+    )
+    parser.add_argument(
+        "--target-profile",
+        type=Path,
+        default=DEFAULT_TARGET_PROFILE,
+        help="Target metadata CSV for target-aware structural triage.",
+    )
+    parser.add_argument(
+        "--docking-input",
+        type=Path,
+        help="Optional docking result CSV to normalize and merge as target evidence.",
     )
     parser.add_argument(
         "--output-dir",
@@ -795,6 +844,8 @@ def main(
         text_evidence_path=text_evidence,
         output_dir=args.output_dir,
         surechembl_compounds_path=surechembl_compounds,
+        target_profile_path=args.target_profile,
+        docking_input_path=args.docking_input,
     )
     paths = replace(paths, patent_text_evidence=args.patent_evidence)
     report_dir = args.report_dir or (args.output_dir / "reports")

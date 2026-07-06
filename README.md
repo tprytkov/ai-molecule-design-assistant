@@ -62,10 +62,12 @@ artifacts at each stage.
    Checks PubChem, ChEMBL, and SureChEMBL evidence when enabled or available,
    writing `public_lookup.csv` and `surechembl_evidence.csv`.
 
-4. **RDKit molecular properties and reference similarity**
-   Writes `descriptors.csv`, `similarity.csv`, and `similarity_top_hits.csv`.
-   These are computational design heuristics, not evidence of activity or
-   safety.
+4. **Structural and property analysis**
+   Writes `descriptors.csv`, `similarity.csv`, `similarity_top_hits.csv`,
+   `target_profile.csv`, `structural_properties.csv`, and
+   `structural_prioritization_inputs.csv`. Optional uploaded docking results are
+   normalized to `docking_results_normalized.csv`. These are computational
+   design heuristics, not evidence of activity or safety.
 
 5. **ADMET Prediction**
    Writes `admet_predictions.csv` and `admet_summary.csv`. This is
@@ -88,8 +90,9 @@ artifacts at each stage.
    freedom-to-operate, infringement, or ownership analysis.
 
 9. **Final prioritization**
-   Writes `prioritization_results.csv`. Biopharma and ADMET outputs do not feed
-   back into scoring.
+   Writes `prioritization_results.csv`. Docking and target context are appended
+   as explicit columns when structural outputs exist, but the existing priority
+   score is unchanged. Biopharma and ADMET outputs do not feed back into scoring.
 
 10. **Biopharma Analytics**
    Writes separate evidence-readiness and translational-positioning outputs.
@@ -223,6 +226,10 @@ Important workflow outputs include:
 - `public_lookup.csv`
 - `surechembl_evidence.csv`
 - `descriptors.csv`
+- `target_profile.csv`
+- `docking_results_normalized.csv`
+- `structural_properties.csv`
+- `structural_prioritization_inputs.csv`
 - `admet_predictions.csv`
 - `admet_summary.csv`
 - `similarity.csv`
@@ -241,6 +248,10 @@ Important workflow outputs include:
 - `biopharma_summary_report.md`
 - `reports/`
 - `report_images/`
+
+Docking scores are optional target-aware structural triage context only. They
+are not experimental binding affinity, activity, selectivity, safety, or
+efficacy, and they do not replace the existing prioritization score.
 
 Generated `outputs/` and `app_runs/` folders are intentionally excluded from
 Git to keep the repository small and prevent local uploads or generated

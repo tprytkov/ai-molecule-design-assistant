@@ -3356,6 +3356,35 @@ def write_minimal_step_outputs(output_dir: Path) -> None:
         "public_lookup.csv": "molecule_id,pubchem_status,chembl_status\nmol_a,no_match,no_match\n",
         "surechembl_evidence.csv": "molecule_id,lookup_status\nmol_a,no_match\n",
         "descriptors.csv": "molecule_id,molecular_weight,logp,tpsa,qed,druglikeness_category\nmol_a,46.0,0.1,20.2,0.5,favorable\n",
+        "target_profile.csv": (
+            "target_id,target_name,gene_symbol,organism,uniprot_id,pdb_id,"
+            "protein_structure_source,binding_site_description,disease_context,"
+            "mechanism_context,reference_ligands,docking_protocol_note,"
+            "target_relevance_note,disclaimer\n"
+            "demo_target_placeholder,Demo target placeholder,,not_specified,,"
+            "not_provided,demo_placeholder,Replace with user target,"
+            "Demo placeholder only,Demo placeholder only,,No docking protocol,"
+            "Placeholder target context,Research triage only.\n"
+        ),
+        "structural_properties.csv": (
+            "molecule_id,smiles,molecular_weight,logp,tpsa,hbd,hba,"
+            "rotatable_bonds,qed,druglikeness_category,bbb_prediction_label,"
+            "cns_property_flag,toxicity_risk_flag,admet_readiness_category,"
+            "best_reference_name,tanimoto_similarity,similarity_category,"
+            "docking_score,docking_rank,docking_program,binding_site,"
+            "docking_priority_label,target_id,target_name,pdb_id,target_context_note\n"
+            "mol_a,CCO,46.0,0.1,20.2,1,1,0,0.5,favorable,moderate,"
+            "moderate,favorable,moderate,Reference A,0.42,structurally_distinct,"
+            ",,,,"
+            "docking_unavailable,demo_target_placeholder,Demo target placeholder,"
+            "not_provided,Placeholder target context\n"
+        ),
+        "structural_prioritization_inputs.csv": (
+            "molecule_id,descriptor_available,admet_available,docking_available,"
+            "similarity_available,public_lookup_available,target_available,"
+            "target_docking_match,evidence_note\n"
+            "mol_a,True,True,False,True,True,True,False,Docking unavailable.\n"
+        ),
         "admet_predictions.csv": (
             "molecule_id,smiles,admet_endpoint,prediction_value,prediction_probability,"
             "prediction_label,model_id,model_backend,model_status,model_cache_status,"
