@@ -694,13 +694,13 @@ def test_guided_example_file_preview_section_exists(
         in markdown
     )
     assert [item["label"] for item in expanders] == [
-        "Preview table",
+        "Preview table: druglike_candidate_demo.csv",
         "Show raw text: druglike_candidate_demo.csv",
         "Column guide",
-        "Preview table",
+        "Preview table: druglike_reference_panel.csv",
         "Show raw text: druglike_reference_panel.csv",
         "Column guide",
-        "Preview table",
+        "Preview table: text_evidence_demo.csv",
         "Show raw text: text_evidence_demo.csv",
         "Column guide",
     ]
@@ -794,19 +794,23 @@ def test_standardized_output_download_appears_after_step_one_exists(
     assert any("Artifact: standardized.csv - 1 row - 4 columns" in value for value in writes)
     assert {"Molecule ID", "SMILES"}.issubset(tables[0].columns)
     assert [item["label"] for item in expanders] == [
-        "Preview table",
+        "Preview table: standardized.csv",
         "Show raw text: standardized.csv",
     ]
     assert all(item.get("expanded") is False for item in expanders)
+    assert len({item["key"] for item in downloads}) == len(downloads)
     assert downloads == [
         {
             "label": "Download standardized.csv",
             "data": output.read_bytes(),
             "file_name": "standardized.csv",
             "mime": "text/csv",
-            "key": "output_standardized_download_standardized.csv",
+            "key": downloads[0]["key"],
         }
     ]
+    assert downloads[0]["key"].startswith(
+        "download_csv_artifact_output_artifacts_standardized_csv"
+    )
     assert text_areas[0]["value"] == output.read_bytes().decode("utf-8")
 
 
@@ -3495,7 +3499,7 @@ def rendered_step_output_names(
 ) -> list[str]:
     captured = []
 
-    def capture_header(step, description, inputs, outputs):
+    def capture_header(step, description, inputs, outputs, **kwargs):
         captured.append([Path(path).name for path in outputs])
 
     monkeypatch.setattr(app, "render_step_header", capture_header)
@@ -3611,7 +3615,14 @@ def test_downloads_page_still_lists_all_available_artifacts(
         info=lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(app, "st", fake_streamlit)
-    monkeypatch.setattr(app, "render_output_artifacts", lambda artifacts: captured.extend(artifacts))
+    sections = []
+    monkeypatch.setattr(
+        app,
+        "render_output_artifacts",
+        lambda artifacts, **kwargs: (
+            sections.append(kwargs.get("section")) or captured.extend(artifacts)
+        ),
+    )
 
     app.render_active_run_downloads(output_dir)
 
@@ -3629,6 +3640,7 @@ def test_downloads_page_still_lists_all_available_artifacts(
     assert "biomedical_evidence.csv" in names
     assert "patent_evidence_embeddings.csv" in names
     assert "reports" in names
+    assert sections == ["downloads"]
 
 
 def test_overview_page_shows_compact_status_only(
@@ -4303,6 +4315,82 @@ def test_artifact_display_name_hides_local_directories() -> None:
         r"app_runs\public_demo\outputs\surechembl_evidence.csv"
     ) == "surechembl_evidence.csv"
     assert app.artifact_display_name("uploaded SMILES CSV") == "uploaded SMILES CSV"
+
+
+def test_make_widget_key_is_unique_by_section_and_index(tmp_path: Path) -> None:
+    first = tmp_path / "section_a" / "biopharma_positioning.csv"
+    second = tmp_path / "section_b" / "biopharma_positioning.csv"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("a\n", encoding="utf-8")
+    second.write_text("b\n", encoding="utf-8")
+
+    keys = {
+        app.make_widget_key("download", first.name, section="downloads", index=0, path=first),
+        app.make_widget_key("download", first.name, section="workflow_step_10", index=0, path=first),
+        app.make_widget_key("download", first.name, section="downloads", index=1, path=first),
+        app.make_widget_key("download", second.name, section="downloads", index=0, path=second),
+    }
+
+    assert len(keys) == 4
+    assert all("biopharma_positioning_csv" in key for key in keys)
+
+
+def test_download_artifacts_use_unique_keys_for_biopharma_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+    artifacts = [
+        output_dir / "biopharma_positioning.csv",
+        output_dir / "evidence_readiness.csv",
+        output_dir / "mock_rwe_cohort_summary.csv",
+        output_dir / "trial_endpoint_map.csv",
+        output_dir / "biopharma_summary_report.md",
+        output_dir / "admet_predictions.csv",
+        output_dir / "admet_summary.csv",
+        output_dir / "biopharma_positioning.csv",
+    ]
+    downloads = []
+    dataframes = []
+    text_areas = []
+    expanders = []
+
+    fake_streamlit = SimpleNamespace(
+        markdown=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        caption=lambda *args, **kwargs: None,
+        dataframe=lambda data, *args, **kwargs: dataframes.append({"data": data, **kwargs}),
+        download_button=lambda label, *args, **kwargs: downloads.append(
+            {"label": label, **kwargs}
+        ),
+        expander=lambda label, *args, **kwargs: (
+            expanders.append({"label": label, **kwargs}) or NullExpander()
+        ),
+        text_area=lambda label, *args, **kwargs: text_areas.append(
+            {"label": label, **kwargs}
+        ),
+        info=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_output_artifacts(artifacts, section="downloads")
+
+    download_keys = [item["key"] for item in downloads]
+    dataframe_keys = [item["key"] for item in dataframes]
+    text_area_keys = [item["key"] for item in text_areas]
+    assert len(download_keys) == len(set(download_keys))
+    assert len(dataframe_keys) == len(set(dataframe_keys))
+    assert len(text_area_keys) == len(set(text_area_keys))
+    assert [item["label"] for item in downloads].count(
+        "Download biopharma_positioning.csv"
+    ) == 1
+    assert any(
+        item["label"] == "Preview table: biopharma_positioning.csv"
+        for item in expanders
+    )
 
 
 def test_evidence_completeness_rows_are_table_ready() -> None:

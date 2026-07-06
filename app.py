@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import os
 import re
 import shutil
@@ -3657,7 +3658,7 @@ def render_biopharma_analytics_page(output_dir: Path) -> None:
 
     existing_outputs = [path for path in output_paths if path.exists()]
     if existing_outputs:
-        render_output_artifacts(existing_outputs)
+        render_output_artifacts(existing_outputs, section="biopharma_analytics")
 
 
 def render_text_evidence_view(
@@ -4456,6 +4457,42 @@ def format_file_size(path: Path) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.1f} KB"
     return f"{size / (1024 * 1024):.1f} MB"
+
+
+def make_widget_key(
+    prefix: str,
+    artifact_name: str | Path,
+    *,
+    index: int | None = None,
+    section: str | None = None,
+    path: Path | None = None,
+) -> str:
+    """Return a deterministic Streamlit widget key for repeated artifact UI."""
+    parts = [slugify_key(prefix)]
+    if section:
+        parts.append(slugify_key(section))
+    if index is not None:
+        parts.append(str(index))
+    parts.append(slugify_key(Path(str(artifact_name)).name))
+    if path is not None:
+        path_hash = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:10]
+        parts.append(path_hash)
+    return "_".join(part for part in parts if part)
+
+
+def unique_artifact_paths(paths: Iterable[Path]) -> list[Path]:
+    """Return existing artifact paths once, preserving first occurrence order."""
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
 def render_output_artifact_card(
     label: str,
     dataframe: pd.DataFrame,
@@ -4484,18 +4521,24 @@ def render_output_artifact_card(
         description,
         description=f"{filename} | {len(dataframe)} {row_word} | {len(dataframe.columns)} columns | {size_text}",
         badges=(("Downloadable artifact", "secondary"),),
-        key=f"{key_prefix}_artifact_card_{slugify_key(filename)}",
+        key=make_widget_key("artifact_card", filename, section=key_prefix),
     )
     st.download_button(
         f"Download {filename}",
         data=data,
         file_name=filename,
         mime=mime,
-        key=f"{key_prefix}_download_{filename}",
+        key=make_widget_key("download", filename, section=key_prefix),
     )
-    with st.expander("Preview table", expanded=False):
+    with st.expander(f"Preview table: {filename}", expanded=False):
         preview = compact_preview_dataframe(dataframe, preview_rows=preview_rows)
-        st.dataframe(preview, width="stretch", hide_index=True, height=260)
+        st.dataframe(
+            preview,
+            width="stretch",
+            hide_index=True,
+            height=260,
+            key=make_widget_key("preview_dataframe", filename, section=key_prefix),
+        )
         if len(dataframe.columns) > len(preview.columns):
             hidden_count = len(dataframe.columns) - len(preview.columns)
             if hasattr(st, "caption"):
@@ -4506,7 +4549,7 @@ def render_output_artifact_card(
                 "Raw text",
                 value=raw_text,
                 height=220,
-                key=f"{key_prefix}_raw_{filename}",
+                key=make_widget_key("raw_text", filename, section=key_prefix),
             )
 def example_column_meanings(path: Path, columns: Iterable[str]) -> pd.DataFrame:
     """Return visible example-file column explanations for present columns."""
@@ -5910,8 +5953,20 @@ def render_artifact_name_list(items: Iterable[Path | str]) -> None:
         st.markdown(f"- {artifact_display_name(item)}")
 
 
-def render_csv_output_artifact(path: Path) -> None:
+def render_csv_output_artifact(
+    path: Path,
+    *,
+    section: str = "output_artifacts",
+    index: int | None = None,
+) -> None:
     """Show one workflow CSV output as a compact artifact card."""
+    key_prefix = make_widget_key(
+        "csv_artifact",
+        path.name,
+        index=index,
+        section=section,
+        path=path,
+    )
     if not path.exists():
         st.markdown(f"#### {path.name}")
         st.info("Run this step to create the output file.")
@@ -5929,14 +5984,14 @@ def render_csv_output_artifact(path: Path) -> None:
             data=data,
             file_name=path.name,
             mime="text/csv",
-            key=f"download_output_{path.name}",
+            key=make_widget_key("download", path.name, section=key_prefix),
         )
         with st.expander(f"Show raw CSV text: {path.name}"):
             st.text_area(
                 "Raw CSV text",
                 value=raw_text,
                 height=240,
-                key=f"raw_output_{path.name}",
+                key=make_widget_key("raw_text", path.name, section=key_prefix),
             )
         return
 
@@ -5947,7 +6002,7 @@ def render_csv_output_artifact(path: Path) -> None:
         "Generated workflow CSV output.",
         data=data,
         preview_rows=10,
-        key_prefix=f"output_{path.stem}",
+        key_prefix=key_prefix,
         file_size=format_file_size(path),
         raw_text=raw_text,
     )
@@ -5960,28 +6015,51 @@ def render_csv_output_artifact(path: Path) -> None:
         data=data,
         file_name=path.name,
         mime="text/csv",
-        key=f"download_output_{path.name}",
+        key=make_widget_key("download_legacy", path.name, section=key_prefix),
     )
     with st.expander(f"Show raw CSV text: {path.name}"):
         st.text_area(
             "Raw CSV text",
             value=raw_text,
             height=240,
-            key=f"raw_output_{path.name}",
+            key=make_widget_key("raw_text_legacy", path.name, section=key_prefix),
         )
 
 
-def render_reports_output_artifact(reports_dir: Path) -> None:
+def render_reports_output_artifact(
+    reports_dir: Path,
+    *,
+    section: str = "output_artifacts",
+    index: int | None = None,
+) -> None:
     """Show generated report artifacts for Step 9, when present."""
     st.markdown(f"#### {reports_dir.name}")
     render_reports_browser(
         reports_dir=reports_dir,
-        key_prefix=f"output_artifact_reports_{reports_dir.name}",
+        key_prefix=make_widget_key(
+            "reports_artifact",
+            reports_dir.name,
+            index=index,
+            section=section,
+            path=reports_dir,
+        ),
     )
 
 
-def render_text_output_artifact(path: Path) -> None:
+def render_text_output_artifact(
+    path: Path,
+    *,
+    section: str = "output_artifacts",
+    index: int | None = None,
+) -> None:
     """Show one generated text or Markdown output as a compact artifact."""
+    key_prefix = make_widget_key(
+        "text_artifact",
+        path.name,
+        index=index,
+        section=section,
+        path=path,
+    )
     st.markdown(f"#### {path.name}")
     if not path.exists():
         st.info("Run this step to create the output file.")
@@ -5993,14 +6071,14 @@ def render_text_output_artifact(path: Path) -> None:
         data=data,
         file_name=path.name,
         mime="text/markdown" if path.suffix.lower() == ".md" else "text/plain",
-        key=f"download_output_{path.name}",
+        key=make_widget_key("download", path.name, section=key_prefix),
     )
-    with st.expander(f"Preview {path.name}"):
+    with st.expander(f"Preview text: {path.name}"):
         st.text_area(
             "Text preview",
             value=raw_text[:4000],
             height=240,
-            key=f"raw_output_{path.name}",
+            key=make_widget_key("text_preview", path.name, section=key_prefix),
         )
 
 
@@ -6145,6 +6223,7 @@ def render_reports_browser(
             width="stretch",
             hide_index=True,
             height=260,
+            key=make_widget_key("report_table", "reports", section=key_prefix),
         )
     st.download_button(
         "Download all reports as ZIP",
@@ -6180,16 +6259,20 @@ def render_reports_browser(
             )
 
 
-def render_output_artifacts(outputs: Iterable[Path]) -> None:
+def render_output_artifacts(
+    outputs: Iterable[Path],
+    *,
+    section: str = "output_artifacts",
+) -> None:
     """Show the preview/download/copy panel for workflow outputs."""
     st.markdown("#### Output files")
-    for path in outputs:
+    for index, path in enumerate(unique_artifact_paths(outputs)):
         if path.suffix.lower() == ".csv":
-            render_csv_output_artifact(path)
+            render_csv_output_artifact(path, section=section, index=index)
         elif path.is_dir():
-            render_reports_output_artifact(path)
+            render_reports_output_artifact(path, section=section, index=index)
         else:
-            render_text_output_artifact(path)
+            render_text_output_artifact(path, section=section, index=index)
 
 
 def render_step_references(step_number: int) -> None:
@@ -6202,6 +6285,8 @@ def render_step_header(
     description: str,
     inputs: Iterable[Path | str],
     outputs: Iterable[Path],
+    *,
+    render_artifacts: bool = True,
 ) -> None:
     """Render shared explanation and artifact details for one workflow step."""
     step_name = WORKFLOW_STEP_NAMES[step_number - 1]
@@ -6238,7 +6323,8 @@ def render_step_header(
             outputs,
             key=f"workflow_step_{step_number}_outputs_card",
         )
-    render_output_artifacts(outputs)
+    if render_artifacts:
+        render_output_artifacts(outputs, section=f"workflow_step_{step_number}")
 def render_workflow_step(
     loaded: LoadedOutputs,
     step_number: int,
@@ -6331,6 +6417,7 @@ def render_workflow_step(
             "provenance for fallback or optional cached tuned BBB classifier use.",
             [loaded.paths["standardized"], loaded.paths["descriptors"]],
             get_step_artifacts(5, output_dir),
+            render_artifacts=False,
         )
         if not results_available:
             return
@@ -6449,6 +6536,7 @@ def render_workflow_step(
             "OMOP-style demonstration context, and conceptual endpoint mapping.",
             [loaded.paths["prioritization"], loaded.paths["admet_summary"]],
             get_step_artifacts(10, output_dir),
+            render_artifacts=False,
         )
         if not results_available:
             return
@@ -6460,6 +6548,7 @@ def render_workflow_step(
             "identity, properties, public evidence, context, and ranking into one view.",
             [loaded.paths["prioritization"], loaded.paths["compound_context"]],
             get_step_artifacts(11, output_dir),
+            render_artifacts=False,
         )
         if not results_available:
             return
@@ -7461,7 +7550,7 @@ def render_active_run_downloads(output_dir: Path) -> None:
     if not artifacts:
         st.info("No downloadable workflow outputs were found yet.")
         return
-    render_output_artifacts(artifacts)
+    render_output_artifacts(artifacts, section="downloads")
 
 def render_run_path_status(output_dir: Path) -> None:
     """Show read-only active-run path resolution details."""
