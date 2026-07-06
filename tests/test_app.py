@@ -4442,6 +4442,107 @@ def test_target_run_mode_distinguishes_general_and_target_specific_demo() -> Non
     assert app.target_run_mode(pd.DataFrame()) == "target_missing"
 
 
+def test_target_display_helpers_handle_optional_metadata_values() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "target_id": "demo_target_placeholder",
+                "gene_symbol": None,
+                "uniprot_id": pd.NA,
+                "pdb_id": "",
+                "reference_ligands": ["caffeine", "xanthine"],
+            }
+        ]
+    )
+
+    display = app.dataframe_display_safe(frame)
+
+    assert display.loc[0, "Gene symbol"] == "not_provided"
+    assert display.loc[0, "UniProt ID"] == "not_provided"
+    assert display.loc[0, "PDB ID"] == "not_provided"
+    assert display.loc[0, "Reference ligands"] == "caffeine; xanthine"
+    assert app.latest_column_value(frame, "gene_symbol", "missing") == "missing"
+
+
+def test_target_run_mode_card_accepts_description_and_none_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = pd.DataFrame(
+        [
+            {
+                "target_id": "demo_target_placeholder",
+                "target_name": "Demo target placeholder",
+                "protein_structure_source": "demo_placeholder",
+                "pdb_id": None,
+            }
+        ]
+    )
+    markdown: list[str] = []
+    fake_streamlit = SimpleNamespace(
+        markdown=lambda value, **kwargs: markdown.append(value),
+        __name__="fake_streamlit",
+    )
+
+    monkeypatch.setattr(app, "st", fake_streamlit)
+
+    app.render_target_run_mode(target)
+
+    rendered = " ".join(markdown)
+    assert "Target workflow mode" in rendered
+    assert "not_provided" in rendered
+    assert "Demo placeholder / user-configurable target profile" in rendered
+
+
+def test_target_setup_page_renders_placeholder_metadata_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = pd.DataFrame(
+        [
+            {
+                "target_id": "demo_target_placeholder",
+                "target_name": "Demo target placeholder",
+                "gene_symbol": None,
+                "organism": "",
+                "uniprot_id": pd.NA,
+                "pdb_id": None,
+                "protein_structure_source": "demo_placeholder",
+                "binding_site_description": pd.NA,
+                "disease_context": "",
+                "mechanism_context": None,
+                "reference_ligands": ["replace", "with real ligands"],
+                "docking_protocol_note": "",
+                "target_relevance_note": None,
+                "disclaimer": "Target metadata is computational triage context only.",
+            }
+        ]
+    )
+    captured: dict[str, list[object]] = {"captions": [], "dataframes": [], "markdown": []}
+    fake_streamlit = SimpleNamespace(
+        subheader=lambda value, **kwargs: None,
+        caption=lambda value, **kwargs: captured["captions"].append(value),
+        info=lambda value, **kwargs: None,
+        dataframe=lambda value, **kwargs: captured["dataframes"].append(value),
+        markdown=lambda value, **kwargs: captured["markdown"].append(value),
+        __name__="fake_streamlit",
+    )
+    loaded = SimpleNamespace(tables={"target_profile": target})
+
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(app, "load_output_directory", lambda output_dir: loaded)
+
+    app.render_target_setup_page(tmp_path)
+
+    assert any(
+        "Demo placeholder / user-configurable target profile" in str(caption)
+        for caption in captured["captions"]
+    )
+    assert captured["dataframes"]
+    display = captured["dataframes"][0]
+    assert display.loc[0, "Gene symbol"] == "not_provided"
+    assert display.loc[0, "Reference ligands"] == "replace; with real ligands"
+
+
 def test_make_widget_key_is_unique_by_section_and_index(tmp_path: Path) -> None:
     first = tmp_path / "section_a" / "biopharma_positioning.csv"
     second = tmp_path / "section_b" / "biopharma_positioning.csv"

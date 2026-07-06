@@ -247,6 +247,11 @@ DISPLAY_LABELS = {
     "pdb_id": "PDB ID",
     "protein_structure_source": "Protein structure source",
     "binding_site_description": "Binding site description",
+    "disease_context": "Disease context",
+    "mechanism_context": "Mechanism context",
+    "reference_ligands": "Reference ligands",
+    "docking_protocol_note": "Docking protocol note",
+    "target_relevance_note": "Target relevance note",
     "docking_score": "Docking score",
     "docking_rank": "Docking rank",
     "docking_program": "Docking program",
@@ -1323,6 +1328,38 @@ def display_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=display_labels(df.columns))
 
 
+def safe_text(value: object, default: str = "not_provided") -> str:
+    """Return a UI-safe text value for optional metadata fields."""
+    if value is None:
+        return default
+    if isinstance(value, (list, tuple, set)):
+        parts = [safe_text(item, default="") for item in value]
+        text = "; ".join(part for part in parts if part)
+        return text or default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    text = " ".join(str(value).split())
+    if not text or text.lower() in {"nan", "none", "null", "nat"}:
+        return default
+    return text
+
+
+def safe_join(value: object, default: str = "not_provided") -> str:
+    """Return a UI-safe joined text value for scalar or sequence metadata."""
+    return safe_text(value, default=default)
+
+
+def dataframe_display_safe(df: pd.DataFrame, default: str = "not_provided") -> pd.DataFrame:
+    """Return a presentation dataframe with non-string metadata values normalized."""
+    safe = df.copy()
+    for column in safe.columns:
+        safe[column] = safe[column].map(lambda value: safe_text(value, default=default))
+    return display_dataframe(safe)
+
+
 def existing_columns(frame: pd.DataFrame, columns: Iterable[str]) -> list[str]:
     """Return requested dataframe columns that are present."""
     return [column for column in columns if column in frame.columns]
@@ -2225,7 +2262,7 @@ def render_design_foundation_css() -> None:
 
 def _ui_text(value: object) -> str:
     """Escape user-visible text before placing it in small HTML cards."""
-    return html.escape(str(value or ""), quote=True)
+    return html.escape(safe_text(value, default=""), quote=True)
 
 
 def render_metric_card(
@@ -2405,11 +2442,17 @@ def render_modern_evidence_card(
     title: str,
     rows: dict[str, object],
     *,
+    description: str | None = None,
     key: str | None = None,
 ) -> None:
     """Render evidence summary values in modern card form."""
-    body = " | ".join(f"{label}: {value}" for label, value in rows.items())
-    render_modern_card(title, body or "No evidence summary available.", key=key)
+    body = " | ".join(f"{label}: {safe_text(value)}" for label, value in rows.items())
+    render_modern_card(
+        title,
+        body or "No evidence summary available.",
+        description=description,
+        key=key,
+    )
 
 
 def render_timeline_chips(items: Iterable[str]) -> None:
@@ -3768,7 +3811,7 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
             ),
         )
         st.dataframe(
-            display_dataframe(target[target_columns] if target_columns else target),
+            dataframe_display_safe(target[target_columns] if target_columns else target),
             width="stretch",
             hide_index=True,
         )
@@ -3793,7 +3836,7 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
             ),
         )
         st.dataframe(
-            display_dataframe(
+            dataframe_display_safe(
                 structural_inputs[status_columns] if status_columns else structural_inputs
             ),
             width="stretch",
@@ -3821,7 +3864,7 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
             ),
         )
         st.dataframe(
-            display_dataframe(docking[preview_columns] if preview_columns else docking),
+            dataframe_display_safe(docking[preview_columns] if preview_columns else docking),
             width="stretch",
             hide_index=True,
         )
@@ -3850,7 +3893,7 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
             ),
         )
         st.dataframe(
-            display_dataframe(structural[structural_columns] if structural_columns else structural),
+            dataframe_display_safe(structural[structural_columns] if structural_columns else structural),
             width="stretch",
             hide_index=True,
         )
@@ -3858,13 +3901,13 @@ def render_structural_property_analysis_page(output_dir: Path) -> None:
     with st.expander("Underlying descriptor, ADMET, and similarity tables"):
         if not descriptors.empty:
             st.markdown("##### RDKit descriptors")
-            st.dataframe(display_dataframe(descriptors), width="stretch", hide_index=True)
+            st.dataframe(dataframe_display_safe(descriptors), width="stretch", hide_index=True)
         if not admet.empty:
             st.markdown("##### ADMET summary")
-            st.dataframe(display_dataframe(admet), width="stretch", hide_index=True)
+            st.dataframe(dataframe_display_safe(admet), width="stretch", hide_index=True)
         if not similarity.empty:
             st.markdown("##### Reference similarity")
-            st.dataframe(display_dataframe(similarity), width="stretch", hide_index=True)
+            st.dataframe(dataframe_display_safe(similarity), width="stretch", hide_index=True)
 
 
 def render_target_setup_page(output_dir: Path) -> None:
@@ -3873,8 +3916,8 @@ def render_target_setup_page(output_dir: Path) -> None:
     target = loaded.tables["target_profile"]
     st.subheader("Project / Target setup")
     st.caption(
-        "This is a demo placeholder target profile and user-configurable target "
-        "profile until replaced with project-specific target and docking data."
+        "Demo placeholder / user-configurable target profile. Replace with a "
+        "real target profile and optional docking CSV for target-specific analysis."
     )
     if target.empty:
         st.info("target_profile.csv is not available yet. Run structural/property analysis or provide a target profile.")
@@ -3900,7 +3943,7 @@ def render_target_setup_page(output_dir: Path) -> None:
         ),
     )
     st.dataframe(
-        display_dataframe(target[columns] if columns else target),
+        dataframe_display_safe(target[columns] if columns else target),
         width="stretch",
         hide_index=True,
     )
@@ -3930,8 +3973,9 @@ def target_run_mode_note(mode: str) -> str:
         )
     if mode == TARGET_SOURCE_GENERAL_DEMO:
         return (
-            "General molecule-processing demo: the default aspirin/caffeine/etc. "
-            "demo is not target-specific docking evidence."
+            "Demo placeholder / user-configurable target profile. Replace with "
+            "a real target profile and optional docking CSV for target-specific "
+            "analysis."
         )
     if mode == TARGET_SOURCE_USER:
         return "User-configured target: review target and docking provenance before interpreting structural context."
@@ -3945,8 +3989,8 @@ def render_target_run_mode(target: pd.DataFrame) -> None:
         "Target workflow mode",
         {
             "Mode": mode,
-            "Target ID": latest_column_value(target, "target_id", "not available"),
-            "PDB ID": latest_column_value(target, "pdb_id", "not available"),
+            "Target ID": latest_column_value(target, "target_id", "not_provided"),
+            "PDB ID": latest_column_value(target, "pdb_id", "not_provided"),
         },
         description=target_run_mode_note(mode),
         key=f"target_run_mode_{slugify_key(mode)}",
@@ -5678,9 +5722,11 @@ def latest_column_value(frame: pd.DataFrame, column: str, default: str = "not av
     """Return the first nonempty value from a dataframe column."""
     if frame.empty or column not in frame.columns:
         return default
-    values = frame[column].fillna("").astype(str).str.strip()
-    values = values[values.ne("")]
-    return str(values.iloc[0]) if not values.empty else default
+    for value in frame[column].tolist():
+        text = safe_text(value, default="")
+        if text:
+            return text
+    return default
 
 
 def yes_no_status(value: bool) -> str:
