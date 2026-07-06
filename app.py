@@ -81,6 +81,7 @@ from src.public_lookup import (
     lookup_chembl,
     lookup_pubchem,
     placeholder_result,
+    source_failure_result,
     write_output_csv as write_public_lookup_csv,
 )
 from src.scoring import scoring_csv
@@ -105,6 +106,7 @@ from src.target.target_schema import (
 from src.surechembl_lookup import (
     UrllibSurechemblClient,
     lookup_online_rows,
+    placeholder_hit,
     write_output_csv as write_surechembl_output_csv,
 )
 from src.admet import admet_csv
@@ -693,6 +695,7 @@ STEP_OUTPUT_KEYS = {
     11: ("reports",),
 }
 STEP_STATUS_ICONS = {
+    "completed_with_warnings": "!",
     "completed": "✓",
     "not_run": "○",
     "skipped": "⚠",
@@ -830,6 +833,14 @@ STEP3_DEGRADED_LOOKUP_WARNING = (
     "Public lookup evidence is incomplete because one or more online services "
     "were unavailable. Valid partial results were activated so downstream steps "
     "can continue in degraded mode."
+)
+PUBLIC_LOOKUP_DEGRADED_NOTE = (
+    "Public lookup source unavailable or interrupted; downstream analysis "
+    "continues with degraded public-evidence status."
+)
+PUBLIC_LOOKUP_DEGRADED_UI_WARNING = (
+    "Public lookup completed with degraded results because one or more external "
+    "sources were unavailable."
 )
 STEP3_SUMMARY_METADATA_KEYS = {
     "__completion_status",
@@ -2961,7 +2972,8 @@ def identity_lookup_failure_message(frame: pd.DataFrame) -> str:
     statuses = frame["lookup_status"].fillna("").astype(str).str.lower()
     query_eligible = ~statuses.isin({"invalid_smiles", "invalid_molecule"})
     eligible_statuses = statuses[query_eligible]
-    if eligible_statuses.empty or not eligible_statuses.eq("lookup_error").all():
+    error_statuses = {"lookup_error", "unavailable_network_error"}
+    if eligible_statuses.empty or not eligible_statuses.isin(error_statuses).all():
         return ""
     error = ""
     if "error_message" in frame.columns:
@@ -3046,6 +3058,7 @@ def render_public_evidence_view(
     if evidence.empty:
         st.info("Public database evidence is unavailable.")
         return ""
+    render_public_lookup_degraded_summary(public_lookup, surechembl)
     status_fields = [
         "pubchem_status",
         "chembl_status",
@@ -3108,6 +3121,106 @@ def render_public_evidence_view(
         selection_mode="points",
     )
     return render_molecule_selector(plot_evidence, key=key, plot_event=event)
+
+
+def public_lookup_error_summary(
+    public_lookup: pd.DataFrame,
+    surechembl: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, int | str]]:
+    """Summarize public lookup source status and degraded/error rows."""
+    rows = []
+    for source in ("PubChem", "ChEMBL"):
+        source_rows = (
+            public_lookup[public_lookup["source_database"].astype(str).eq(source)]
+            if {"source_database", "lookup_status"}.issubset(public_lookup.columns)
+            else pd.DataFrame()
+        )
+        statuses = source_rows.get("lookup_status", pd.Series(dtype=str)).astype(str)
+        rows.append(
+            {
+                "Source": source,
+                "Rows": int(len(source_rows)),
+                "Successful rows": int(statuses.eq("match_found").sum()),
+                "Degraded/error rows": int(statuses.isin({"lookup_error", "unavailable_network_error"}).sum()),
+                "Status": "degraded" if not statuses.empty and statuses.isin({"lookup_error", "unavailable_network_error"}).all() else "available_or_partial",
+            }
+        )
+    sure_statuses = (
+        surechembl.get("lookup_status", pd.Series(dtype=str)).astype(str)
+        if not surechembl.empty
+        else pd.Series(dtype=str)
+    )
+    rows.append(
+        {
+            "Source": "SureChEMBL",
+            "Rows": int(len(surechembl)),
+            "Successful rows": int(sure_statuses.eq("match_found").sum()),
+            "Degraded/error rows": int(sure_statuses.isin({"lookup_error", "unavailable_network_error"}).sum()),
+            "Status": "degraded" if not sure_statuses.empty and sure_statuses.isin({"lookup_error", "unavailable_network_error"}).all() else "available_or_partial",
+        }
+    )
+    summary = pd.DataFrame(rows)
+    molecules = set()
+    for frame in (public_lookup, surechembl):
+        if "molecule_id" in frame.columns:
+            molecules.update(frame["molecule_id"].dropna().astype(str))
+    degraded_rows = int(summary["Degraded/error rows"].sum()) if not summary.empty else 0
+    successful_rows = int(summary["Successful rows"].sum()) if not summary.empty else 0
+    metrics = {
+        "molecules_processed": len(molecules),
+        "successful_lookup_rows": successful_rows,
+        "degraded_error_rows": degraded_rows,
+        "sources_attempted": ", ".join(summary.loc[summary["Rows"].gt(0), "Source"].astype(str)),
+    }
+    return summary, metrics
+
+
+def render_public_lookup_degraded_summary(public_lookup: pd.DataFrame, surechembl: pd.DataFrame) -> None:
+    """Render source-level public lookup status and degraded-output warnings."""
+    summary, metrics = public_lookup_error_summary(public_lookup, surechembl)
+    degraded_rows = int(metrics.get("degraded_error_rows", 0))
+    if degraded_rows:
+        st.warning(PUBLIC_LOOKUP_DEGRADED_UI_WARNING)
+    cols = st.columns(4)
+    render_metric_card("Molecules processed", metrics["molecules_processed"], container=cols[0])
+    render_metric_card("Successful lookup rows", metrics["successful_lookup_rows"], container=cols[1])
+    render_metric_card("Degraded/error rows", metrics["degraded_error_rows"], container=cols[2])
+    render_metric_card("Sources attempted", metrics["sources_attempted"] or "none", container=cols[3])
+    with st.expander("Public lookup source status", expanded=bool(degraded_rows)):
+        st.dataframe(display_dataframe(summary), width="stretch", hide_index=True)
+        error_frames = []
+        for frame, source_column in ((public_lookup, "source_database"), (surechembl, "")):
+            if frame.empty or "lookup_status" not in frame.columns:
+                continue
+            errors = frame[frame["lookup_status"].astype(str).isin({"lookup_error", "unavailable_network_error"})].copy()
+            if errors.empty:
+                continue
+            if source_column and source_column in errors.columns:
+                errors["source"] = errors[source_column]
+            elif "source" not in errors.columns:
+                errors["source"] = "SureChEMBL"
+            error_frames.append(errors)
+        if error_frames:
+            error_table = pd.concat(error_frames, ignore_index=True)
+            st.dataframe(
+                display_dataframe(
+                    error_table[
+                        available_columns(
+                            error_table,
+                            (
+                                "molecule_id",
+                                "source",
+                                "lookup_status",
+                                "error_type",
+                                "error_message",
+                                "evidence_note",
+                            ),
+                        )
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
 
 def render_chemical_space(
@@ -5197,15 +5310,15 @@ def step3_summary(
     return {
         "PubChem matches": int(pubchem.get("match_found", 0)),
         "PubChem no matches": int(pubchem.get("no_match", 0)),
-        "PubChem errors": int(pubchem.get("lookup_error", 0)),
+        "PubChem errors": int(pubchem.get("lookup_error", 0) + pubchem.get("unavailable_network_error", 0)),
         "ChEMBL matches": int(chembl.get("match_found", 0)),
         "ChEMBL no matches": int(chembl.get("no_match", 0)),
-        "ChEMBL errors": int(chembl.get("lookup_error", 0)),
+        "ChEMBL errors": int(chembl.get("lookup_error", 0) + chembl.get("unavailable_network_error", 0)),
         "SureChEMBL queried": int(
             sure_queried.get("molecule_id", pd.Series(dtype=str)).nunique()
         ),
         "SureChEMBL errors": int(
-            surechembl[sure_status.eq("lookup_error")]
+            surechembl[sure_status.isin({"lookup_error", "unavailable_network_error"})]
             .get("molecule_id", pd.Series(dtype=str))
             .nunique()
         ),
@@ -5238,6 +5351,25 @@ def run_public_demo_step3(
     active_surechembl_client = surechembl_client or UrllibSurechemblClient()
     public_results = []
     surechembl_results = []
+
+    def degraded_public_result(row: dict[str, str], source_database: str, exc: BaseException | str):
+        return source_failure_result(
+            row.get("molecule_id", ""),
+            row.get("canonical_smiles", ""),
+            row.get("inchi_key", ""),
+            source_database=source_database,
+            exc=exc,
+        )
+
+    def degraded_surechembl_result(row: dict[str, str], exc: BaseException | str):
+        return placeholder_hit(
+            row.get("molecule_id", ""),
+            row.get("canonical_smiles", ""),
+            True,
+            lookup_status="lookup_error",
+            evidence_note=PUBLIC_LOOKUP_DEGRADED_NOTE,
+            error_message=" ".join(str(exc).split())[:240],
+        )
 
     def update(database: str, completed: int) -> None:
         if progress_callback is not None:
@@ -5283,15 +5415,20 @@ def run_public_demo_step3(
                 )
                 update("PubChem", index)
                 continue
-            public_results.append(
-                lookup_pubchem(
-                    row["molecule_id"],
-                    row["canonical_smiles"],
-                    row["inchi_key"],
-                    active_public_client,
-                    15.0,
+            try:
+                public_results.append(
+                    lookup_pubchem(
+                        row["molecule_id"],
+                        row["canonical_smiles"],
+                        row["inchi_key"],
+                        active_public_client,
+                        15.0,
+                    )
                 )
-            )
+            except Exception as exc:
+                public_results.append(
+                    degraded_public_result(row, "PubChem", exc)
+                )
             update("PubChem", index)
         pubchem_rows = [
             item for item in public_results if item.source_database == "PubChem"
@@ -5302,27 +5439,35 @@ def run_public_demo_step3(
             if not valid or not row["canonical_smiles"]:
                 update("ChEMBL", index)
                 continue
-            public_results.append(
-                lookup_chembl(
-                    row["molecule_id"],
-                    row["canonical_smiles"],
-                    row["inchi_key"],
-                    active_public_client,
-                    15.0,
+            try:
+                public_results.append(
+                    lookup_chembl(
+                        row["molecule_id"],
+                        row["canonical_smiles"],
+                        row["inchi_key"],
+                        active_public_client,
+                        15.0,
+                    )
                 )
-            )
+            except Exception as exc:
+                public_results.append(
+                    degraded_public_result(row, "ChEMBL", exc)
+                )
             update("ChEMBL", index)
         chembl_rows = [
             item for item in public_results if item.source_database == "ChEMBL"
         ]
 
         for index, row in enumerate(records, start=1):
-            hits = lookup_online_rows(
-                [row],
-                top_k=5,
-                max_molecules=None,
-                client=active_surechembl_client,
-            )
+            try:
+                hits = lookup_online_rows(
+                    [row],
+                    top_k=5,
+                    max_molecules=None,
+                    client=active_surechembl_client,
+                )
+            except Exception as exc:
+                hits = [degraded_surechembl_result(row, exc)]
             surechembl_results.extend(hits)
             update("SureChEMBL", index)
         surechembl_valid_results = [
@@ -5365,9 +5510,8 @@ def step3_degraded_sources(
         ("ChEMBL", chembl_rows),
         ("SureChEMBL", surechembl_valid_results),
     ):
-        if rows and all(
-            getattr(item, "lookup_status", "") == "lookup_error" for item in rows
-        ):
+        error_statuses = {"lookup_error", "unavailable_network_error"}
+        if rows and all(getattr(item, "lookup_status", "") in error_statuses for item in rows):
             degraded.append(source_name)
     return tuple(degraded)
 
@@ -5400,7 +5544,7 @@ def step3_dataframe_degraded_sources(
         for source_name in ("PubChem", "ChEMBL"):
             rows = public_lookup[public_lookup["source_database"].astype(str).eq(source_name)]
             statuses = rows["lookup_status"].astype(str) if not rows.empty else pd.Series(dtype=str)
-            if not statuses.empty and statuses.eq("lookup_error").all():
+            if not statuses.empty and statuses.isin({"lookup_error", "unavailable_network_error"}).all():
                 degraded.append(source_name)
     if "lookup_status" in surechembl.columns:
         sure_rows = surechembl
@@ -5408,7 +5552,7 @@ def step3_dataframe_degraded_sources(
             valid = sure_rows["valid_smiles"].astype(str).str.lower().isin({"true", "1", "yes", "y"})
             sure_rows = sure_rows[valid]
         statuses = sure_rows["lookup_status"].astype(str) if not sure_rows.empty else pd.Series(dtype=str)
-        if not statuses.empty and statuses.eq("lookup_error").all():
+        if not statuses.empty and statuses.isin({"lookup_error", "unavailable_network_error"}).all():
             degraded.append("SureChEMBL")
     return tuple(degraded)
 
@@ -7381,11 +7525,31 @@ def optional_step_skipped(output_dir: Path, step_number: int) -> bool:
     return False
 
 
+def public_evidence_degraded(output_dir: Path) -> bool:
+    """Return whether Step 3 exists with degraded lookup rows."""
+    for filename in (OUTPUT_FILES["public_lookup"], OUTPUT_FILES["surechembl"]):
+        path = output_dir / filename
+        if not path.exists():
+            continue
+        try:
+            frame = pd.read_csv(path).fillna("")
+        except Exception:
+            continue
+        if "lookup_status" not in frame.columns:
+            continue
+        statuses = frame["lookup_status"].astype(str).str.strip().str.lower()
+        if statuses.isin({"lookup_error", "unavailable_network_error"}).any():
+            return True
+    return False
+
+
 def step_navigation_status(output_dir: Path, step_number: int) -> str:
     """Return the sidebar status key for one workflow step."""
     completed = completed_workflow_steps()
     if optional_step_skipped(output_dir, step_number):
         return "skipped"
+    if step_number == 3 and step_output_exists(output_dir, step_number) and public_evidence_degraded(output_dir):
+        return "completed_with_warnings"
     if step_number in completed or step_output_exists(output_dir, step_number):
         return "completed"
     if step_has_missing_prerequisite(output_dir, step_number, completed):

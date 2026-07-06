@@ -1,4 +1,5 @@
 import csv
+import http.client
 import subprocess
 import sys
 from pathlib import Path
@@ -171,6 +172,31 @@ def test_api_errors_become_output_rows() -> None:
     assert all("service unavailable" in row.error_message for row in results)
 
 
+def test_incomplete_read_becomes_degraded_lookup_rows() -> None:
+    client = MockClient()
+
+    def fail_incomplete_read(url: str, timeout: float):
+        raise http.client.IncompleteRead(b"partial")
+
+    client.get_json = fail_incomplete_read
+
+    results = lookup_rows(
+        standardized_rows()[:1],
+        descriptor_rows()[:1],
+        offline=False,
+        max_molecules=None,
+        client=client,
+    )
+
+    assert len(results) == 2
+    assert {row.source_database for row in results} == {"PubChem", "ChEMBL"}
+    assert all(row.lookup_status == "lookup_error" for row in results)
+    assert all(row.source_available == "false" for row in results)
+    assert all(row.public_match_found == "false" for row in results)
+    assert all(row.fallback_used == "true" for row in results)
+    assert all(row.error_type == "incomplete_read" for row in results)
+
+
 def test_pubchem_404_is_no_exact_match() -> None:
     results = lookup_rows(
         standardized_rows()[:1],
@@ -228,6 +254,10 @@ def test_output_columns_exist(tmp_path: Path) -> None:
     with output.open("r", encoding="utf-8", newline="") as output_file:
         reader = csv.DictReader(output_file)
         assert tuple(reader.fieldnames or ()) == OUTPUT_COLUMNS
+    rows = list(csv.DictReader(output.open(encoding="utf-8")))
+    assert "source_available" in rows[0]
+    assert "public_match_found" in rows[0]
+    assert "fallback_used" in rows[0]
 
 
 def test_cli_writes_offline_output(tmp_path: Path) -> None:

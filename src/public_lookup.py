@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import socket
 from dataclasses import asdict, dataclass
@@ -16,10 +17,15 @@ from urllib.request import Request, urlopen
 
 OUTPUT_COLUMNS = (
     "molecule_id",
+    "smiles",
+    "standardized_smiles",
     "canonical_smiles",
     "inchi_key",
     "valid_smiles",
+    "source",
     "source_database",
+    "source_available",
+    "public_match_found",
     "match_type",
     "public_id",
     "public_name",
@@ -28,7 +34,9 @@ OUTPUT_COLUMNS = (
     "public_url",
     "evidence_note",
     "lookup_status",
+    "error_type",
     "error_message",
+    "fallback_used",
 )
 STANDARDIZED_COLUMNS = (
     "molecule_id",
@@ -42,6 +50,11 @@ PUBCHEM_BASE_URL = "https://pubchem.ncbi.nlm.nih.gov"
 CHEMBL_BASE_URL = "https://www.ebi.ac.uk"
 DEFAULT_TIMEOUT = 15.0
 CHEMBL_SIMILARITY_THRESHOLD = 70
+DEGRADED_LOOKUP_NOTE = (
+    "Public lookup source unavailable or interrupted; downstream analysis "
+    "continues with degraded public-evidence status."
+)
+MAX_ERROR_MESSAGE_LENGTH = 240
 
 
 class JsonClient(Protocol):
@@ -57,6 +70,33 @@ class PublicLookupHttpError(RuntimeError):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def sanitize_error_message(exc: BaseException | str, *, max_length: int = MAX_ERROR_MESSAGE_LENGTH) -> str:
+    """Return a short public-safe error message."""
+    message = " ".join(str(exc).replace("\r", " ").replace("\n", " ").split())
+    return message[:max_length]
+
+
+def error_type(exc: BaseException | str) -> str:
+    """Return a stable error type label for external lookup failures."""
+    if isinstance(exc, PublicLookupHttpError):
+        if exc.status_code == 429:
+            return "http_429_rate_limit"
+        if exc.status_code in {500, 502, 503, 504}:
+            return f"http_{exc.status_code}_server_error"
+        return f"http_{exc.status_code}"
+    if isinstance(exc, http.client.IncompleteRead):
+        return "incomplete_read"
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, json.JSONDecodeError):
+        return "json_decode_error"
+    if isinstance(exc, UnicodeDecodeError):
+        return "unicode_decode_error"
+    if isinstance(exc, URLError):
+        return "url_error"
+    return type(exc).__name__ if isinstance(exc, BaseException) else "lookup_error"
 
 
 class UrllibJsonClient:
@@ -78,7 +118,7 @@ class UrllibJsonClient:
                 exc.code,
                 f"HTTP {exc.code} returned by public database."
             ) from exc
-        except (URLError, socket.timeout, TimeoutError) as exc:
+        except (http.client.IncompleteRead, URLError, ConnectionError, ConnectionResetError, socket.timeout, TimeoutError) as exc:
             raise RuntimeError(f"Public database request failed: {exc}") from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise RuntimeError(
@@ -95,11 +135,16 @@ class LookupResult:
     """One public-database evidence row."""
 
     molecule_id: str
-    canonical_smiles: str
-    inchi_key: str
-    valid_smiles: bool
-    source_database: str
-    match_type: str
+    smiles: str = ""
+    standardized_smiles: str = ""
+    canonical_smiles: str = ""
+    inchi_key: str = ""
+    valid_smiles: bool = False
+    source: str = ""
+    source_database: str = ""
+    source_available: str = ""
+    public_match_found: str = ""
+    match_type: str = ""
     public_id: str = ""
     public_name: str = ""
     public_smiles: str = ""
@@ -107,7 +152,9 @@ class LookupResult:
     public_url: str = ""
     evidence_note: str = ""
     lookup_status: str = ""
+    error_type: str = ""
     error_message: str = ""
+    fallback_used: str = ""
 
 
 def parse_boolean(value: object) -> bool:
@@ -262,16 +309,55 @@ def placeholder_result(
     error_message: str = "",
 ) -> LookupResult:
     """Create an invalid, offline, no-match, or error result."""
+    public_match_found = "true" if lookup_status == "match_found" else "false"
+    source_available = "false" if lookup_status in {"lookup_error", "unavailable_network_error"} else "true"
     return LookupResult(
         molecule_id=molecule_id,
+        smiles=canonical_smiles,
+        standardized_smiles=canonical_smiles,
         canonical_smiles=canonical_smiles,
         inchi_key=inchi_key,
         valid_smiles=valid_smiles,
+        source=source_database,
         source_database=source_database,
+        source_available=source_available,
+        public_match_found=public_match_found,
         match_type=match_type,
         evidence_note=evidence_note,
         lookup_status=lookup_status,
+        error_type="lookup_error" if lookup_status in {"lookup_error", "unavailable_network_error"} else "",
         error_message=error_message,
+        fallback_used="true" if lookup_status in {"lookup_error", "unavailable_network_error"} else "false",
+    )
+
+
+def source_failure_result(
+    molecule_id: str,
+    canonical_smiles: str,
+    inchi_key: str,
+    *,
+    source_database: str,
+    exc: BaseException | str,
+    valid_smiles: bool = True,
+) -> LookupResult:
+    """Create a degraded public lookup row for one failed source request."""
+    return LookupResult(
+        molecule_id=molecule_id,
+        smiles=canonical_smiles,
+        standardized_smiles=canonical_smiles,
+        canonical_smiles=canonical_smiles,
+        inchi_key=inchi_key,
+        valid_smiles=valid_smiles,
+        source=source_database,
+        source_database=source_database,
+        source_available="false",
+        public_match_found="false",
+        match_type="lookup_error",
+        lookup_status="lookup_error",
+        evidence_note=DEGRADED_LOOKUP_NOTE,
+        error_type=error_type(exc),
+        error_message=sanitize_error_message(exc),
+        fallback_used="true",
     )
 
 
@@ -320,28 +406,20 @@ def lookup_pubchem(
                 lookup_status="no_match",
                 evidence_note="No exact PubChem record found for this molecule.",
             )
-        return placeholder_result(
+        return source_failure_result(
             molecule_id,
             canonical_smiles,
             inchi_key,
-            True,
             source_database="PubChem",
-            match_type="lookup_error",
-            lookup_status="lookup_error",
-            evidence_note="PubChem exact lookup could not be completed.",
-            error_message=str(exc),
+            exc=exc,
         )
-    except RuntimeError as exc:
-        return placeholder_result(
+    except Exception as exc:
+        return source_failure_result(
             molecule_id,
             canonical_smiles,
             inchi_key,
-            True,
             source_database="PubChem",
-            match_type="lookup_error",
-            lookup_status="lookup_error",
-            evidence_note="PubChem exact lookup could not be completed.",
-            error_message=str(exc),
+            exc=exc,
         )
     return result or placeholder_result(
         molecule_id,
@@ -373,17 +451,13 @@ def lookup_chembl(
         result = parse_chembl_similarity_match(
             payload, molecule_id, canonical_smiles, inchi_key
         )
-    except RuntimeError as exc:
-        return placeholder_result(
+    except Exception as exc:
+        return source_failure_result(
             molecule_id,
             canonical_smiles,
             inchi_key,
-            True,
             source_database="ChEMBL",
-            match_type="lookup_error",
-            lookup_status="lookup_error",
-            evidence_note="ChEMBL similarity lookup could not be completed.",
-            error_message=str(exc),
+            exc=exc,
         )
     return result or placeholder_result(
         molecule_id,
@@ -526,6 +600,21 @@ def write_output_csv(
         for record in records:
             row = asdict(record)
             row["valid_smiles"] = str(record.valid_smiles)
+            row["smiles"] = row.get("smiles") or record.canonical_smiles
+            row["standardized_smiles"] = row.get("standardized_smiles") or record.canonical_smiles
+            row["source"] = row.get("source") or record.source_database
+            row["source_available"] = row.get("source_available") or (
+                "false" if record.lookup_status in {"lookup_error", "unavailable_network_error"} else "true"
+            )
+            row["public_match_found"] = row.get("public_match_found") or (
+                "true" if record.lookup_status == "match_found" else "false"
+            )
+            row["error_type"] = row.get("error_type") or (
+                "lookup_error" if record.lookup_status in {"lookup_error", "unavailable_network_error"} else ""
+            )
+            row["fallback_used"] = row.get("fallback_used") or (
+                "true" if record.lookup_status in {"lookup_error", "unavailable_network_error"} else "false"
+            )
             writer.writerow(row)
 
 
@@ -554,7 +643,13 @@ def public_lookup_csv(
         client=client,
         timeout=timeout,
     )
-    write_output_csv(output_path, results)
+    temp_path = output_path.with_suffix(".tmp.csv")
+    try:
+        write_output_csv(temp_path, results)
+        temp_path.replace(output_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
     return len(results)
 
 

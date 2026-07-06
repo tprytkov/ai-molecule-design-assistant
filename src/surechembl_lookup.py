@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import socket
 from dataclasses import asdict, dataclass, replace
@@ -142,7 +143,7 @@ class UrllibSurechemblClient:
             if body:
                 message = f"{message} Response body: {body}"
             raise RuntimeError(message) from exc
-        except (URLError, socket.timeout, TimeoutError) as exc:
+        except (http.client.IncompleteRead, URLError, ConnectionError, ConnectionResetError, socket.timeout, TimeoutError) as exc:
             raise RuntimeError(f"SureChEMBL request failed: {exc}") from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise RuntimeError("SureChEMBL returned an invalid JSON response.") from exc
@@ -896,7 +897,7 @@ def lookup_online_rows(
                     debug_api,
                 )
                 hits = enrich_hits_with_document_metadata(hits, metadata)
-        except RuntimeError as exc:
+        except Exception as exc:
             results.append(
                 placeholder_hit(
                     molecule_id,

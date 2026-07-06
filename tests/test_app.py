@@ -1,5 +1,6 @@
 import ast
 import builtins
+import http.client
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
@@ -2612,6 +2613,40 @@ def test_step3_both_pubchem_and_chembl_failures_write_lookup_error_rows(
     assert set(public_lookup["lookup_status"]) == {"lookup_error"}
     assert summary["__completion_status"] == "degraded_lookup"
     assert summary["__degraded_sources"] == "PubChem, ChEMBL"
+
+
+def test_step3_incomplete_read_writes_degraded_rows_and_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    write_step3_standardized(paths)
+
+    def interrupted(*args, **kwargs):
+        raise http.client.IncompleteRead(b"partial")
+
+    monkeypatch.setattr(app, "lookup_pubchem", interrupted)
+    monkeypatch.setattr(app, "lookup_chembl", interrupted)
+    monkeypatch.setattr(app, "lookup_online_rows", interrupted)
+
+    summary = app.run_public_demo_step3(
+        paths,
+        public_client=object(),
+        surechembl_client=object(),
+    )
+
+    public_lookup = pd.read_csv(paths.public_lookup)
+    surechembl = pd.read_csv(paths.surechembl_lookup)
+    assert set(public_lookup["lookup_status"]) == {"lookup_error"}
+    assert set(public_lookup["error_type"]) == {"incomplete_read"}
+    assert set(public_lookup["fallback_used"].astype(str).str.lower()) == {"true"}
+    assert set(surechembl["lookup_status"]) == {"lookup_error"}
+    assert summary["__completion_status"] == "degraded_lookup"
+    assert app.step_navigation_status(paths.public_lookup.parent, 3) == "completed_with_warnings"
 
 
 def test_step3_preserves_existing_outputs_when_new_output_write_fails(
