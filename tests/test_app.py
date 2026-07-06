@@ -118,11 +118,13 @@ def test_sidebar_step_navigation_constants_cover_active_run_steps() -> None:
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Chemical identity"] == 2
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Public evidence"] == 3
     assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Descriptors"] == 4
-    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Chemical-space map"] == 5
-    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Biomedical evidence"] == 6
-    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Patent/IP-context evidence"] == 7
-    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Prioritization"] == 8
-    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Reports"] == 9
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["ADMET Prediction"] == 5
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Chemical-space map"] == 6
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Biomedical evidence"] == 7
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Patent/IP-context evidence"] == 8
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Prioritization"] == 9
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Biopharma Analytics"] == 10
+    assert app.STEP_NAVIGATION_TO_WORKFLOW_STEP["Reports"] == 11
 
 
 def test_sidebar_step_navigation_legacy_widget_key_is_not_assigned() -> None:
@@ -203,16 +205,39 @@ def test_custom_analysis_dependency_map_contains_expected_dependencies() -> None
         "Standardization",
         "Chemical identity",
     )
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["ADMET Prediction"] == (
+        "Standardization",
+        "Descriptors",
+    )
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Chemical-space map"] == (
+        "Standardization",
+        "ADMET Prediction",
+    )
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Biomedical evidence"] == (
+        "Standardization",
+        "Chemical identity",
+        "Public evidence",
+        "Descriptors",
+    )
     assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Patent/IP-context evidence"] == (
         "Standardization",
         "Public evidence",
+        "Biomedical evidence",
     )
     assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Prioritization"] == (
         "Standardization",
         "Descriptors",
         "Chemical identity",
+        "ADMET Prediction",
+        "Chemical-space map",
+        "Biomedical evidence",
+        "Patent/IP-context evidence",
     )
-    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Reports"] == ("Prioritization",)
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Biopharma Analytics"] == ("Prioritization",)
+    assert app.CUSTOM_ANALYSIS_DEPENDENCIES["Reports"] == (
+        "Prioritization",
+        "Biopharma Analytics",
+    )
 
 
 def test_custom_analysis_plan_reports_missing_downstream_prerequisites(
@@ -232,20 +257,38 @@ def test_custom_analysis_plan_reports_missing_downstream_prerequisites(
     assert plan["required"] == [
         "Standardization",
         "Chemical identity",
+        "Public evidence",
         "Descriptors",
+        "ADMET Prediction",
+        "Chemical-space map",
+        "Biomedical evidence",
+        "Patent/IP-context evidence",
         "Prioritization",
+        "Biopharma Analytics",
     ]
     assert plan["missing"] == [
         "Standardization",
         "Chemical identity",
+        "Public evidence",
         "Descriptors",
+        "ADMET Prediction",
+        "Chemical-space map",
+        "Biomedical evidence",
+        "Patent/IP-context evidence",
         "Prioritization",
+        "Biopharma Analytics",
     ]
     assert plan["planned"] == [
         "Standardization",
         "Chemical identity",
+        "Public evidence",
         "Descriptors",
+        "ADMET Prediction",
+        "Chemical-space map",
+        "Biomedical evidence",
+        "Patent/IP-context evidence",
         "Prioritization",
+        "Biopharma Analytics",
         "Reports",
     ]
 
@@ -375,20 +418,32 @@ def test_run_selected_public_demo_steps_executes_in_workflow_order(
 
     summary = app.run_selected_public_demo_steps(paths, ["Reports"])
 
-    assert calls == [1, 2, 4, 8, 9]
+    assert calls == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     assert summary["executed"] == [
         "Standardization",
         "Chemical identity",
+        "Public evidence",
         "Descriptors",
+        "ADMET Prediction",
+        "Chemical-space map",
+        "Biomedical evidence",
+        "Patent/IP-context evidence",
         "Prioritization",
+        "Biopharma Analytics",
         "Reports",
     ]
     assert fake_streamlit.session_state["completed_workflow_steps"] == [
         1,
         2,
+        3,
         4,
+        5,
+        6,
+        7,
         8,
         9,
+        10,
+        11,
     ]
 
 
@@ -417,12 +472,17 @@ def test_run_selected_active_run_steps_supports_uploaded_workflow_order(
         "completed_run",
     )
 
-    assert [step for step, _ in calls] == [1, 2, 4, 8]
+    assert [step for step, _ in calls] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert all(active_paths == paths for _, active_paths in calls)
     assert summary["executed"] == [
         "Standardization",
         "Chemical identity",
+        "Public evidence",
         "Descriptors",
+        "ADMET Prediction",
+        "Chemical-space map",
+        "Biomedical evidence",
+        "Patent/IP-context evidence",
         "Prioritization",
     ]
 
@@ -481,7 +541,7 @@ def test_run_selected_public_demo_steps_treats_fallback_outputs_as_complete(
         encoding="utf-8",
     )
     fake_streamlit = SimpleNamespace(
-        session_state={"completed_workflow_steps": [1, 2, 3]}
+        session_state={"completed_workflow_steps": [1, 2, 3, 4, 5, 6, 7, 8]}
     )
     monkeypatch.setattr(app, "st", fake_streamlit)
     monkeypatch.setattr(
@@ -501,8 +561,11 @@ def test_run_selected_public_demo_steps_treats_fallback_outputs_as_complete(
         1,
         2,
         3,
+        4,
+        5,
         6,
         7,
+        8,
     ]
 
 
@@ -849,11 +912,13 @@ def test_workflow_step_names_exist() -> None:
         "Step 2: Chemical identity",
         "Step 3: Public database lookup",
         "Step 4: RDKit molecular properties",
-        "Step 5: ChemBERTa chemical space",
-        "Step 6: Biomedical evidence and biological context",
-        "Step 7: Patent/IP-context evidence",
-        "Step 8: Final prioritization",
-        "Step 9: Reports",
+        "Step 5: ADMET Prediction",
+        "Step 6: ChemBERTa chemical space",
+        "Step 7: Biomedical evidence and biological context",
+        "Step 8: Patent/IP-context evidence",
+        "Step 9: Final prioritization",
+        "Step 10: Biopharma Analytics",
+        "Step 11: Reports",
     )
     assert app.FINAL_RANKING_EXPLANATION == (
         "Final ranking combines evidence from chemical identity, public lookup, "
@@ -888,10 +953,11 @@ def test_workflow_step_explanations_use_compact_scientific_paragraphs() -> None:
 
     cautious_steps = {
         3: "does not prove novelty, patentability, or freedom to operate",
-        6: "not evidence of biological activity, mechanism, efficacy, or safety",
-        7: "do not determine novelty, patentability, freedom to operate",
-        8: "not predictions of activity, safety, synthesizability, patentability, or clinical value",
-        9: "should be checked by domain experts",
+        5: "not validated ADMET prediction, experimental safety, toxicity, or clinical evidence",
+        7: "not evidence of biological activity, mechanism, efficacy, or safety",
+        8: "do not determine novelty, patentability, freedom to operate",
+        9: "not predictions of activity, safety, synthesizability, patentability, or clinical value",
+        11: "should be checked by domain experts",
     }
     for step_number, phrase in cautious_steps.items():
         assert phrase in app.WORKFLOW_STEP_PARAGRAPHS[step_number - 1]
@@ -1385,9 +1451,9 @@ def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> No
         navigation_option_for(app_test, "Chemical-space map")
     ).run(timeout=10)
     assert app_test.session_state["active_run_page"] == "Chemical-space map"
-    assert app_test.session_state["workflow_step"] == 5
+    assert app_test.session_state["workflow_step"] == 6
     assert any(
-        heading.value == "Step 5: ChemBERTa chemical space"
+        heading.value == "Step 6: ChemBERTa chemical space"
         for heading in app_test.header
     )
     assert not any(
@@ -1402,9 +1468,9 @@ def test_sidebar_mapped_pages_render_selected_step_content(tmp_path: Path) -> No
         navigation_option_for(app_test, "Biomedical evidence")
     ).run(timeout=10)
     assert app_test.session_state["active_run_page"] == "Biomedical evidence"
-    assert app_test.session_state["workflow_step"] == 6
+    assert app_test.session_state["workflow_step"] == 7
     assert any(
-        heading.value == "Step 6: Biomedical evidence and biological context"
+        heading.value == "Step 7: Biomedical evidence and biological context"
         for heading in app_test.header
     )
 
@@ -1591,8 +1657,6 @@ def test_sidebar_special_pages_render_without_workflow_step_body(
     for page in (
         "Overview",
         "Input data",
-        "ADMET Prediction",
-        "Biopharma Analytics",
         "Downloads",
         "Model and Data Sources",
         "Settings",
@@ -1859,7 +1923,7 @@ def test_sidebar_step_navigation_updates_workflow_step_without_running(
 
     assert selected == "Biomedical evidence"
     assert fake_streamlit.session_state["active_run_page"] == "Biomedical evidence"
-    assert fake_streamlit.session_state["workflow_step"] == 6
+    assert fake_streamlit.session_state["workflow_step"] == 7
     assert fake_streamlit.session_state["completed_workflow_steps"] == []
     assert "sidebar_step_navigation" not in fake_streamlit.session_state
     assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY not in fake_streamlit.session_state
@@ -1932,6 +1996,53 @@ def test_step_workflow_continue_to_step_4_sets_pending_page(
     )
     assert "sidebar_step_navigation" not in fake_streamlit.session_state
     assert app.SIDEBAR_STEP_NAVIGATION_WIDGET_KEY not in fake_streamlit.session_state
+    assert reruns == [True]
+
+
+def test_step_workflow_continue_from_descriptors_sets_pending_admet_page(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reruns = []
+    rendered = []
+
+    def button(label: str, *args, **kwargs) -> bool:
+        return kwargs.get("key") == "continue_step_4"
+
+    fake_streamlit = SimpleNamespace(
+        session_state={
+            "workflow_mode": "public_demo",
+            "workflow_step": 4,
+            "completed_workflow_steps": [1, 2, 3, 4],
+            "active_run_page": "Descriptors",
+        },
+        caption=lambda *args, **kwargs: None,
+        progress=lambda *args, **kwargs: None,
+        button=button,
+        rerun=lambda: reruns.append(True),
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(
+        app,
+        "load_output_directory",
+        lambda output_dir: SimpleNamespace(output_dir=output_dir),
+    )
+    monkeypatch.setattr(
+        app,
+        "render_workflow_step",
+        lambda loaded, step_number, **kwargs: rendered.append(
+            (step_number, kwargs["results_available"])
+        ),
+    )
+
+    app.render_step_workflow(tmp_path)
+
+    assert rendered == [(4, True)]
+    assert fake_streamlit.session_state["workflow_step"] == 5
+    assert (
+        fake_streamlit.session_state[app.PENDING_ACTIVE_RUN_PAGE_KEY]
+        == "ADMET Prediction"
+    )
     assert reruns == [True]
 
 
@@ -2148,7 +2259,7 @@ def test_guided_example_online_steps_query_all_valid_molecules(
     ]
 
 
-def test_public_demo_step_six_handles_unavailable_nlp_model(
+def test_public_demo_step_seven_handles_unavailable_nlp_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     paths = app.build_paths(
@@ -2204,7 +2315,7 @@ def test_public_demo_step_six_handles_unavailable_nlp_model(
         lambda selection: (_ for _ in ()).throw(app.DomainModelUnavailableError("missing")),
     )
 
-    app.run_public_demo_step(6, paths)
+    app.run_public_demo_step(7, paths)
 
     text_nlp = pd.read_csv(paths.text_nlp)
     biomedical = pd.read_csv(paths.biomedical_evidence)
@@ -2214,7 +2325,7 @@ def test_public_demo_step_six_handles_unavailable_nlp_model(
     assert biomedical.loc[0, "biomedical_evidence_status"] == "skipped"
 
 
-def test_public_demo_step_seven_fallback_allows_step_eight(
+def test_public_demo_step_eight_fallback_allows_step_nine(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     paths = app.build_paths(
@@ -2297,8 +2408,8 @@ def test_public_demo_step_seven_fallback_allows_step_eight(
     monkeypatch.setattr(app, "merge_chemberta_into_prioritized", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "visualization_coordinates_csv", lambda *args, **kwargs: None)
 
-    app.run_public_demo_step(7, paths)
     app.run_public_demo_step(8, paths)
+    app.run_public_demo_step(9, paths)
 
     patent = pd.read_csv(paths.patent_evidence_embeddings)
     prioritization = pd.read_csv(paths.prioritized)
@@ -2579,6 +2690,34 @@ def test_step4_can_run_after_degraded_step3_output(
     assert paths.descriptors.exists()
     assert paths.similarity.exists()
     assert paths.similarity_top_hits.exists()
+    assert not paths.admet_predictions.exists()
+    assert not paths.admet_summary.exists()
+
+
+def test_public_demo_step_five_generates_admet_outputs(tmp_path: Path) -> None:
+    paths = app.build_paths(
+        input_path=app.DEMO_INPUT,
+        references_path=app.DEMO_REFERENCES,
+        text_evidence_path=app.DEMO_TEXT_EVIDENCE,
+        output_dir=tmp_path / "outputs",
+    )
+    paths.standardized.parent.mkdir(parents=True, exist_ok=True)
+    paths.standardized.write_text(
+        "molecule_id,smiles,canonical_smiles,valid_smiles\n"
+        "mol_a,CCO,CCO,True\n",
+        encoding="utf-8",
+    )
+    paths.descriptors.write_text(
+        "molecule_id,canonical_smiles,valid_smiles,molecular_weight,logp,tpsa,"
+        "hbd,hba,rotatable_bonds,aromatic_rings,qed\n"
+        "mol_a,CCO,True,46.069,-0.001,20.23,1,1,0,0,0.4\n",
+        encoding="utf-8",
+    )
+
+    app.run_public_demo_step(5, paths)
+
+    assert paths.admet_predictions.exists()
+    assert paths.admet_summary.exists()
 
 
 def test_public_demo_opens_step_one_before_running_calculation() -> None:
@@ -3310,12 +3449,16 @@ def test_get_step_artifacts_maps_outputs_to_step_pages(tmp_path: Path) -> None:
     assert [path.name for path in app.get_step_artifacts(2, output_dir)] == [
         "chemical_identity.csv"
     ]
-    assert [path.name for path in app.get_step_artifacts(6, output_dir)] == [
+    assert [path.name for path in app.get_step_artifacts(5, output_dir)] == [
+        "admet_predictions.csv",
+        "admet_summary.csv",
+    ]
+    assert [path.name for path in app.get_step_artifacts(7, output_dir)] == [
         "compound_context.csv",
         "text_nlp.csv",
         "biomedical_evidence.csv",
     ]
-    assert [path.name for path in app.get_step_artifacts(7, output_dir)] == [
+    assert [path.name for path in app.get_step_artifacts(8, output_dir)] == [
         "patent_evidence_embeddings.csv"
     ]
 
@@ -3345,22 +3488,21 @@ def test_step_two_page_shows_identity_not_standardized_table(
     assert "standardized.csv" not in names
 
 
-def test_step_six_page_shows_biomedical_outputs_not_earlier_artifacts(
+def test_step_five_page_shows_admet_outputs_not_descriptor_outputs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     output_dir = tmp_path / "outputs"
     write_minimal_step_outputs(output_dir)
 
-    names = rendered_step_output_names(monkeypatch, output_dir, 6)
+    names = rendered_step_output_names(monkeypatch, output_dir, 5)
 
-    assert names == ["compound_context.csv", "text_nlp.csv", "biomedical_evidence.csv"]
-    assert "standardized.csv" not in names
+    assert names == ["admet_predictions.csv", "admet_summary.csv"]
     assert "descriptors.csv" not in names
-    assert "visualization_coordinates.csv" not in names
+    assert "similarity.csv" not in names
 
 
-def test_step_seven_page_shows_patent_outputs_not_earlier_artifacts(
+def test_step_seven_page_shows_biomedical_outputs_not_earlier_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3368,6 +3510,21 @@ def test_step_seven_page_shows_patent_outputs_not_earlier_artifacts(
     write_minimal_step_outputs(output_dir)
 
     names = rendered_step_output_names(monkeypatch, output_dir, 7)
+
+    assert names == ["compound_context.csv", "text_nlp.csv", "biomedical_evidence.csv"]
+    assert "standardized.csv" not in names
+    assert "descriptors.csv" not in names
+    assert "visualization_coordinates.csv" not in names
+
+
+def test_step_eight_page_shows_patent_outputs_not_earlier_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+
+    names = rendered_step_output_names(monkeypatch, output_dir, 8)
 
     assert names == ["patent_evidence_embeddings.csv"]
     assert "biomedical_evidence.csv" not in names
@@ -3433,7 +3590,7 @@ def test_overview_page_shows_compact_status_only(
 
     app.render_active_run_overview(output_dir)
 
-    assert ("Completed steps", "3 of 9") in metrics
+    assert ("Completed steps", "3 of 11") in metrics
     assert ("Current guided step", 6) in metrics
     assert any(label == "Available output files" for label, value in metrics)
     assert writes == ["Completed workflow steps: 1, 2, 3"]

@@ -105,6 +105,7 @@ class ModelSourceRecord:
     actual_model_used: str
     cache_path: str
     cached: bool
+    downloadable: bool
     fallback_used: bool
     status: str
     error_message: str
@@ -119,6 +120,7 @@ def build_model_record(
     actual_model_used: str = "",
     status: str = "not_checked",
     error_message: str = "",
+    downloadable: bool = True,
 ) -> ModelSourceRecord:
     """Build a model manifest record from app state."""
     cache_model = actual_model_used or configured_model or fallback_model
@@ -129,6 +131,7 @@ def build_model_record(
         actual_model_used=actual_model_used,
         cache_path=model_cache_path(cache_model),
         cached=model_is_cached(cache_model),
+        downloadable=downloadable,
         fallback_used=bool(actual_model_used and actual_model_used == fallback_model),
         status=status,
         error_message=error_message,

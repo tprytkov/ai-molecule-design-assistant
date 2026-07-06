@@ -14,6 +14,7 @@ from src.admet.admet_schema import (
     MODEL_ID_FALLBACK,
     TRAINING_DATASET_FALLBACK,
 )
+from src.optional_domain_models import CHEMBERTA_BBB_MODEL_ID, CHEMBERTA_MLM_MODEL_ID, CHEMBERTA_MTR_MODEL_ID
 
 
 @dataclass(frozen=True)
@@ -44,15 +45,40 @@ ADMET_MODEL_REGISTRY = (
     ),
     ADMETModelRegistryEntry(
         endpoint="bbb_permeability",
-        model_id="future_endpoint_specific_bbb_model",
-        backend="future_transformers_or_chemberta_finetuned_endpoint_model",
+        model_id=CHEMBERTA_BBB_MODEL_ID,
+        backend="transformers-sequence-classification",
         cache_required=True,
-        training_dataset="future_endpoint_specific_training_dataset_required",
+        training_dataset="public_hf_model_card_bbb_permeability",
+        enabled=True,
+        notes=(
+            "Experimental public Hugging Face tuned ChemBERTa BBB classifier. "
+            "Used only when cached locally; otherwise BBB falls back to descriptor "
+            "rules. This is not experimental ADMET evidence."
+        ),
+    ),
+    ADMETModelRegistryEntry(
+        endpoint="molecular_embeddings",
+        model_id=CHEMBERTA_MLM_MODEL_ID,
+        backend="transformers",
+        cache_required=True,
+        training_dataset="masked_language_model_pretraining",
         enabled=False,
         notes=(
-            "Future use requires an endpoint-specific fine-tuned model cached "
-            "under app_data/model_cache/huggingface. ChemBERTa pretraining or "
-            "embeddings alone are not treated as ADMET prediction."
+            "ChemBERTa-77M-MLM is used for embeddings / representation only. It "
+            "is not treated as ADMET prediction or represented as a validated "
+            "ADMET endpoint predictor."
+        ),
+    ),
+    ADMETModelRegistryEntry(
+        endpoint="experimental_molecular_property_regression",
+        model_id=CHEMBERTA_MTR_MODEL_ID,
+        backend="transformers",
+        cache_required=True,
+        training_dataset="public_hf_model_card_multiple_tasks",
+        enabled=False,
+        notes=(
+            "Experimental regression candidate with status "
+            "experimental_no_detailed_model_card unless separately validated."
         ),
     ),
     ADMETModelRegistryEntry(

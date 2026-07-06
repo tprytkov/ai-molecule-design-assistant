@@ -30,10 +30,15 @@ BIOBERT_MODEL_ID = "dmis-lab/biobert-base-cased-v1.1"
 PUBMEDBERT_MODEL_ID = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
 PATENT_SBERTA_MODEL_ID = "AI-Growth-Lab/PatentSBERTa"
 PAECTER_MODEL_ID: str | None = None
+CHEMBERTA_MLM_MODEL_ID = "DeepChem/ChemBERTa-77M-MLM"
+CHEMBERTA_BBB_MODEL_ID = "Yousuf7/ChemBERT-BBB-Permeability"
+CHEMBERTA_MTR_MODEL_ID = "DeepChem/ChemBERTa-77M-MTR"
 TRANSFORMERS_BACKEND = "transformers"
 SENTENCE_TRANSFORMERS_BACKEND = "sentence-transformers"
+TRANSFORMERS_SEQUENCE_CLASSIFICATION_BACKEND = "transformers-sequence-classification"
 MEAN_POOLING = "mean_pooling"
 SENTENCE_TRANSFORMERS_POOLING = "model_default"
+SEQUENCE_CLASSIFICATION_POOLING = "model_head"
 BENCHMARK_COLUMNS = (
     "model_name",
     "model_id",
@@ -98,6 +103,86 @@ class OptionalModelSelection:
     pooling_method: str
     requires_download_gate: bool
     error_message: str = ""
+
+
+@dataclass(frozen=True)
+class ModelCatalogEntry:
+    """One app-known Hugging Face model candidate."""
+
+    group: str
+    label: str
+    model_id: str
+    backend: str
+    purpose: str
+    model_status: str
+    downloadable: bool = True
+
+
+MODEL_CATALOG = (
+    ModelCatalogEntry(
+        "biomedical text evidence",
+        CLOUD_SAFE_FALLBACK_LABEL,
+        FALLBACK_MODEL_ID,
+        SENTENCE_TRANSFORMERS_BACKEND,
+        "general-purpose semantic evidence fallback",
+        "fallback_model",
+        True,
+    ),
+    ModelCatalogEntry(
+        "biomedical text evidence",
+        BIOBERT_LABEL,
+        BIOBERT_MODEL_ID,
+        TRANSFORMERS_BACKEND,
+        "biomedical text evidence mean-pooled transformer candidate",
+        "preferred_public_hf_model",
+        True,
+    ),
+    ModelCatalogEntry(
+        "biomedical text evidence",
+        PUBMEDBERT_LABEL,
+        PUBMEDBERT_MODEL_ID,
+        TRANSFORMERS_BACKEND,
+        "biomedical text evidence mean-pooled transformer candidate",
+        "preferred_public_hf_model",
+        True,
+    ),
+    ModelCatalogEntry(
+        "patent/IP text evidence",
+        PATENT_SBERTA_LABEL,
+        PATENT_SBERTA_MODEL_ID,
+        SENTENCE_TRANSFORMERS_BACKEND,
+        "patent/IP-context semantic evidence candidate",
+        "preferred_public_hf_model",
+        True,
+    ),
+    ModelCatalogEntry(
+        "molecular embeddings",
+        "ChemBERTa MLM",
+        CHEMBERTA_MLM_MODEL_ID,
+        TRANSFORMERS_BACKEND,
+        "molecular embeddings / representation only; not ADMET endpoint prediction",
+        "embedding_pretraining_model",
+        True,
+    ),
+    ModelCatalogEntry(
+        "ADMET endpoint models",
+        "ChemBERTa BBB permeability",
+        CHEMBERTA_BBB_MODEL_ID,
+        TRANSFORMERS_SEQUENCE_CLASSIFICATION_BACKEND,
+        "experimental BBB permeability classification candidate",
+        "experimental_public_hf_model",
+        True,
+    ),
+    ModelCatalogEntry(
+        "ADMET endpoint models",
+        "ChemBERTa MTR",
+        CHEMBERTA_MTR_MODEL_ID,
+        TRANSFORMERS_BACKEND,
+        "experimental molecular property regression candidate",
+        "experimental_no_detailed_model_card",
+        True,
+    ),
+)
 
 
 class SentenceTransformerEncoder:
@@ -188,6 +273,77 @@ class TransformersMeanPoolingEncoder:
 def allow_local_model_downloads() -> bool:
     """Return whether explicit local model loading/downloading is enabled."""
     return os.environ.get(ALLOW_LOCAL_MODEL_DOWNLOADS_ENV) == "1"
+
+
+def safe_hf_token(token: str | None = None) -> str:
+    """Return a Hugging Face token from explicit input or environment."""
+    return str(token if token is not None else os.environ.get("HF_TOKEN", "")).strip()
+
+
+def sanitize_error_message(message: object, *, token: str = "") -> str:
+    """Remove secrets from an error message before displaying or logging."""
+    text = str(message)
+    if token:
+        text = text.replace(token, "[redacted]")
+    return text
+
+
+def cache_huggingface_model(
+    model_id: str,
+    *,
+    backend: str = TRANSFORMERS_BACKEND,
+    token: str | None = None,
+    allow_downloads: bool | None = None,
+) -> tuple[str, bool, str]:
+    """Explicitly cache a Hugging Face model into the app-managed cache."""
+    ensure_app_data_dirs()
+    model_id = str(model_id or "").strip()
+    if not model_id:
+        return "", False, "No model ID configured."
+    downloads_allowed = allow_local_model_downloads() if allow_downloads is None else allow_downloads
+    if not downloads_allowed:
+        return model_id, False, f"Download disabled. Set {ALLOW_LOCAL_MODEL_DOWNLOADS_ENV}=1."
+    hf_token = safe_hf_token(token)
+    try:
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            snapshot_download = None
+        if snapshot_download is not None:
+            snapshot_download(
+                repo_id=model_id,
+                cache_dir=str(HUGGINGFACE_CACHE_DIR),
+                token=hf_token or None,
+            )
+        elif backend == SENTENCE_TRANSFORMERS_BACKEND:
+            from sentence_transformers import SentenceTransformer
+
+            SentenceTransformer(
+                model_id,
+                cache_folder=str(HUGGINGFACE_CACHE_DIR),
+                token=hf_token or None,
+            )
+        else:
+            from transformers import AutoModel, AutoModelForSequenceClassification, AutoTokenizer
+
+            AutoTokenizer.from_pretrained(
+                model_id,
+                cache_dir=str(HUGGINGFACE_CACHE_DIR),
+                token=hf_token or None,
+            )
+            model_cls = (
+                AutoModelForSequenceClassification
+                if backend == TRANSFORMERS_SEQUENCE_CLASSIFICATION_BACKEND
+                else AutoModel
+            )
+            model_cls.from_pretrained(
+                model_id,
+                cache_dir=str(HUGGINGFACE_CACHE_DIR),
+                token=hf_token or None,
+            )
+    except Exception as exc:
+        return model_id, False, sanitize_error_message(f"{type(exc).__name__}: {exc}", token=hf_token)
+    return model_id, True, "cached"
 
 
 def normalize_option(value: str, options: Sequence[str]) -> str:

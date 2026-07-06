@@ -106,7 +106,7 @@ def test_dashboard_has_readable_workflow_sections(dashboard: Page) -> None:
 
 def test_molecule_detail_is_rendered_without_debug_output(dashboard: Page) -> None:
     """Verify the first workflow step is visual and table-based."""
-    expect(dashboard.get_by_text("Workflow progress: 1 of 9")).to_be_visible()
+    expect(dashboard.get_by_text("Workflow progress: 1 of 11")).to_be_visible()
     expect(
         dashboard.get_by_role(
             "button", name="Continue to Step 2: Chemical identity"

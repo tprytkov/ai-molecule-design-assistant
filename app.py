@@ -45,8 +45,11 @@ from src.optional_domain_models import (
     CLOUD_SAFE_FALLBACK_LABEL,
     CUSTOM_MODEL_LABEL,
     FALLBACK_MODEL_ID,
+    MODEL_CATALOG,
     PATENT_MODEL_OPTIONS,
     DomainModelUnavailableError,
+    OptionalModelSelection,
+    cache_huggingface_model,
     encoder_metadata,
     load_optional_model,
     resolve_model_selection,
@@ -395,11 +398,13 @@ WORKFLOW_STEP_NAMES = (
     "Step 2: Chemical identity",
     "Step 3: Public database lookup",
     "Step 4: RDKit molecular properties",
-    "Step 5: ChemBERTa chemical space",
-    "Step 6: Biomedical evidence and biological context",
-    "Step 7: Patent/IP-context evidence",
-    "Step 8: Final prioritization",
-    "Step 9: Reports",
+    "Step 5: ADMET Prediction",
+    "Step 6: ChemBERTa chemical space",
+    "Step 7: Biomedical evidence and biological context",
+    "Step 8: Patent/IP-context evidence",
+    "Step 9: Final prioritization",
+    "Step 10: Biopharma Analytics",
+    "Step 11: Reports",
 )
 WORKFLOW_STEP_PARAGRAPHS = (
     "This step converts input SMILES into a consistent molecule table using "
@@ -438,6 +443,14 @@ WORKFLOW_STEP_PARAGRAPHS = (
     "top-hit summaries. These results support early triage of molecular quality "
     "and reference proximity, but they do not predict potency, selectivity, "
     "toxicity, or experimental activity.",
+    "This step writes separate descriptor-based ADMET triage outputs from "
+    "standardized structures and RDKit descriptors. The expected outputs are "
+    "`admet_predictions.csv` and `admet_summary.csv`, with endpoint-level "
+    "fallback labels, BBB/CNS triage, toxicity-risk flags, model provenance, "
+    "and cache status. If the experimental tuned ChemBERTa BBB classifier is "
+    "cached locally, it may be used for BBB only; otherwise BBB uses descriptor "
+    "rules. These outputs are computational research triage only and are not "
+    "validated ADMET prediction, experimental safety, toxicity, or clinical evidence.",
     "This step places generated and reference molecules into a shared "
     "chemical-space view using optional "
     "[ChemBERTa](https://arxiv.org/abs/2010.09885) molecular embeddings generated "
@@ -482,6 +495,13 @@ WORKFLOW_STEP_PARAGRAPHS = (
     "demonstration context, and conceptual endpoint mapping; those artifacts are "
     "not score inputs and are not predictions of activity, safety, "
     "synthesizability, patentability, or clinical value.",
+    "This step writes Biopharma Analytics outputs that summarize evidence "
+    "readiness, translational positioning, synthetic OMOP-style demonstration "
+    "context, and conceptual endpoint mapping for the Alzheimer's disease / "
+    "alpha7 nAChR demo. The expected outputs are `biopharma_positioning.csv`, "
+    "`evidence_readiness.csv`, `mock_rwe_cohort_summary.csv`, "
+    "`trial_endpoint_map.csv`, and `biopharma_summary_report.md`. These outputs "
+    "are portfolio and research triage only and do not change scoring.",
     "This step converts available molecule-level outputs into downloadable "
     "Markdown summary reports and supporting report images for selected top "
     "candidates. The expected outputs are `compound_intelligence_report_*.md` "
@@ -511,6 +531,11 @@ WORKFLOW_STEP_REFERENCES = (
         ("RDKit fingerprints documentation", "https://www.rdkit.org/docs/GettingStartedInPython.html#fingerprinting-and-molecular-similarity"),
     ),
     (
+        ("ADMET limitations", "README.md#admet-prediction-limitations"),
+        ("Hugging Face Transformers", "https://huggingface.co/docs/transformers/index"),
+        ("Model/cache transparency", "README.md#model-and-cache-transparency"),
+    ),
+    (
         ("ChemBERTa", "https://arxiv.org/abs/2010.09885"),
         ("Hugging Face Transformers", "https://huggingface.co/docs/transformers/index"),
         ("UMAP", "https://umap-learn.readthedocs.io/en/latest/"),
@@ -533,8 +558,12 @@ WORKFLOW_STEP_REFERENCES = (
         ("SureChEMBL", "https://www.surechembl.org/"),
     ),
     (
-        ("Guided example outputs", "README.md#run-the-guided-example-pipeline"),
-        ("Project scope", "README.md#scope"),
+        ("Biopharma Analytics layer", "README.md#biopharma-analytics-layer"),
+        ("ADMET limitations", "README.md#admet-prediction-limitations"),
+    ),
+    (
+        ("Outputs generated", "README.md#outputs-generated"),
+        ("Disclaimers", "README.md#scientific-legal-and-clinical-disclaimers"),
     ),
 )
 WORKFLOW_MODE_OPTIONS = (
@@ -566,11 +595,13 @@ STEP_NAVIGATION_TO_WORKFLOW_STEP = {
     "Chemical identity": 2,
     "Public evidence": 3,
     "Descriptors": 4,
-    "Chemical-space map": 5,
-    "Biomedical evidence": 6,
-    "Patent/IP-context evidence": 7,
-    "Prioritization": 8,
-    "Reports": 9,
+    "ADMET Prediction": 5,
+    "Chemical-space map": 6,
+    "Biomedical evidence": 7,
+    "Patent/IP-context evidence": 8,
+    "Prioritization": 9,
+    "Biopharma Analytics": 10,
+    "Reports": 11,
 }
 WORKFLOW_STEP_TO_NAVIGATION_LABEL = {
     value: key for key, value in STEP_NAVIGATION_TO_WORKFLOW_STEP.items()
@@ -583,23 +614,22 @@ STEP_OUTPUT_KEYS = {
     3: ("public_lookup", "surechembl"),
     4: (
         "descriptors",
-        "admet_predictions",
-        "admet_summary",
         "similarity",
         "similarity_top_hits",
     ),
-    5: ("chemberta_embeddings", "visualization"),
-    6: ("compound_context", "text_nlp", "biomedical_evidence"),
-    7: ("patent_evidence_embeddings",),
-    8: (
-        "prioritization",
+    5: ("admet_predictions", "admet_summary"),
+    6: ("chemberta_embeddings", "visualization"),
+    7: ("compound_context", "text_nlp", "biomedical_evidence"),
+    8: ("patent_evidence_embeddings",),
+    9: ("prioritization",),
+    10: (
         "biopharma_positioning",
         "evidence_readiness",
         "mock_rwe_cohort_summary",
         "trial_endpoint_map",
         "biopharma_summary_report",
     ),
-    9: ("reports",),
+    11: ("reports",),
 }
 STEP_STATUS_ICONS = {
     "completed": "✓",
@@ -613,15 +643,21 @@ CUSTOM_ANALYSIS_DEPENDENCIES = {
     "Chemical identity": ("Standardization",),
     "Public evidence": ("Standardization", "Chemical identity"),
     "Descriptors": ("Standardization",),
-    "Chemical-space map": ("Standardization",),
-    "Biomedical evidence": ("Standardization",),
-    "Patent/IP-context evidence": ("Standardization", "Public evidence"),
+    "ADMET Prediction": ("Standardization", "Descriptors"),
+    "Chemical-space map": ("Standardization", "ADMET Prediction"),
+    "Biomedical evidence": ("Standardization", "Chemical identity", "Public evidence", "Descriptors"),
+    "Patent/IP-context evidence": ("Standardization", "Public evidence", "Biomedical evidence"),
     "Prioritization": (
         "Standardization",
         "Descriptors",
         "Chemical identity",
+        "ADMET Prediction",
+        "Chemical-space map",
+        "Biomedical evidence",
+        "Patent/IP-context evidence",
     ),
-    "Reports": ("Prioritization",),
+    "Biopharma Analytics": ("Prioritization",),
+    "Reports": ("Prioritization", "Biopharma Analytics"),
 }
 FINAL_RANKING_EXPLANATION = (
     "Final ranking combines evidence from chemical identity, public lookup, "
@@ -3320,6 +3356,27 @@ def render_admet_prediction_page(output_dir: Path) -> None:
         return
 
     labels = summary.get("admet_readiness_category", pd.Series(dtype=str)).fillna("")
+    bbb_rows = (
+        predictions[predictions["admet_endpoint"].astype(str).eq("bbb_permeability_cns_likeness")]
+        if not predictions.empty and "admet_endpoint" in predictions.columns
+        else pd.DataFrame()
+    )
+    if bbb_rows.empty:
+        st.info("BBB/CNS triage status is unavailable until admet_predictions.csv exists.")
+    else:
+        bbb_status = latest_column_value(bbb_rows, "model_status", "fallback_descriptor_rule")
+        bbb_cache = latest_column_value(bbb_rows, "model_cache_status", "not available")
+        bbb_model = latest_column_value(bbb_rows, "model_id", "not available")
+        if bbb_status == "experimental_public_hf_model":
+            st.success(
+                f"BBB/CNS uses cached tuned ChemBERTa classifier `{bbb_model}` "
+                f"(cache status: {bbb_cache})."
+            )
+        else:
+            st.info(
+                "BBB/CNS uses descriptor/rule fallback. The tuned ChemBERTa BBB "
+                "classifier is optional and is used only when cached locally."
+            )
     columns = st.columns(4)
     render_modern_metric_card("Molecules", len(summary), container=columns[0])
     render_modern_metric_card(
@@ -5001,6 +5058,7 @@ def selected_model_records(output_dir: Path) -> list[object]:
                 actual_model_used=actual_model,
                 status=status,
                 error_message=error,
+                downloadable=True,
             )
         )
     records.append(
@@ -5011,8 +5069,22 @@ def selected_model_records(output_dir: Path) -> list[object]:
             actual_model_used=fallback_model if model_is_cached(fallback_model) else "",
             status="cached" if model_is_cached(fallback_model) else "not_cached",
             error_message="" if model_is_cached(fallback_model) else "Fallback model not found in app-managed cache.",
+            downloadable=True,
         )
     )
+    for entry in MODEL_CATALOG:
+        role = f"{entry.group}:{entry.label}"
+        records.append(
+            build_model_record(
+                role=role,
+                configured_model=entry.model_id,
+                fallback_model=fallback_model,
+                actual_model_used=entry.model_id if model_is_cached(entry.model_id) else "",
+                status="cached" if model_is_cached(entry.model_id) else entry.model_status,
+                error_message="" if model_is_cached(entry.model_id) else "Model not found in app-managed cache.",
+                downloadable=entry.downloadable,
+            )
+        )
     return records
 
 
@@ -5026,26 +5098,55 @@ def refresh_model_and_source_manifests(output_dir: Path) -> tuple[dict[str, obje
 
 def explicit_cache_model(selection) -> tuple[str, bool, str]:
     """Download/cache a selected model only from the explicit gated UI action."""
-    if not os.environ.get(ALLOW_LOCAL_MODEL_DOWNLOADS_ENV) == "1":
-        return selection.model_id or selection.label, False, "Download disabled. Set ALLOW_LOCAL_MODEL_DOWNLOADS=1."
     if selection.error_message:
         return selection.model_id or selection.label, False, selection.error_message
-    model_id = selection.model_id
-    if not model_id:
-        return selection.label, False, "No model ID configured."
+    return cache_huggingface_model(
+        selection.model_id,
+        backend=selection.embedding_backend,
+        token=streamlit_hf_token(),
+    )
+
+
+def streamlit_hf_token() -> str:
+    """Return HF_TOKEN from Streamlit secrets or environment without logging it."""
     try:
-        if selection.embedding_backend == "sentence-transformers":
-            from sentence_transformers import SentenceTransformer
+        token = st.secrets.get("HF_TOKEN", "")
+    except Exception:
+        token = ""
+    return str(token or os.environ.get("HF_TOKEN", "") or "").strip()
 
-            SentenceTransformer(model_id, cache_folder=str(HUGGINGFACE_CACHE_DIR))
-        else:
-            from transformers import AutoModel, AutoTokenizer
 
-            AutoTokenizer.from_pretrained(model_id, cache_dir=str(HUGGINGFACE_CACHE_DIR))
-            AutoModel.from_pretrained(model_id, cache_dir=str(HUGGINGFACE_CACHE_DIR))
-    except Exception as exc:
-        return model_id, False, f"{type(exc).__name__}: {exc}"
-    return model_id, True, "cached"
+def model_catalog_dataframe() -> pd.DataFrame:
+    """Return grouped model catalog rows for the status page."""
+    return pd.DataFrame(
+        [
+            {
+                "group": entry.group,
+                "label": entry.label,
+                "model_id": entry.model_id,
+                "backend": entry.backend,
+                "purpose": entry.purpose,
+                "model_status": entry.model_status,
+                "cached": yes_no_status(model_is_cached(entry.model_id)),
+                "downloadable": yes_no_status(entry.downloadable),
+            }
+            for entry in MODEL_CATALOG
+        ]
+    )
+
+
+def catalog_download_selection(label: str) -> object:
+    """Resolve a catalog row label into an OptionalModelSelection-like object."""
+    entry = next(item for item in MODEL_CATALOG if f"{item.group}: {item.label}" == label)
+    return OptionalModelSelection(
+        label=entry.label,
+        model_id=entry.model_id,
+        model_type=entry.group,
+        embedding_backend=entry.backend,
+        pooling_method="model_default",
+        requires_download_gate=True,
+        error_message="" if entry.downloadable else "Model is not marked downloadable.",
+    )
 
 
 def render_manifest_table(manifest: dict[str, object]) -> None:
@@ -5089,13 +5190,19 @@ def render_model_and_data_sources_page(output_dir: Path) -> None:
     )
     st.info(
         "Normal app rendering uses local/cache-safe loading and does not "
-        "download large model weights. Use Check cache/status to refresh "
+        "download large model weights. Use Check cache status to refresh "
         "manifests without running a workflow step."
+    )
+    st.caption(
+        "Streamlit Cloud note: explicit model downloads may be slow, and cache "
+        "contents may not persist across rebuilds. Set ALLOW_LOCAL_MODEL_DOWNLOADS=1 "
+        "in Streamlit Secrets only when explicit cloud download is desired; add "
+        "HF_TOKEN only for private or gated models."
     )
     st.markdown(f"**App-managed Hugging Face cache:** `{HUGGINGFACE_CACHE_DIR}`")
     downloads_enabled = os.environ.get(ALLOW_LOCAL_MODEL_DOWNLOADS_ENV) == "1"
     st.caption(f"{ALLOW_LOCAL_MODEL_DOWNLOADS_ENV}={'1' if downloads_enabled else 'not set'}")
-    if st.button("Check cache/status", key="check_model_data_sources"):
+    if st.button("Check cache status", key="check_model_data_sources"):
         refresh_model_and_source_manifests(output_dir)
     model_manifest = read_manifest(MODEL_MANIFEST_PATH)
     public_manifest = read_manifest(PUBLIC_DATA_MANIFEST_PATH)
@@ -5111,25 +5218,40 @@ def render_model_and_data_sources_page(output_dir: Path) -> None:
             "Run manifest timestamp": run_manifest.get("last_checked", ""),
         }
     )
+    st.markdown("#### Model catalog")
+    st.dataframe(
+        display_dataframe(model_catalog_dataframe()),
+        width="stretch",
+        hide_index=True,
+    )
     render_manifest_table(model_manifest)
     st.markdown("#### PubChem / ChEMBL / SureChEMBL status")
     render_public_source_manifest(public_manifest)
     if downloads_enabled:
-        if st.button("Download/cache selected models", key="download_selected_models"):
-            selections = [
-                preferred_model_selection("biomedical"),
-                preferred_model_selection("patent"),
-                resolve_model_selection(
-                    model_type="biomedical",
-                    option=CLOUD_SAFE_FALLBACK_LABEL,
-                    fallback_model_id=FALLBACK_MODEL_ID,
-                ),
-            ]
-            rows = []
-            with st.spinner("Downloading selected models into the app-managed cache..."):
-                for selection in selections:
-                    model_id, ok, message = explicit_cache_model(selection)
-                    rows.append({"Model": model_id, "Status": "cached" if ok else "failed", "Message": message})
+        labels = [f"{entry.group}: {entry.label}" for entry in MODEL_CATALOG]
+        selected_label = st.selectbox(
+            "Model to download/cache",
+            labels,
+            key="model_catalog_download_selection",
+        )
+        if st.button("Download selected model", key="download_selected_model"):
+            selection = catalog_download_selection(selected_label)
+            with st.spinner("Downloading selected model into the app-managed cache..."):
+                model_id, ok, message = explicit_cache_model(selection)
+            rows = [{"Model": model_id, "Status": "cached" if ok else "failed", "Message": message}]
+            update_model_manifest(
+                [
+                    build_model_record(
+                        role=f"download:{model_id}",
+                        configured_model=model_id,
+                        fallback_model=FALLBACK_MODEL_ID,
+                        actual_model_used=model_id if ok else "",
+                        status="cached" if ok else "download_failed",
+                        error_message="" if ok else message,
+                        downloadable=True,
+                    )
+                ]
+            )
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
             refresh_model_and_source_manifests(output_dir)
     else:
@@ -5267,12 +5389,6 @@ def run_public_demo_step(
         run_public_demo_step3(paths)
     elif step_number == 4:
         descriptor_csv(paths.standardized, paths.descriptors)
-        admet_csv(
-            descriptors_path=paths.descriptors,
-            standardized_path=paths.standardized,
-            predictions_path=paths.admet_predictions,
-            summary_path=paths.admet_summary,
-        )
         similarity_csv(paths.descriptors, paths.references, paths.similarity)
         top_hits_csv(
             paths.descriptors,
@@ -5281,6 +5397,13 @@ def run_public_demo_step(
             5,
         )
     elif step_number == 5:
+        admet_csv(
+            descriptors_path=paths.descriptors,
+            standardized_path=paths.standardized,
+            predictions_path=paths.admet_predictions,
+            summary_path=paths.admet_summary,
+        )
+    elif step_number == 6:
         chemberta_embeddings_csv(
             paths.standardized,
             paths.chemberta_embeddings,
@@ -5291,7 +5414,7 @@ def run_public_demo_step(
             paths.visualization_coordinates,
             reference_path=paths.references,
         )
-    elif step_number == 6:
+    elif step_number == 7:
         compound_context_csv(
             paths.descriptors,
             paths.public_lookup,
@@ -5327,7 +5450,7 @@ def run_public_demo_step(
             available_note=biomedical_note,
             model_metadata=biomedical_metadata,
         )
-    elif step_number == 7:
+    elif step_number == 8:
         patent_model, patent_model_name, patent_model_status, patent_metadata, patent_note = load_selected_domain_model(
             model_type="patent",
             fallback_model_id=FALLBACK_MODEL_ID,
@@ -5347,7 +5470,7 @@ def run_public_demo_step(
             available_note=patent_note,
             model_metadata=patent_metadata,
         )
-    elif step_number == 8:
+    elif step_number == 9:
         scoring_csv(
             paths.descriptors,
             paths.similarity,
@@ -5370,6 +5493,7 @@ def run_public_demo_step(
             paths.visualization_coordinates,
             reference_path=paths.references,
         )
+    elif step_number == 10:
         generate_biopharma_outputs(
             output_dir=paths.prioritized.parent,
             standardized_path=paths.standardized,
@@ -5386,7 +5510,7 @@ def run_public_demo_step(
             trial_endpoint_path=paths.trial_endpoint_map,
             report_path=paths.biopharma_summary_report,
         )
-    elif step_number == 9:
+    elif step_number == 11:
         loaded = load_output_directory(paths.prioritized.parent)
         prioritization = loaded.tables["prioritization"]
         score = score_column(prioritization)
@@ -6095,25 +6219,36 @@ def render_workflow_step(
         selected = render_druglikeness_views(frame, key="workflow_step_4")
         render_detail_panel(loaded, selected)
     elif step_number == 5:
-        frame = loaded.tables["visualization"]
         render_step_header(
             5,
-            "Places molecules in a learned chemical-space representation so "
-            "clusters, close neighbors, and outliers can be explored visually.",
-            [loaded.paths["standardized"]],
+            "Runs descriptor-based ADMET triage and records model/cache "
+            "provenance for fallback or optional cached tuned BBB classifier use.",
+            [loaded.paths["standardized"], loaded.paths["descriptors"]],
             get_step_artifacts(5, output_dir),
         )
         if not results_available:
             return
+        render_admet_prediction_page(output_dir)
+    elif step_number == 6:
+        frame = loaded.tables["visualization"]
+        render_step_header(
+            6,
+            "Places molecules in a learned chemical-space representation so "
+            "clusters, close neighbors, and outliers can be explored visually.",
+            [loaded.paths["standardized"]],
+            get_step_artifacts(6, output_dir),
+        )
+        if not results_available:
+            return
         selected = render_chemical_space(
-            loaded, prioritization, key="workflow_step_5"
+            loaded, prioritization, key="workflow_step_6"
         )
         render_detail_panel(loaded, selected)
-    elif step_number == 6:
+    elif step_number == 7:
         context = loaded.tables["compound_context"]
         biomedical = loaded.tables["biomedical_evidence"]
         render_step_header(
-            6,
+            7,
             "Connects biomedical text evidence with grounded molecule identity "
             "and biological context. The default model is a lightweight general "
             "sentence-transformer baseline; BioBERT/PubMedBERT-style biomedical "
@@ -6127,7 +6262,7 @@ def render_workflow_step(
                 loaded.paths["chemical_identity"],
                 loaded.paths["public_lookup"],
             ],
-            get_step_artifacts(6, output_dir),
+            get_step_artifacts(7, output_dir),
         )
         if not results_available:
             return
@@ -6145,15 +6280,15 @@ def render_workflow_step(
                     "Molecules": int(text_nlp["molecule_id"].nunique()) if "molecule_id" in text_nlp.columns else len(molecule_ids),
                     "Available": int(text_nlp["nlp_status"].astype(str).eq("available").sum()) if "nlp_status" in text_nlp.columns else 0,
                 },
-                key="workflow_step_6_text_evidence_summary_card",
+                key="workflow_step_7_text_evidence_summary_card",
             )
         selected = render_biomedical_evidence_view(
-            biomedical, molecule_ids, key="workflow_step_6"
+            biomedical, molecule_ids, key="workflow_step_7"
         )
         render_detail_panel(loaded, selected)
-    elif step_number == 7:
+    elif step_number == 8:
         render_step_header(
-            7,
+            8,
             "Matches molecule IP-context summaries against public patent text "
             "signals when an optional advanced local/cached PaECTER or patent-BERT-style "
             "model is available. SureChEMBL structure evidence and patent-text "
@@ -6165,7 +6300,7 @@ def render_workflow_step(
                 loaded.paths["chemical_identity"],
                 loaded.paths["compound_context"],
             ],
-            get_step_artifacts(7, output_dir),
+            get_step_artifacts(8, output_dir),
         )
         if not results_available:
             return
@@ -6177,12 +6312,12 @@ def render_workflow_step(
             else ()
         )
         selected = render_patent_evidence_view(
-            patent, molecule_ids, key="workflow_step_7"
+            patent, molecule_ids, key="workflow_step_8"
         )
         render_detail_panel(loaded, selected)
-    elif step_number == 8:
+    elif step_number == 9:
         render_step_header(
-            8,
+            9,
             FINAL_RANKING_EXPLANATION,
             [
                 loaded.paths["chemical_identity"],
@@ -6192,22 +6327,33 @@ def render_workflow_step(
                 loaded.paths["text_nlp"],
                 loaded.paths["compound_context"],
             ],
-            get_step_artifacts(8, output_dir),
+            get_step_artifacts(9, output_dir),
         )
         if not results_available:
             return
         st.info(FINAL_RANKING_EXPLANATION)
         selected = render_score_similarity(
-            prioritization, key="workflow_step_8"
+            prioritization, key="workflow_step_9"
         )
         render_detail_panel(loaded, selected)
+    elif step_number == 10:
+        render_step_header(
+            10,
+            "Summarizes evidence readiness, translational positioning, synthetic "
+            "OMOP-style demonstration context, and conceptual endpoint mapping.",
+            [loaded.paths["prioritization"], loaded.paths["admet_summary"]],
+            get_step_artifacts(10, output_dir),
+        )
+        if not results_available:
+            return
+        render_biopharma_analytics_page(output_dir)
     else:
         render_step_header(
-            9,
+            11,
             "Creates molecule-level Markdown reports that bring the available "
             "identity, properties, public evidence, context, and ranking into one view.",
             [loaded.paths["prioritization"], loaded.paths["compound_context"]],
-            get_step_artifacts(9, output_dir),
+            get_step_artifacts(11, output_dir),
         )
         if not results_available:
             return
@@ -6215,7 +6361,7 @@ def render_workflow_step(
             reports_dir=loaded.reports_dir,
             prioritization=prioritization,
             images_dir=loaded.images_dir,
-            key_prefix="workflow_step_9_reports",
+            key_prefix="workflow_step_11_reports",
         )
 
 
@@ -6493,11 +6639,13 @@ def render_start_workflow_mode() -> None:
             "2 Identity",
             "3 Public evidence",
             "4 Descriptors",
-            "5 Chemical space",
-            "6 Biomedical",
-            "7 Patent/IP",
-            "8 Prioritize",
-            "9 Reports",
+            "5 ADMET",
+            "6 Chemical space",
+            "7 Biomedical",
+            "8 Patent/IP",
+            "9 Prioritize",
+            "10 Biopharma",
+            "11 Reports",
         )
     )
     st.info(
@@ -6516,10 +6664,15 @@ def completed_workflow_steps() -> set[int]:
 def step_output_exists(output_dir: Path, step_number: int) -> bool:
     """Return whether a known output artifact exists for a workflow step."""
     keys = STEP_OUTPUT_KEYS.get(step_number, ())
-    if step_number == 9:
+    if step_number == 11:
         reports_dir = output_dir / "reports"
         return reports_dir.exists() and any(
             reports_dir.glob("compound_intelligence_report_*.md")
+        )
+    if step_number == 5:
+        return all(
+            (output_dir / OUTPUT_FILES[key]).exists()
+            for key in ("admet_predictions", "admet_summary")
         )
     for key in keys:
         filename = OUTPUT_FILES.get(key, "")
@@ -6561,12 +6714,12 @@ def output_csv_has_status(path: Path, status_columns: Iterable[str]) -> bool:
 
 def optional_step_skipped(output_dir: Path, step_number: int) -> bool:
     """Return whether an optional embedding step produced a skipped fallback."""
-    if step_number == 6:
+    if step_number == 7:
         return output_csv_has_status(
             output_dir / OUTPUT_FILES["biomedical_evidence"],
             ("biomedical_model_status", "biomedical_evidence_status"),
         )
-    if step_number == 7:
+    if step_number == 8:
         return output_csv_has_status(
             output_dir / OUTPUT_FILES["patent_evidence_embeddings"],
             ("patent_model_status", "patent_evidence_status"),

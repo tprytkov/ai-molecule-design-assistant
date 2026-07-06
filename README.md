@@ -67,34 +67,42 @@ artifacts at each stage.
    These are computational design heuristics, not evidence of activity or
    safety.
 
-5. **ChemBERTa chemical space**
+5. **ADMET Prediction**
+   Writes `admet_predictions.csv` and `admet_summary.csv`. This is
+   descriptor-based computational triage by default, with optional cached tuned
+   BBB classifier support.
+
+6. **ChemBERTa chemical space**
    Optionally writes `chemberta_embeddings.csv` and
    `visualization_coordinates.csv` for qualitative chemical-space inspection.
 
-6. **Biomedical evidence and biological context**
+7. **Biomedical evidence and biological context**
    Writes `compound_context.csv`, `text_nlp.csv`, and
    `biomedical_evidence.csv`. Semantic evidence similarity is used for research
    triage only; it is not biological activity, efficacy, safety, or clinical
    prediction.
 
-7. **Patent/IP-context evidence**
+8. **Patent/IP-context evidence**
    Writes `patent_evidence_embeddings.csv`. Patent/IP-context evidence is
    research triage only; it is not legal advice, novelty, patentability,
    freedom-to-operate, infringement, or ownership analysis.
 
-8. **Final prioritization and Biopharma Analytics outputs**
-   Writes `prioritization_results.csv` and separate biopharma analytics outputs.
-   Biopharma outputs do not feed back into scoring.
+9. **Final prioritization**
+   Writes `prioritization_results.csv`. Biopharma and ADMET outputs do not feed
+   back into scoring.
 
-9. **Reports**
+10. **Biopharma Analytics**
+   Writes separate evidence-readiness and translational-positioning outputs.
+   These are portfolio/research triage artifacts and do not feed back into
+   scoring.
+
+11. **Reports**
    Writes selected Markdown reports and 2D molecule images under `reports/` and
    `report_images/`.
 
-## Model And Cache Transparency
-
 ## Optional embedding models
 
-Step 6 and Step 7 are cloud-safe optional embedding stages. Normal app execution
+Step 7 and Step 8 are cloud-safe optional embedding stages. Normal app execution
 keeps local/cache-safe loading enabled and does not silently download large
 Hugging Face model weights.
 
@@ -108,6 +116,26 @@ embedding models for biomedical evidence and biological-context matching.
 
 Recommended patent model category: PaECTER/patent-BERT-style embedding models
 for patent/IP-context text matching.
+
+Configured model candidates include:
+
+- `sentence-transformers/all-MiniLM-L6-v2` for the biomedical fallback
+- `dmis-lab/biobert-base-cased-v1.1` for biomedical evidence text
+- `microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext` for
+  biomedical evidence text
+- `AI-Growth-Lab/PatentSBERTa` for patent/IP-context text
+- `DeepChem/ChemBERTa-77M-MLM` for molecular embeddings / representation only
+- `Yousuf7/ChemBERT-BBB-Permeability` as an experimental public Hugging Face
+  BBB classifier candidate
+- `DeepChem/ChemBERTa-77M-MTR` as an experimental molecular property regression
+  candidate without detailed app validation
+
+`DeepChem/ChemBERTa-77M-MLM` is an embedding/pretraining model and is not a
+validated ADMET endpoint predictor. Tuned ChemBERTa endpoint candidates are used
+only when explicitly cached and clearly labeled experimental unless separate app
+validation is added.
+
+## Model And Cache Transparency
 
 The app-managed cache/status structure is:
 
@@ -123,13 +151,26 @@ Model weights and downloaded cache contents are ignored by Git. The lightweight
 manifest JSON files and `.gitkeep` placeholders are committed so users can see
 the expected folder structure.
 
-Open **Model and Data Sources** in the Streamlit app and click **Check
-cache/status** to refresh manifests without running a workflow step or
+Open **Model and Data Sources** in the Streamlit app and click **Check cache
+status** to refresh manifests without running a workflow step or
 downloading models.
 
 Set `ALLOW_LOCAL_MODEL_DOWNLOADS=1` before launching Streamlit only when you
 intentionally want to enable the explicit **Download/cache selected models**
 action. Downloads are disabled unless that environment variable is set.
+
+For Streamlit Cloud, add these only in Secrets when explicit cloud download is
+desired:
+
+```toml
+ALLOW_LOCAL_MODEL_DOWNLOADS = "1"
+HF_TOKEN = "optional_huggingface_token"
+```
+
+Leave `ALLOW_LOCAL_MODEL_DOWNLOADS` unset for fully offline/fallback mode. Add
+`HF_TOKEN` only for private or gated models. Never commit `.streamlit/secrets.toml`
+or model weights. Cloud model downloads can be slow and cache contents may not
+persist across rebuilds.
 
 ## ADMET Prediction Limitations
 
@@ -138,11 +179,13 @@ The ADMET Prediction page writes:
 - `admet_predictions.csv`
 - `admet_summary.csv`
 
-The current implementation is a descriptor/rule fallback layer using RDKit
+The default implementation is a descriptor/rule fallback layer using RDKit
 properties and conservative rules for BBB/CNS likeness, solubility, LogP,
 hERG/cardiotoxicity triage, CYP inhibition triage, and general toxicity triage.
-It does not use ChemBERTa as an ADMET predictor and does not claim validated
-ADMET prediction.
+If `Yousuf7/ChemBERT-BBB-Permeability` is cached locally, the BBB endpoint may
+use that experimental public Hugging Face tuned classifier. If it is missing or
+unavailable, BBB falls back to descriptor rules. The app does not claim
+validated ADMET prediction.
 
 These outputs are computational research triage only. They are not experimental
 ADMET evidence, toxicity evidence, safety evidence, clinical evidence, or a

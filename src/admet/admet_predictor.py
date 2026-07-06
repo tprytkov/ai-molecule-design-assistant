@@ -21,6 +21,8 @@ from src.admet.admet_schema import (
     MODEL_STATUS_FALLBACK,
     TRAINING_DATASET_FALLBACK,
 )
+from src.model_source_status import HUGGINGFACE_CACHE_DIR, model_is_cached
+from src.optional_domain_models import CHEMBERTA_BBB_MODEL_ID
 
 
 ENDPOINT_BBB = "bbb_permeability_cns_likeness"
@@ -36,6 +38,15 @@ ENDPOINTS = (
     ENDPOINT_HERG,
     ENDPOINT_CYP,
     ENDPOINT_TOX,
+)
+MODEL_STATUS_TUNED_BBB = "experimental_public_hf_model"
+MODEL_BACKEND_TUNED_BBB = "transformers_sequence_classification"
+MODEL_CACHE_STATUS_CACHED = "cached"
+TRAINING_DATASET_TUNED_BBB = "public_hf_model_card_bbb_permeability"
+TUNED_BBB_EVIDENCE_NOTE = (
+    "Experimental public Hugging Face tuned ChemBERTa BBB classifier for "
+    "computational research triage only; not experimental ADMET, safety, "
+    "toxicity, or clinical evidence."
 )
 
 
@@ -56,6 +67,82 @@ class ADMETDescriptorRecord:
     heavy_atoms: int | None = None
     aromatic_heavy_atoms: int | None = None
     error_message: str = ""
+
+
+class TunedBBBClassifierUnavailable(RuntimeError):
+    """Raised when the optional tuned BBB classifier cannot be loaded locally."""
+
+
+class TunedChembertaBBBClassifier:
+    """Cached local ChemBERTa sequence classifier for BBB triage."""
+
+    model_id = CHEMBERTA_BBB_MODEL_ID
+
+    def __init__(
+        self,
+        *,
+        model_id: str = CHEMBERTA_BBB_MODEL_ID,
+        cache_dir: Path = HUGGINGFACE_CACHE_DIR,
+        local_files_only: bool = True,
+    ) -> None:
+        self.model_id = model_id
+        try:
+            import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        except ImportError as exc:
+            raise TunedBBBClassifierUnavailable(
+                "transformers and torch are required for the tuned BBB classifier."
+            ) from exc
+        try:
+            self._torch = torch
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_id,
+                cache_dir=str(cache_dir),
+                local_files_only=local_files_only,
+            )
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                model_id,
+                cache_dir=str(cache_dir),
+                local_files_only=local_files_only,
+            )
+            self.model.eval()
+        except Exception as exc:
+            raise TunedBBBClassifierUnavailable(
+                f"Model '{model_id}' is not available in the app-managed cache."
+            ) from exc
+
+    def predict_label(self, smiles: str) -> tuple[str, str]:
+        """Return conservative label/probability strings for one SMILES."""
+        encoded = self.tokenizer(
+            [smiles],
+            padding=True,
+            truncation=True,
+            max_length=256,
+            return_tensors="pt",
+        )
+        with self._torch.no_grad():
+            logits = self.model(**encoded).logits
+            probabilities = self._torch.nn.functional.softmax(logits, dim=-1)[0]
+        index = int(probabilities.argmax().item())
+        probability = float(probabilities[index].item())
+        raw_label = str(getattr(self.model.config, "id2label", {}).get(index, index)).lower()
+        if any(term in raw_label for term in ("non", "imperme", "negative", "false", "0")):
+            label = "caution"
+        elif any(term in raw_label for term in ("perme", "positive", "true", "1")):
+            label = "favorable"
+        else:
+            label = "moderate"
+        return label, f"{probability:.3f}"
+
+
+def load_tuned_bbb_classifier() -> TunedChembertaBBBClassifier | None:
+    """Load the tuned BBB classifier only if it appears cached locally."""
+    if not model_is_cached(CHEMBERTA_BBB_MODEL_ID):
+        return None
+    try:
+        return TunedChembertaBBBClassifier()
+    except TunedBBBClassifierUnavailable:
+        return None
 
 
 def parse_bool(value: object) -> bool:
@@ -327,22 +414,46 @@ def endpoint_label(record: ADMETDescriptorRecord, endpoint: str) -> tuple[str, s
     return label_toxicity(record)
 
 
-def prediction_row(record: ADMETDescriptorRecord, endpoint: str) -> dict[str, str]:
+def prediction_row(
+    record: ADMETDescriptorRecord,
+    endpoint: str,
+    *,
+    bbb_classifier: TunedChembertaBBBClassifier | None = None,
+) -> dict[str, str]:
     """Build one admet_predictions.csv row."""
     label, value = endpoint_label(record, endpoint)
+    probability = ""
+    model_id = MODEL_ID_FALLBACK
+    model_backend = MODEL_BACKEND_FALLBACK
+    model_status = MODEL_STATUS_FALLBACK
+    model_cache_status = MODEL_CACHE_STATUS_FALLBACK
+    training_dataset = TRAINING_DATASET_FALLBACK
+    evidence_note = ADMET_EVIDENCE_NOTE
+    if endpoint == ENDPOINT_BBB and bbb_classifier is not None and record.valid:
+        try:
+            label, probability = bbb_classifier.predict_label(record.smiles)
+            value = f"tuned_chemberta_bbb_probability={probability}"
+            model_id = bbb_classifier.model_id
+            model_backend = MODEL_BACKEND_TUNED_BBB
+            model_status = MODEL_STATUS_TUNED_BBB
+            model_cache_status = MODEL_CACHE_STATUS_CACHED
+            training_dataset = TRAINING_DATASET_TUNED_BBB
+            evidence_note = TUNED_BBB_EVIDENCE_NOTE
+        except Exception:
+            label, value = endpoint_label(record, endpoint)
     return {
         "molecule_id": record.molecule_id,
         "smiles": record.smiles,
         "admet_endpoint": endpoint,
         "prediction_value": value,
-        "prediction_probability": "",
+        "prediction_probability": probability,
         "prediction_label": label,
-        "model_id": MODEL_ID_FALLBACK,
-        "model_backend": MODEL_BACKEND_FALLBACK,
-        "model_status": MODEL_STATUS_FALLBACK,
-        "model_cache_status": MODEL_CACHE_STATUS_FALLBACK,
-        "training_dataset": TRAINING_DATASET_FALLBACK,
-        "evidence_note": ADMET_EVIDENCE_NOTE,
+        "model_id": model_id,
+        "model_backend": model_backend,
+        "model_status": model_status,
+        "model_cache_status": model_cache_status,
+        "training_dataset": training_dataset,
+        "evidence_note": evidence_note,
     }
 
 
@@ -378,20 +489,27 @@ def summary_row(
         "cns_property_flag": by_endpoint.get(ENDPOINT_BBB, "unavailable"),
         "toxicity_risk_flag": readiness_category(toxicity_labels),
         "admet_readiness_category": readiness_category(by_endpoint.values()),
-        "model_status": MODEL_STATUS_FALLBACK,
+        "model_status": (
+            "mixed_tuned_bbb_and_descriptor_rule"
+            if any(row.get("model_status") == MODEL_STATUS_TUNED_BBB for row in predictions)
+            else MODEL_STATUS_FALLBACK
+        ),
         "evidence_note": ADMET_EVIDENCE_NOTE,
     }
 
 
 def build_admet_outputs(
     records: Iterable[ADMETDescriptorRecord],
+    *,
+    bbb_classifier: TunedChembertaBBBClassifier | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Build ADMET prediction and summary rows."""
     prediction_rows: list[dict[str, str]] = []
     summary_rows: list[dict[str, str]] = []
     for record in records:
         molecule_predictions = [
-            prediction_row(record, endpoint) for endpoint in ENDPOINTS
+            prediction_row(record, endpoint, bbb_classifier=bbb_classifier)
+            for endpoint in ENDPOINTS
         ]
         prediction_rows.extend(molecule_predictions)
         summary_rows.append(summary_row(record, molecule_predictions))
@@ -415,13 +533,18 @@ def admet_csv(
     standardized_path: Path | None = None,
     predictions_path: Path,
     summary_path: Path,
+    use_tuned_bbb_if_cached: bool = True,
 ) -> dict[str, int]:
     """Generate ADMET descriptor/rule fallback CSV outputs."""
     records = descriptor_records(
         descriptors_path=descriptors_path,
         standardized_path=standardized_path,
     )
-    predictions, summaries = build_admet_outputs(records)
+    bbb_classifier = load_tuned_bbb_classifier() if use_tuned_bbb_if_cached else None
+    predictions, summaries = build_admet_outputs(
+        records,
+        bbb_classifier=bbb_classifier,
+    )
     return {
         "predictions": write_csv(
             predictions_path,

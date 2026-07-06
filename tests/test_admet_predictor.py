@@ -3,10 +3,13 @@ from pathlib import Path
 
 from src.admet.admet_predictor import (
     ENDPOINTS,
+    ENDPOINT_BBB,
+    MODEL_STATUS_TUNED_BBB,
     admet_csv,
     build_admet_outputs,
     descriptor_records,
 )
+from src.admet.admet_model_registry import ADMET_MODEL_REGISTRY
 from src.admet.admet_schema import (
     ADMET_PREDICTION_COLUMNS,
     ADMET_SUMMARY_COLUMNS,
@@ -114,6 +117,72 @@ def test_admet_csv_generation_writes_required_outputs(tmp_path: Path) -> None:
         assert tuple(csv.DictReader(handle).fieldnames or ()) == ADMET_PREDICTION_COLUMNS
     with summary.open("r", encoding="utf-8", newline="") as handle:
         assert tuple(csv.DictReader(handle).fieldnames or ()) == ADMET_SUMMARY_COLUMNS
+
+
+def test_admet_registry_includes_tuned_chemberta_bbb_candidate() -> None:
+    registry = {entry.model_id: entry for entry in ADMET_MODEL_REGISTRY}
+
+    assert "Yousuf7/ChemBERT-BBB-Permeability" in registry
+    assert registry["Yousuf7/ChemBERT-BBB-Permeability"].endpoint == "bbb_permeability"
+    assert registry["Yousuf7/ChemBERT-BBB-Permeability"].enabled is True
+    assert "experimental" in registry["Yousuf7/ChemBERT-BBB-Permeability"].notes.lower()
+    assert "DeepChem/ChemBERTa-77M-MLM" in registry
+    assert "not treated as ADMET prediction" in registry["DeepChem/ChemBERTa-77M-MLM"].notes
+
+
+class FakeBBBClassifier:
+    model_id = "Yousuf7/ChemBERT-BBB-Permeability"
+
+    def predict_label(self, smiles: str) -> tuple[str, str]:
+        return "favorable", "0.870"
+
+
+def test_tuned_bbb_classifier_updates_only_bbb_model_metadata(tmp_path: Path) -> None:
+    descriptors = tmp_path / "descriptors.csv"
+    descriptors.write_text(
+        "molecule_id,canonical_smiles,valid_smiles,molecular_weight,logp,tpsa,"
+        "hbd,hba,rotatable_bonds,aromatic_rings,qed\n"
+        "mol_a,CCO,True,46.069,-0.001,20.23,1,1,0,0,0.4\n",
+        encoding="utf-8",
+    )
+    records = descriptor_records(descriptors_path=descriptors)
+
+    predictions, summary = build_admet_outputs(
+        records,
+        bbb_classifier=FakeBBBClassifier(),
+    )
+
+    bbb = next(row for row in predictions if row["admet_endpoint"] == ENDPOINT_BBB)
+    non_bbb = [row for row in predictions if row["admet_endpoint"] != ENDPOINT_BBB]
+    assert bbb["model_id"] == "Yousuf7/ChemBERT-BBB-Permeability"
+    assert bbb["model_status"] == MODEL_STATUS_TUNED_BBB
+    assert bbb["model_cache_status"] == "cached"
+    assert bbb["prediction_probability"] == "0.870"
+    assert {row["model_status"] for row in non_bbb} == {MODEL_STATUS_FALLBACK}
+    assert summary[0]["model_status"] == "mixed_tuned_bbb_and_descriptor_rule"
+
+
+def test_admet_falls_back_when_tuned_chemberta_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("src.admet.admet_predictor.model_is_cached", lambda model_id: False)
+    descriptors = tmp_path / "descriptors.csv"
+    predictions = tmp_path / "admet_predictions.csv"
+    summary = tmp_path / "admet_summary.csv"
+    descriptors.write_text(
+        "molecule_id,canonical_smiles,valid_smiles,molecular_weight,logp,tpsa,"
+        "hbd,hba,rotatable_bonds,aromatic_rings,qed\n"
+        "mol_a,CCO,True,46.069,-0.001,20.23,1,1,0,0,0.4\n",
+        encoding="utf-8",
+    )
+
+    admet_csv(
+        descriptors_path=descriptors,
+        predictions_path=predictions,
+        summary_path=summary,
+    )
+
+    rows = list(csv.DictReader(predictions.open("r", encoding="utf-8", newline="")))
+    assert {row["model_status"] for row in rows} == {MODEL_STATUS_FALLBACK}
+    assert {row["model_cache_status"] for row in rows} == {"not_required"}
 
 
 def test_admet_outputs_do_not_change_scoring_columns(tmp_path: Path) -> None:

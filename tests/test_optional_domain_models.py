@@ -1,4 +1,6 @@
 import csv
+import sys
+import types
 
 import pandas as pd
 import pytest
@@ -31,6 +33,85 @@ def test_allow_local_model_downloads_missing_disables_large_model_loading(monkey
         odm.load_optional_model(selection)
 
     assert excinfo.value.status == "downloads_disabled"
+
+
+def test_model_catalog_includes_requested_huggingface_candidates():
+    model_ids = {entry.model_id for entry in odm.MODEL_CATALOG}
+
+    assert odm.FALLBACK_MODEL_ID in model_ids
+    assert "dmis-lab/biobert-base-cased-v1.1" in model_ids
+    assert "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext" in model_ids
+    assert "AI-Growth-Lab/PatentSBERTa" in model_ids
+    assert "DeepChem/ChemBERTa-77M-MLM" in model_ids
+    assert "Yousuf7/ChemBERT-BBB-Permeability" in model_ids
+    assert "DeepChem/ChemBERTa-77M-MTR" in model_ids
+
+
+def test_cache_huggingface_model_blocked_when_download_gate_unset(monkeypatch):
+    monkeypatch.delenv(odm.ALLOW_LOCAL_MODEL_DOWNLOADS_ENV, raising=False)
+
+    model_id, ok, message = odm.cache_huggingface_model("demo/model")
+
+    assert model_id == "demo/model"
+    assert ok is False
+    assert "ALLOW_LOCAL_MODEL_DOWNLOADS=1" in message
+
+
+def test_cache_huggingface_model_redacts_token_on_failure(monkeypatch):
+    token = "hf_private_token_for_test"
+    monkeypatch.setenv(odm.ALLOW_LOCAL_MODEL_DOWNLOADS_ENV, "1")
+    monkeypatch.setenv("HF_TOKEN", token)
+
+    def fail_snapshot_download(**kwargs):
+        raise RuntimeError(f"failed with token {kwargs.get('token')}")
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "huggingface_hub",
+        __import__("types").SimpleNamespace(snapshot_download=fail_snapshot_download),
+    )
+
+    _, ok, message = odm.cache_huggingface_model("demo/model")
+
+    assert ok is False
+    assert token not in message
+    assert "[redacted]" in message
+
+
+def test_cache_huggingface_model_uses_sequence_classifier_loader(monkeypatch):
+    calls = []
+
+    class FakeTokenizer:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            calls.append(("tokenizer", args, kwargs))
+
+    class FakeAutoModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            calls.append(("auto_model", args, kwargs))
+
+    class FakeSequenceClassifier:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            calls.append(("sequence_classifier", args, kwargs))
+
+    monkeypatch.setenv(odm.ALLOW_LOCAL_MODEL_DOWNLOADS_ENV, "1")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeTokenizer
+    fake_transformers.AutoModel = FakeAutoModel
+    fake_transformers.AutoModelForSequenceClassification = FakeSequenceClassifier
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    _, ok, message = odm.cache_huggingface_model(
+        odm.CHEMBERTA_BBB_MODEL_ID,
+        backend=odm.TRANSFORMERS_SEQUENCE_CLASSIFICATION_BACKEND,
+    )
+
+    assert ok is True
+    assert message == "cached"
+    assert [call[0] for call in calls] == ["tokenizer", "sequence_classifier"]
 
 
 def test_failed_model_loading_returns_benchmark_status_without_crash(monkeypatch):
