@@ -45,6 +45,7 @@ from src.optional_domain_models import (
     CLOUD_SAFE_FALLBACK_LABEL,
     CUSTOM_MODEL_LABEL,
     FALLBACK_MODEL_ID,
+    CHEMBERTA_BBB_MODEL_ID,
     MODEL_CATALOG,
     PATENT_MODEL_OPTIONS,
     DomainModelUnavailableError,
@@ -201,6 +202,23 @@ DISPLAY_LABELS = {
     "hbd": "Hydrogen-bond donors",
     "hba": "Hydrogen-bond acceptors",
     "rotatable_bonds": "Rotatable bonds",
+    "admet_endpoint": "ADMET endpoint",
+    "prediction_label": "Prediction label",
+    "prediction_value": "Prediction value",
+    "prediction_probability": "Prediction probability",
+    "bbb_prediction_label": "BBB prediction label",
+    "cns_property_flag": "CNS property flag",
+    "toxicity_risk_flag": "Toxicity risk flag",
+    "admet_readiness_category": "ADMET readiness category",
+    "model_id": "Model ID",
+    "model_backend": "Model backend",
+    "model_status": "Model status",
+    "model_cache_status": "Model cache status",
+    "training_dataset": "Training dataset",
+    "evidence_note": "Evidence note",
+    "bbb_cns_backend_used": "BBB/CNS backend used",
+    "tuned_chemberta_bbb_model_cached": "Tuned ChemBERTa BBB model cached",
+    "fallback_used": "Fallback used",
     "identity_status": "Identity status",
     "identity_confidence": "Identity confidence",
     "exact_public_name": "Exact public name",
@@ -1220,6 +1238,11 @@ def display_labels(columns: Iterable[str]) -> dict[str, str]:
 def display_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Return a presentation-only dataframe with readable column labels."""
     return df.rename(columns=display_labels(df.columns))
+
+
+def existing_columns(frame: pd.DataFrame, columns: Iterable[str]) -> list[str]:
+    """Return requested dataframe columns that are present."""
+    return [column for column in columns if column in frame.columns]
 
 
 def shorten_display_text(value: object, max_chars: int = 80) -> str:
@@ -3324,16 +3347,18 @@ def render_admet_prediction_page(output_dir: Path) -> None:
     """Render descriptor/rule fallback ADMET outputs as separate triage evidence."""
     st.subheader("ADMET Prediction")
     st.warning(
-        "Descriptor-based ADMET triage only. These outputs are computational "
-        "signals from RDKit properties and conservative rules, not validated "
-        "ADMET prediction, experimental ADMET, toxicity, safety, or clinical "
-        "evidence."
+        "Descriptor-based ADMET triage only. These are computational signals "
+        "from RDKit properties and conservative rules, not validated ADMET, "
+        "toxicity, safety, or clinical evidence."
     )
-    st.caption(
-        "ChemBERTa embeddings are not treated as endpoint ADMET predictors. "
-        "Validated model-based ADMET work would require endpoint-specific "
-        "fine-tuned models and documented training data."
-    )
+    with st.expander("Why this is not validated ADMET prediction"):
+        st.markdown(
+            "ChemBERTa embeddings are not treated as endpoint ADMET predictors. "
+            "Validated model-based ADMET work would require endpoint-specific "
+            "fine-tuned models, documented training data, benchmarked endpoint "
+            "performance, and experimental review. These outputs support research "
+            "prioritization only."
+        )
     loaded = load_output_directory(output_dir)
     predictions = loaded.tables["admet_predictions"]
     summary = loaded.tables["admet_summary"]
@@ -3361,22 +3386,14 @@ def render_admet_prediction_page(output_dir: Path) -> None:
         if not predictions.empty and "admet_endpoint" in predictions.columns
         else pd.DataFrame()
     )
-    if bbb_rows.empty:
-        st.info("BBB/CNS triage status is unavailable until admet_predictions.csv exists.")
-    else:
-        bbb_status = latest_column_value(bbb_rows, "model_status", "fallback_descriptor_rule")
-        bbb_cache = latest_column_value(bbb_rows, "model_cache_status", "not available")
-        bbb_model = latest_column_value(bbb_rows, "model_id", "not available")
-        if bbb_status == "experimental_public_hf_model":
-            st.success(
-                f"BBB/CNS uses cached tuned ChemBERTa classifier `{bbb_model}` "
-                f"(cache status: {bbb_cache})."
-            )
-        else:
-            st.info(
-                "BBB/CNS uses descriptor/rule fallback. The tuned ChemBERTa BBB "
-                "classifier is optional and is used only when cached locally."
-            )
+    bbb_status = latest_column_value(bbb_rows, "model_status", "fallback_descriptor_rule")
+    bbb_cache = latest_column_value(bbb_rows, "model_cache_status", "not available")
+    bbb_model = latest_column_value(bbb_rows, "model_id", "not available")
+    bbb_backend = latest_column_value(bbb_rows, "model_backend", "not available")
+    tuned_bbb_cached = model_is_cached(CHEMBERTA_BBB_MODEL_ID)
+    tuned_bbb_active = bbb_status == "experimental_public_hf_model"
+    fallback_used = not tuned_bbb_active
+
     columns = st.columns(4)
     render_modern_metric_card("Molecules", len(summary), container=columns[0])
     render_modern_metric_card(
@@ -3394,9 +3411,63 @@ def render_admet_prediction_page(output_dir: Path) -> None:
         int(labels.astype(str).eq("caution").sum()),
         container=columns[3],
     )
+    status_columns = st.columns(2)
+    render_modern_metric_card(
+        "Fallback model active",
+        yes_no_status(fallback_used),
+        container=status_columns[0],
+    )
+    render_modern_metric_card(
+        "Tuned model available",
+        yes_no_status(tuned_bbb_cached),
+        container=status_columns[1],
+    )
+
+    st.markdown("#### Model status")
+    st.dataframe(
+        display_dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "bbb_cns_backend_used": bbb_backend,
+                        "tuned_chemberta_bbb_model_cached": yes_no_status(tuned_bbb_cached),
+                        "fallback_used": yes_no_status(fallback_used),
+                        "model_id": bbb_model,
+                        "model_status": bbb_status,
+                        "model_cache_status": bbb_cache,
+                    }
+                ]
+            )
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown(
+        "- Favorable = no major descriptor-rule flags\n"
+        "- Moderate = some properties need review\n"
+        "- Caution = descriptor-rule flags suggest follow-up evaluation\n\n"
+        "These are prioritization-support signals, not experimental conclusions."
+    )
 
     st.markdown("#### ADMET summary")
-    st.dataframe(display_dataframe(summary), width="stretch", hide_index=True)
+    summary_columns = existing_columns(
+        summary,
+        (
+            "molecule_id",
+            "smiles",
+            "bbb_prediction_label",
+            "cns_property_flag",
+            "toxicity_risk_flag",
+            "admet_readiness_category",
+            "model_status",
+        ),
+    )
+    st.dataframe(
+        display_dataframe(summary[summary_columns] if summary_columns else summary),
+        width="stretch",
+        hide_index=True,
+    )
     if summary_path.exists():
         st.download_button(
             "Download admet_summary.csv",
@@ -3406,11 +3477,30 @@ def render_admet_prediction_page(output_dir: Path) -> None:
             key="download_admet_summary",
         )
 
-    st.markdown("#### Endpoint-level ADMET fallback outputs")
+    st.markdown("#### Endpoint-level ADMET outputs")
     if predictions.empty:
         st.info("admet_predictions.csv is not available.")
     else:
-        st.dataframe(display_dataframe(predictions), width="stretch", hide_index=True)
+        prediction_columns = existing_columns(
+            predictions,
+            (
+                "molecule_id",
+                "admet_endpoint",
+                "prediction_label",
+                "prediction_value",
+                "prediction_probability",
+                "model_backend",
+                "model_status",
+                "model_cache_status",
+            ),
+        )
+        st.dataframe(
+            display_dataframe(
+                predictions[prediction_columns] if prediction_columns else predictions
+            ),
+            width="stretch",
+            hide_index=True,
+        )
         if predictions_path.exists():
             st.download_button(
                 "Download admet_predictions.csv",
@@ -3420,20 +3510,36 @@ def render_admet_prediction_page(output_dir: Path) -> None:
                 key="download_admet_predictions",
             )
 
-    st.markdown("#### Model/status information")
-    registry_rows = [
-        {
-            "endpoint": entry.endpoint,
-            "model_id": entry.model_id,
-            "backend": entry.backend,
-            "cache_required": entry.cache_required,
-            "training_dataset": entry.training_dataset,
-            "enabled": entry.enabled,
-            "notes": entry.notes,
-        }
-        for entry in ADMET_MODEL_REGISTRY
-    ]
-    st.dataframe(pd.DataFrame(registry_rows), width="stretch", hide_index=True)
+    with st.expander("Detailed ADMET evidence notes"):
+        note_columns = existing_columns(
+            predictions,
+            ("molecule_id", "admet_endpoint", "evidence_note", "training_dataset", "model_id"),
+        )
+        if note_columns:
+            st.dataframe(
+                display_dataframe(predictions[note_columns]),
+                width="stretch",
+                hide_index=True,
+            )
+        registry_rows = [
+            {
+                "endpoint": entry.endpoint,
+                "model_id": entry.model_id,
+                "backend": entry.backend,
+                "cache_required": entry.cache_required,
+                "training_dataset": entry.training_dataset,
+                "enabled": entry.enabled,
+                "notes": entry.notes,
+            }
+            for entry in ADMET_MODEL_REGISTRY
+        ]
+        st.markdown("##### ADMET model registry")
+        st.dataframe(pd.DataFrame(registry_rows), width="stretch", hide_index=True)
+        st.markdown("##### Raw ADMET summary")
+        st.dataframe(display_dataframe(summary), width="stretch", hide_index=True)
+        if not predictions.empty:
+            st.markdown("##### Raw endpoint-level ADMET predictions")
+            st.dataframe(display_dataframe(predictions), width="stretch", hide_index=True)
 
 
 def render_biopharma_analytics_page(output_dir: Path) -> None:

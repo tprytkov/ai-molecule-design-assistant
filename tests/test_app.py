@@ -3421,6 +3421,73 @@ def write_minimal_step_outputs(output_dir: Path) -> None:
     )
 
 
+def test_admet_page_uses_compact_interpretation_tables(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    write_minimal_step_outputs(output_dir)
+    warnings = []
+    markdown = []
+    metrics = []
+    dataframes = []
+    expanders = []
+
+    fake_streamlit = SimpleNamespace(
+        subheader=lambda value, *args, **kwargs: markdown.append(f"subheader:{value}"),
+        warning=lambda value, *args, **kwargs: warnings.append(str(value)),
+        expander=lambda label, *args, **kwargs: (
+            expanders.append(str(label)) or NullExpander()
+        ),
+        markdown=lambda value, *args, **kwargs: markdown.append(str(value)),
+        columns=lambda count: [MetricColumn(metrics) for _ in range(count)],
+        dataframe=lambda value, *args, **kwargs: dataframes.append(value.copy()),
+        download_button=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: False,
+        info=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app, "st", fake_streamlit)
+    monkeypatch.setattr(app, "model_is_cached", lambda model_id: False)
+
+    app.render_admet_prediction_page(output_dir)
+
+    assert warnings == [
+        "Descriptor-based ADMET triage only. These are computational signals "
+        "from RDKit properties and conservative rules, not validated ADMET, "
+        "toxicity, safety, or clinical evidence."
+    ]
+    assert "Why this is not validated ADMET prediction" in expanders
+    assert "Detailed ADMET evidence notes" in expanders
+    assert ("Fallback model active", "yes") in metrics
+    assert ("Tuned model available", "no") in metrics
+    assert any("Favorable = no major descriptor-rule flags" in value for value in markdown)
+
+    model_status, summary, endpoint = dataframes[:3]
+    assert "Evidence note" not in summary.columns
+    assert list(summary.columns) == [
+        "Molecule ID",
+        "SMILES",
+        "BBB prediction label",
+        "CNS property flag",
+        "Toxicity risk flag",
+        "ADMET readiness category",
+        "Model status",
+    ]
+    assert "Evidence note" not in endpoint.columns
+    assert list(endpoint.columns) == [
+        "Molecule ID",
+        "ADMET endpoint",
+        "Prediction label",
+        "Prediction value",
+        "Prediction probability",
+        "Model backend",
+        "Model status",
+        "Model cache status",
+    ]
+    assert model_status.loc[0, "Fallback used"] == "yes"
+    assert model_status.loc[0, "Tuned ChemBERTa BBB model cached"] == "no"
+
+
 def rendered_step_output_names(
     monkeypatch: pytest.MonkeyPatch,
     output_dir: Path,
